@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -19,6 +20,8 @@ if "last_run_mtime" not in st.session_state:
     st.session_state.last_run_mtime = 0
 if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = True
+if "finance_view" not in st.session_state:
+    st.session_state.finance_view = "Both"
 
 
 def load_index():
@@ -95,6 +98,24 @@ def _latest_nonzero_series_value(series_map, key, default=0.0):
     return float(default)
 
 
+def _empirical_y_domain(df: pd.DataFrame, pad_ratio: float = 0.08):
+    if df is None or df.empty:
+        return None
+    values = pd.to_numeric(pd.Series(df.to_numpy().ravel()), errors="coerce").dropna()
+    if values.empty:
+        return None
+
+    vmin = float(values.min())
+    vmax = float(values.max())
+
+    if vmax == vmin:
+        pad = max(abs(vmin) * 0.02, 1e-6)
+        return [vmin - pad, vmax + pad]
+
+    pad = (vmax - vmin) * float(pad_ratio)
+    return [vmin - pad, vmax + pad]
+
+
 def _resolve_dashboard_kpis(data):
     run = data.get("run", {}) if isinstance(data, dict) else {}
     finance = data.get("finance", {}) if isinstance(data, dict) else {}
@@ -141,6 +162,8 @@ def _resolve_dashboard_kpis(data):
         "realized_pnl": realized_pnl,
         "win_rate_pct": win_rate_pct,
         "portfolio_value": portfolio_value,
+        "train_realized_pnl": _latest_series_value(series, "realized_pnl", 0.0),
+        "train_portfolio_value": _latest_series_value(series, "portfolio_value", 0.0),
     }
 
 
@@ -163,6 +186,13 @@ if isinstance(latest_model_run, dict):
             break
 
 sel_run_id = st.sidebar.selectbox("Select Run", run_opts, index=default_idx)
+st.session_state.finance_view = st.sidebar.selectbox(
+    "Finance View",
+    ["Both", "Train", "Eval"],
+    index=["Both", "Train", "Eval"].index(st.session_state.finance_view)
+    if st.session_state.finance_view in {"Both", "Train", "Eval"}
+    else 0,
+)
 
 # Track run selection changes
 if sel_run_id != st.session_state.current_run_id:
@@ -186,30 +216,104 @@ st.sidebar.markdown(f"**Status:** {run.get('status', '-')}")
 st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
 st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
-col2.metric("Trades", f"{int(kpis['trades'])}")
-col3.metric("Portfolio Value", f"{kpis['portfolio_value']:.2f}")
-col4.metric("Realized PnL", f"{kpis['realized_pnl']:.2f}")
-col5.metric("Win Rate", f"{kpis['win_rate_pct']:.2f}%")
+col2.metric("Eval Trades", f"{int(kpis['trades'])}")
+col3.metric("Eval Portfolio", f"{kpis['portfolio_value']:.2f}")
+col4.metric("Eval Realized PnL", f"{kpis['realized_pnl']:.2f}")
+col5.metric("Train Realized PnL", f"{kpis['train_realized_pnl']:.2f}")
+col6.metric("Eval Win Rate", f"{kpis['win_rate_pct']:.2f}%")
 
 st.subheader("Training Series")
 
 # Portfolio Value
 st.markdown("### Portfolio Value")
-df_port = pd.DataFrame(series.get("portfolio_value", []))
-if not df_port.empty and "step" in df_port.columns:
-    df_port.drop_duplicates(subset=["step"], keep="last", inplace=True)
-    df_port.set_index("step", inplace=True)
-    st.line_chart(df_port[["value"]])
+portfolio_series = {}
+df_port_train = pd.DataFrame(series.get("portfolio_value", []))
+df_port_dev = pd.DataFrame(series.get("dev_portfolio_value", []))
+df_port_test = pd.DataFrame(series.get("test_portfolio_value", []))
+if not df_port_train.empty and "step" in df_port_train.columns:
+    # Legacy runs may have split snapshots appended at the same step; keep first to preserve train trace.
+    df_port_train.drop_duplicates(subset=["step"], keep="first", inplace=True)
+    df_port_train.set_index("step", inplace=True)
+    portfolio_series["Train"] = df_port_train["value"]
+if not df_port_dev.empty and "step" in df_port_dev.columns:
+    df_port_dev.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_port_dev.set_index("step", inplace=True)
+    portfolio_series["Dev"] = df_port_dev["value"]
+if not df_port_test.empty and "step" in df_port_test.columns:
+    df_port_test.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_port_test.set_index("step", inplace=True)
+    portfolio_series["Test"] = df_port_test["value"]
+
+if portfolio_series:
+    portfolio_df = pd.DataFrame(portfolio_series).dropna(how="all")
+    # Interpolate using index and fill edges so sparse Eval points draw as constant lines
+    portfolio_df = portfolio_df.interpolate(method="index").ffill().bfill()
+    
+    view = st.session_state.finance_view
+    if view == "Train":
+        keep_cols = [c for c in portfolio_df.columns if c == "Train"]
+        portfolio_df = portfolio_df[keep_cols] if keep_cols else pd.DataFrame()
+    elif view == "Eval":
+        keep_cols = [c for c in portfolio_df.columns if c in {"Dev", "Test"}]
+        portfolio_df = portfolio_df[keep_cols] if keep_cols else pd.DataFrame()
+
+    if not portfolio_df.empty:
+        y_domain = _empirical_y_domain(portfolio_df)
+        portfolio_long = portfolio_df.reset_index().melt(
+            id_vars=["step"],
+            var_name="Series",
+            value_name="value",
+        )
+        chart = (
+            alt.Chart(portfolio_long)
+            .mark_line()
+            .encode(
+                x=alt.X("step:Q", title="Step"),
+                y=alt.Y(
+                    "value:Q",
+                    title="Portfolio Value",
+                    scale=alt.Scale(domain=y_domain, zero=False, nice=False),
+                ),
+                color=alt.Color("Series:N", title="Series"),
+            )
+        )
+        st.altair_chart(chart, use_container_width=True)
 
 # Realized PnL
 st.markdown("### Realized PnL")
-df_pnl = pd.DataFrame(series.get("realized_pnl", []))
-if not df_pnl.empty and "step" in df_pnl.columns:
-    df_pnl.drop_duplicates(subset=["step"], keep="last", inplace=True)
-    df_pnl.set_index("step", inplace=True)
-    st.line_chart(df_pnl[["value"]])
+pnl_series = {}
+df_pnl_train = pd.DataFrame(series.get("realized_pnl", []))
+df_pnl_dev = pd.DataFrame(series.get("dev_realized_pnl", []))
+df_pnl_test = pd.DataFrame(series.get("test_realized_pnl", []))
+if not df_pnl_train.empty and "step" in df_pnl_train.columns:
+    # Keep first for legacy compatibility where terminal split points may share the train step.
+    df_pnl_train.drop_duplicates(subset=["step"], keep="first", inplace=True)
+    df_pnl_train.set_index("step", inplace=True)
+    pnl_series["Train"] = df_pnl_train["value"]
+if not df_pnl_dev.empty and "step" in df_pnl_dev.columns:
+    df_pnl_dev.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_pnl_dev.set_index("step", inplace=True)
+    pnl_series["Dev"] = df_pnl_dev["value"]
+if not df_pnl_test.empty and "step" in df_pnl_test.columns:
+    df_pnl_test.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_pnl_test.set_index("step", inplace=True)
+    pnl_series["Test"] = df_pnl_test["value"]
+
+if pnl_series:
+    pnl_df = pd.DataFrame(pnl_series).dropna(how="all")
+    pnl_df = pnl_df.interpolate(method="index").ffill().bfill()
+    
+    view = st.session_state.finance_view
+    if view == "Train":
+        keep_cols = [c for c in pnl_df.columns if c == "Train"]
+        pnl_df = pnl_df[keep_cols] if keep_cols else pd.DataFrame()
+    elif view == "Eval":
+        keep_cols = [c for c in pnl_df.columns if c in {"Dev", "Test"}]
+        pnl_df = pnl_df[keep_cols] if keep_cols else pd.DataFrame()
+
+    st.line_chart(pnl_df)
 
 st.markdown("### Rewards")
 df_train_r = pd.DataFrame(series.get("train_reward", []))
@@ -231,7 +335,9 @@ if not df_dev_r.empty and "step" in df_dev_r.columns:
     rewards_dict["Dev"] = df_dev_r["value"]
 
 if rewards_dict:
-    st.line_chart(pd.DataFrame(rewards_dict).dropna(how="all"))
+    r_df = pd.DataFrame(rewards_dict).dropna(how="all")
+    r_df = r_df.interpolate(method="index").ffill().bfill()
+    st.line_chart(r_df)
 
 st.markdown("### Loss")
 df_tl = pd.DataFrame(series.get("train_loss", []))
@@ -253,7 +359,9 @@ if not df_vl.empty and "step" in df_vl.columns:
     loss_dict["Value"] = df_vl["value"]
 
 if loss_dict:
-    st.line_chart(pd.DataFrame(loss_dict).dropna(how="all"))
+    l_df = pd.DataFrame(loss_dict).dropna(how="all")
+    l_df = l_df.interpolate(method="index").ffill().bfill()
+    st.line_chart(l_df)
 
 # Auto-refresh mechanism: check for file updates and rerun if needed
 st.sidebar.divider()

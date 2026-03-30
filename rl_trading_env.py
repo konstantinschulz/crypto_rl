@@ -21,10 +21,13 @@ class TradingConfig:
     min_position_size: float = 5.0  # Reduced from 50
     position_duration_limit: int = 1440  # Max hold time in minutes (1 day)
     
-    # Reward modeling
-    profit_bonus_scale: float = 100.0  # Reward for unrealized gains
-    diversification_bonus: float = 100.0  # Bonus for holding multiple coins
-    drawdown_penalty: float = 50.0  # Penalty for portfolio loss
+    # Reward modeling - ULTRA AGGRESSIVE to force trading
+    trade_action_bonus: float = 15.0  # VERY STRONG bonus for taking a trade (buy or sell)
+    profit_bonus_scale: float = 200.0  # Bonus multiplier for realized profits
+    realized_pnl_bonus: float = 100.0  # STRONG bonus for closing profitable trades
+    diversification_bonus: float = 20.0  # Reduced - not main focus
+    drawdown_penalty: float = 100.0  # Penalty for losses
+    inactivity_penalty: float = -5.0  # EXTREME penalty for holding (do nothing) - every step costs 5
     transaction_cost: float = 0.001  # 0.1% transaction fee
     
     # Risk management
@@ -93,6 +96,11 @@ class CryptoTradingEnv(Env):
         self.stop_loss_exits = 0
         self.closed_trades: List[Dict] = []
         self.max_closed_trades_history = 1000  # Limit history to prevent memory growth
+        self.hold_actions = 0
+        self.buy_actions = 0
+        self.sell_actions = 0
+        self.invalid_sell_attempts = 0
+        self.remapped_actions = 0
         
         # Action space: [action_type, symbol_idx, amount_pct]
         # action_type: 0=hold all, 1=buy, 2=sell
@@ -125,6 +133,11 @@ class CryptoTradingEnv(Env):
         self.fees_paid_total = 0.0
         self.stop_loss_exits = 0
         self.closed_trades = []
+        self.hold_actions = 0
+        self.buy_actions = 0
+        self.sell_actions = 0
+        self.invalid_sell_attempts = 0
+        self.remapped_actions = 0
         return self._get_observation(), {}
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
@@ -139,6 +152,7 @@ class CryptoTradingEnv(Env):
         """
         self.current_step += 1
         step_reward = 0.0
+        action_taken = False  # Track if a real action (buy/sell) was taken
         
         # Limit to available steps in data
         if self.current_step >= self.n_steps:
@@ -154,14 +168,44 @@ class CryptoTradingEnv(Env):
         action_type = int(np.clip(action[0], 0, 2))
         symbol_idx = int(np.clip(action[1], 0, len(self.symbols) - 1))
         amount_pct = np.clip(action[2], 0, 1)
+        
+        # IMPORTANT: If model is trying to trade (action_type > 0), force a minimum amount
+        # This prevents model from "intending" to trade but using 0 amount
+        if action_type > 0 and amount_pct < 0.05:
+            amount_pct = 0.1  # Force meaningful trade size
+
+        # Validity gate: selling with no open positions is invalid.
+        # Remap invalid sell actions to buy so impossible actions still explore the market.
+        if action_type == 2 and len(self.positions) == 0:
+            self.invalid_sell_attempts += 1
+            self.remapped_actions += 1
+            action_type = 1
+        
         symbol = self.symbols[symbol_idx]
         current_price = float(prices[symbol_idx])
         
-        # Execute trading action
-        if action_type == 1 and amount_pct > 0.1:  # BUY
+        # Track final (possibly remapped) action type for diagnostics.
+        if action_type == 0:
+            self.hold_actions += 1
+        elif action_type == 1:
+            self.buy_actions += 1
+        elif action_type == 2:
+            self.sell_actions += 1
+
+        # Execute trading action and give bonus for attempting to trade
+        if action_type == 1 and amount_pct > 0.05:  # BUY (lowered threshold from 0.1)
             step_reward += self._execute_buy(symbol, current_price, amount_pct)
-        elif action_type == 2 and amount_pct > 0.1:  # SELL
-            step_reward += self._execute_sell(symbol, current_price, amount_pct)
+            action_taken = True
+        elif action_type == 2 and amount_pct > 0.05:  # SELL (lowered threshold from 0.1)
+            sell_reward = self._execute_sell(symbol, current_price, amount_pct)
+            if sell_reward > 0:  # Actual position was sold
+                step_reward += sell_reward
+                action_taken = True
+            else:  # Invalid sell (no position to sell)
+                step_reward -= 3.0  # HEAVY penalty for invalid action
+        else:
+            # PENALTY for inactivity (doing nothing / hold action)
+            step_reward += self.config.inactivity_penalty
         
         # Process ongoing positions
         for sym in list(self.positions.keys()):
@@ -182,10 +226,12 @@ class CryptoTradingEnv(Env):
         # Calculate reward components
         portfolio_value = self._get_portfolio_value(prices)
         
-        # Profit bonus (only if profitable)
-        unrealized_pnl = portfolio_value - self.config.initial_cash
-        if unrealized_pnl > 0:
-            step_reward += unrealized_pnl / 100.0  # Small bonus per step
+        # Remove the passive profit bonus - force trading for profits
+        # Profit bonus (only if profitable and we have active positions)
+        if len(self.positions) > 0:
+            unrealized_pnl = portfolio_value - self.config.initial_cash
+            if unrealized_pnl > 0:
+                step_reward += unrealized_pnl / 200.0  # Much smaller bonus
         
         # Drawdown penalty
         if portfolio_value < self.peak_portfolio_value:
@@ -193,9 +239,9 @@ class CryptoTradingEnv(Env):
             if drawdown_pct > self.config.max_drawdown_pct:
                 step_reward -= self.config.drawdown_penalty
         
-        # Diversification bonus
+        # Diversification bonus - encourage multiple positions
         if len(self.positions) > 1:
-            step_reward += len(self.positions) * 0.5  # Bonus for each position
+            step_reward += len(self.positions) * 0.1  # Reduced bonus
         
         self.peak_portfolio_value = max(self.peak_portfolio_value, portfolio_value)
         
@@ -225,6 +271,11 @@ class CryptoTradingEnv(Env):
             'trades': self.total_trades,
             'win_rate': (self.winning_trades / self.total_trades) if self.total_trades > 0 else 0.0,
             'realized_pnl': self.realized_pnl_total,
+            'hold_actions': self.hold_actions,
+            'buy_actions': self.buy_actions,
+            'sell_actions': self.sell_actions,
+            'invalid_sell_attempts': self.invalid_sell_attempts,
+            'remapped_actions': self.remapped_actions,
         }
     
     def _execute_buy(self, symbol: str, price: float, pct: float) -> float:
@@ -253,8 +304,12 @@ class CryptoTradingEnv(Env):
         }
         self.cash -= amount
         self.fees_paid_total += fee
+        self.total_trades += 1
         
-        return -self.config.transaction_cost * amount  # Fee as negative reward
+        # STRONG bonus for taking a trade action (buy)
+        trade_bonus = self.config.trade_action_bonus  # 5.0 - strong signal
+        fee_penalty = self.config.transaction_cost * amount
+        return trade_bonus - fee_penalty
     
     def _execute_sell(self, symbol: str, price: float, pct: float) -> float:
         """Execute sell order"""
@@ -292,8 +347,17 @@ class CryptoTradingEnv(Env):
         # Keep only last N trades to prevent memory bloat
         if len(self.closed_trades) > self.max_closed_trades_history:
             self.closed_trades = self.closed_trades[-self.max_closed_trades_history:]
-        return realized_pnl / 100.0  # Normalize
-    
+        
+        # Reward = strong bonus for selling + realized P&L
+        sell_action_bonus = self.config.trade_action_bonus  # 5.0
+        if realized_pnl > 0:
+            profit_bonus = min(realized_pnl * 10, self.config.realized_pnl_bonus)  # Scale up small profits
+            return sell_action_bonus + profit_bonus
+        else:
+            # Even losses get the action bonus to encourage trying
+            loss_penalty = realized_pnl / 10.0  # Small loss scaling
+            return sell_action_bonus + loss_penalty
+
     def _close_position(self, symbol: str, price: float, reason: str = 'forced') -> None:
         """Force-close a position (stop loss or max duration)"""
         if symbol in self.positions:
@@ -345,6 +409,8 @@ class CryptoTradingEnv(Env):
         portfolio_value = float(self._get_portfolio_value(prices))
         unrealized_pnl = portfolio_value - self.config.initial_cash - self.realized_pnl_total
         win_rate = (self.winning_trades / self.total_trades) if self.total_trades > 0 else 0.0
+        total_actions = self.hold_actions + self.buy_actions + self.sell_actions
+        actions_den = float(total_actions) if total_actions > 0 else 1.0
         return {
             'portfolio_value': portfolio_value,
             'realized_pnl': float(self.realized_pnl_total),
@@ -361,6 +427,16 @@ class CryptoTradingEnv(Env):
             'drawdown_pct': (self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value
             if self.peak_portfolio_value > 0
             else 0.0,
+            'hold_actions': float(self.hold_actions),
+            'buy_actions': float(self.buy_actions),
+            'sell_actions': float(self.sell_actions),
+            'invalid_sell_attempts': float(self.invalid_sell_attempts),
+            'remapped_actions': float(self.remapped_actions),
+            'hold_action_pct': float(self.hold_actions) / actions_den,
+            'buy_action_pct': float(self.buy_actions) / actions_den,
+            'sell_action_pct': float(self.sell_actions) / actions_den,
+            'invalid_sell_pct': float(self.invalid_sell_attempts) / actions_den,
+            'remapped_action_pct': float(self.remapped_actions) / actions_den,
             'closed_trades': self.closed_trades.copy(),
         }
     

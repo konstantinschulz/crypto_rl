@@ -1,0 +1,558 @@
+Loading 14 days of data...
+✓ Loaded 60483 rows from 3 symbols
+
+/home/konstantin/dev/crypto_rl/rl_trader.py:873: FutureWarning: The default of observed=False is deprecated and will be changed to True in a future version of pandas. Pass observed=False to retain current behavior or observed=True to adopt the future default and silence this warning.
+  for symbol, group in data.groupby('symbol', sort=False):
+
+======================================================================
+                 3-WAY BACKTEST (Train / Val / Test)                  
+======================================================================
+Train:  36288 rows ( 3 symbols) 1768694340000000 → 1769420040000000
+Val:    12096 rows ( 3 symbols) 1769420100000000 → 1769661960000000
+Test:   12099 rows ( 3 symbols) 1769662020000000 → 1769903940000000
+======================================================================
+
+Train env: 36288 rows, 3 symbols
+Eval env: 12096 rows, 3 symbols
+PHASE 1: Training on train set with val monitoring...
+[TRAIN] Warning: --train-steps is smaller than one episode length (10000 < 12096). Reward curves may be sparse.
+Using cpu device
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+Created new PPO model (device=cpu)
+  Hyperparameters:
+    learning_rate=0.0003, batch_size=16
+    n_steps=512, n_epochs=5
+    policy_arch=[256, 128, 64]
+
+Training for 10000 timesteps...
+[DEBUG] step=1 RAW ACTION: [0.         0.97862464 0.        ]
+[DEBUG] step=2 RAW ACTION: [1.4928236  0.47280827 0.        ]
+-----------------------------
+| time/              |      |
+|    fps             | 1653 |
+|    iterations      | 1    |
+|    time_elapsed    | 0    |
+|    total_timesteps | 512  |
+-----------------------------
+/home/konstantin/dev/crypto_rl/.conda/lib/python3.12/site-packages/stable_baselines3/common/evaluation.py:70: UserWarning: Evaluation environment is not wrapped with a ``Monitor`` wrapper. This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. Consider wrapping environment first with ``Monitor`` wrapper.
+  warnings.warn(
+[DEBUG] step=1 RAW ACTION: [0.15138134 0.04103543 0.        ]
+[DEBUG] step=2 RAW ACTION: [0.15138097 0.0410355  0.        ]
+Eval num_timesteps=1000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 4.03e+03    |
+|    mean_reward          | -2.02e+04   |
+| time/                   |             |
+|    total_timesteps      | 1000        |
+| train/                  |             |
+|    approx_kl            | 0.014311703 |
+|    clip_fraction        | 0.173       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.27       |
+|    explained_variance   | -0.00121    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 1.33e+03    |
+|    n_updates            | 5           |
+|    policy_gradient_loss | -0.0225     |
+|    std                  | 1.01        |
+|    value_loss           | 2.45e+03    |
+-----------------------------------------
+New best mean reward!
+-----------------------------
+| time/              |      |
+|    fps             | 308  |
+|    iterations      | 2    |
+|    time_elapsed    | 3    |
+|    total_timesteps | 1024 |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 349         |
+|    iterations           | 3           |
+|    time_elapsed         | 4           |
+|    total_timesteps      | 1536        |
+| train/                  |             |
+|    approx_kl            | 0.009967192 |
+|    clip_fraction        | 0.17        |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.29       |
+|    explained_variance   | 4.17e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 1.33e+03    |
+|    n_updates            | 10          |
+|    policy_gradient_loss | -0.019      |
+|    std                  | 1.01        |
+|    value_loss           | 2.46e+03    |
+-----------------------------------------
+[DEBUG] step=1 RAW ACTION: [0.42909205 0.         0.02278043]
+[DEBUG] step=2 RAW ACTION: [0.42909074 0.         0.02278037]
+Eval num_timesteps=2000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 4.03e+03    |
+|    mean_reward          | -2.02e+04   |
+| time/                   |             |
+|    total_timesteps      | 2000        |
+| train/                  |             |
+|    approx_kl            | 0.010519213 |
+|    clip_fraction        | 0.175       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.31       |
+|    explained_variance   | 1.25e-06    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 977         |
+|    n_updates            | 15          |
+|    policy_gradient_loss | -0.0179     |
+|    std                  | 1.02        |
+|    value_loss           | 1.98e+03    |
+-----------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 294  |
+|    iterations      | 4    |
+|    time_elapsed    | 6    |
+|    total_timesteps | 2048 |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 309         |
+|    iterations           | 5           |
+|    time_elapsed         | 8           |
+|    total_timesteps      | 2560        |
+| train/                  |             |
+|    approx_kl            | 0.008344749 |
+|    clip_fraction        | 0.129       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.33       |
+|    explained_variance   | 5.96e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 511         |
+|    n_updates            | 20          |
+|    policy_gradient_loss | -0.0169     |
+|    std                  | 1.03        |
+|    value_loss           | 1.24e+03    |
+-----------------------------------------
+[DEBUG] step=1 RAW ACTION: [0.7624569 0.        0.       ]
+[DEBUG] step=2 RAW ACTION: [0.7624546 0.        0.       ]
+Eval num_timesteps=3000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 4.03e+03    |
+|    mean_reward          | -2.02e+04   |
+| time/                   |             |
+|    total_timesteps      | 3000        |
+| train/                  |             |
+|    approx_kl            | 0.015305916 |
+|    clip_fraction        | 0.236       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.37       |
+|    explained_variance   | -3.58e-07   |
+|    learning_rate        | 0.0003      |
+|    loss                 | 356         |
+|    n_updates            | 25          |
+|    policy_gradient_loss | -0.0242     |
+|    std                  | 1.05        |
+|    value_loss           | 752         |
+-----------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 276  |
+|    iterations      | 6    |
+|    time_elapsed    | 11   |
+|    total_timesteps | 3072 |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 289         |
+|    iterations           | 7           |
+|    time_elapsed         | 12          |
+|    total_timesteps      | 3584        |
+| train/                  |             |
+|    approx_kl            | 0.029992726 |
+|    clip_fraction        | 0.379       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.4        |
+|    explained_variance   | 2.38e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 205         |
+|    n_updates            | 30          |
+|    policy_gradient_loss | -0.011      |
+|    std                  | 1.05        |
+|    value_loss           | 301         |
+-----------------------------------------
+[DEBUG] step=1 RAW ACTION: [1.299711 0.       0.      ]
+[DEBUG] step=2 RAW ACTION: [1.300576 0.       0.      ]
+Eval num_timesteps=4000, episode_reward=49.08 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+----------------------------------------
+| eval/                   |            |
+|    mean_ep_length       | 4.03e+03   |
+|    mean_reward          | 49.1       |
+| time/                   |            |
+|    total_timesteps      | 4000       |
+| train/                  |            |
+|    approx_kl            | 0.01893355 |
+|    clip_fraction        | 0.209      |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -4.42      |
+|    explained_variance   | 2.98e-07   |
+|    learning_rate        | 0.0003     |
+|    loss                 | 381        |
+|    n_updates            | 35         |
+|    policy_gradient_loss | -0.0273    |
+|    std                  | 1.06       |
+|    value_loss           | 821        |
+----------------------------------------
+New best mean reward!
+-----------------------------
+| time/              |      |
+|    fps             | 279  |
+|    iterations      | 8    |
+|    time_elapsed    | 14   |
+|    total_timesteps | 4096 |
+-----------------------------
+----------------------------------------
+| time/                   |            |
+|    fps                  | 299        |
+|    iterations           | 9          |
+|    time_elapsed         | 15         |
+|    total_timesteps      | 4608       |
+| train/                  |            |
+|    approx_kl            | 0.02000027 |
+|    clip_fraction        | 0.16       |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -4.42      |
+|    explained_variance   | 0          |
+|    learning_rate        | 0.0003     |
+|    loss                 | 790        |
+|    n_updates            | 40         |
+|    policy_gradient_loss | -0.0304    |
+|    std                  | 1.06       |
+|    value_loss           | 1.49e+03   |
+----------------------------------------
+[DEBUG] step=1 RAW ACTION: [1.7323457 0.        0.       ]
+[DEBUG] step=2 RAW ACTION: [1.7331781 0.        0.       ]
+Eval num_timesteps=5000, episode_reward=49.08 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 4.03e+03    |
+|    mean_reward          | 49.1        |
+| time/                   |             |
+|    total_timesteps      | 5000        |
+| train/                  |             |
+|    approx_kl            | 0.014780626 |
+|    clip_fraction        | 0.102       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.42       |
+|    explained_variance   | 3.22e-05    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 622         |
+|    n_updates            | 45          |
+|    policy_gradient_loss | -0.0185     |
+|    std                  | 1.06        |
+|    value_loss           | 1.95e+03    |
+-----------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 299  |
+|    iterations      | 10   |
+|    time_elapsed    | 17   |
+|    total_timesteps | 5120 |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 306         |
+|    iterations           | 11          |
+|    time_elapsed         | 18          |
+|    total_timesteps      | 5632        |
+| train/                  |             |
+|    approx_kl            | 0.007017932 |
+|    clip_fraction        | 0.0281      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.42       |
+|    explained_variance   | 0           |
+|    learning_rate        | 0.0003      |
+|    loss                 | 2.76e+03    |
+|    n_updates            | 50          |
+|    policy_gradient_loss | -0.0109     |
+|    std                  | 1.06        |
+|    value_loss           | 5.26e+03    |
+-----------------------------------------
+[DEBUG] step=1 RAW ACTION: [1.9689263 0.        0.       ]
+[DEBUG] step=2 RAW ACTION: [1.9697284 0.        0.       ]
+Eval num_timesteps=6000, episode_reward=49.08 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+----------------------------------------
+| eval/                   |            |
+|    mean_ep_length       | 4.03e+03   |
+|    mean_reward          | 49.1       |
+| time/                   |            |
+|    total_timesteps      | 6000       |
+| train/                  |            |
+|    approx_kl            | 0.00594779 |
+|    clip_fraction        | 0.0176     |
+|    clip_range           | 0.2        |
+|    entropy_loss         | -4.42      |
+|    explained_variance   | 0          |
+|    learning_rate        | 0.0003     |
+|    loss                 | 3.8e+03    |
+|    n_updates            | 55         |
+|    policy_gradient_loss | -0.00782   |
+|    std                  | 1.06       |
+|    value_loss           | 8.84e+03   |
+----------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 300  |
+|    iterations      | 12   |
+|    time_elapsed    | 20   |
+|    total_timesteps | 6144 |
+-----------------------------
+------------------------------------------
+| time/                   |              |
+|    fps                  | 316          |
+|    iterations           | 13           |
+|    time_elapsed         | 21           |
+|    total_timesteps      | 6656         |
+| train/                  |              |
+|    approx_kl            | 0.0047199233 |
+|    clip_fraction        | 0.0113       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -4.42        |
+|    explained_variance   | -1.19e-07    |
+|    learning_rate        | 0.0003       |
+|    loss                 | 4.89e+03     |
+|    n_updates            | 60           |
+|    policy_gradient_loss | -0.00664     |
+|    std                  | 1.06         |
+|    value_loss           | 1.05e+04     |
+------------------------------------------
+[DEBUG] step=1 RAW ACTION: [2. 0. 0.]
+[DEBUG] step=2 RAW ACTION: [2. 0. 0.]
+Eval num_timesteps=7000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 4.03e+03    |
+|    mean_reward          | -2.02e+04   |
+| time/                   |             |
+|    total_timesteps      | 7000        |
+| train/                  |             |
+|    approx_kl            | 0.005648452 |
+|    clip_fraction        | 0.0121      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.42       |
+|    explained_variance   | 1.79e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 4.66e+03    |
+|    n_updates            | 65          |
+|    policy_gradient_loss | -0.00522    |
+|    std                  | 1.06        |
+|    value_loss           | 9.28e+03    |
+-----------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 315  |
+|    iterations      | 14   |
+|    time_elapsed    | 22   |
+|    total_timesteps | 7168 |
+-----------------------------
+------------------------------------------
+| time/                   |              |
+|    fps                  | 325          |
+|    iterations           | 15           |
+|    time_elapsed         | 23           |
+|    total_timesteps      | 7680         |
+| train/                  |              |
+|    approx_kl            | 0.0035647792 |
+|    clip_fraction        | 0.00352      |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -4.42        |
+|    explained_variance   | 0            |
+|    learning_rate        | 0.0003       |
+|    loss                 | 4.89e+03     |
+|    n_updates            | 70           |
+|    policy_gradient_loss | -0.00364     |
+|    std                  | 1.06         |
+|    value_loss           | 9.81e+03     |
+------------------------------------------
+[DEBUG] step=1 RAW ACTION: [2. 0. 0.]
+[DEBUG] step=2 RAW ACTION: [2. 0. 0.]
+Eval num_timesteps=8000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+------------------------------------------
+| eval/                   |              |
+|    mean_ep_length       | 4.03e+03     |
+|    mean_reward          | -2.02e+04    |
+| time/                   |              |
+|    total_timesteps      | 8000         |
+| train/                  |              |
+|    approx_kl            | 0.0060500214 |
+|    clip_fraction        | 0.0129       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -4.42        |
+|    explained_variance   | 1.19e-07     |
+|    learning_rate        | 0.0003       |
+|    loss                 | 6.34e+03     |
+|    n_updates            | 75           |
+|    policy_gradient_loss | -0.00642     |
+|    std                  | 1.06         |
+|    value_loss           | 1.23e+04     |
+------------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 313  |
+|    iterations      | 16   |
+|    time_elapsed    | 26   |
+|    total_timesteps | 8192 |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 324         |
+|    iterations           | 17          |
+|    time_elapsed         | 26          |
+|    total_timesteps      | 8704        |
+| train/                  |             |
+|    approx_kl            | 0.008130467 |
+|    clip_fraction        | 0.0383      |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.42       |
+|    explained_variance   | 1.79e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 5.88e+03    |
+|    n_updates            | 80          |
+|    policy_gradient_loss | -0.00929    |
+|    std                  | 1.06        |
+|    value_loss           | 1.36e+04    |
+-----------------------------------------
+[DEBUG] step=1 RAW ACTION: [2. 0. 0.]
+[DEBUG] step=2 RAW ACTION: [2. 0. 0.]
+Eval num_timesteps=9000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+------------------------------------------
+| eval/                   |              |
+|    mean_ep_length       | 4.03e+03     |
+|    mean_reward          | -2.02e+04    |
+| time/                   |              |
+|    total_timesteps      | 9000         |
+| train/                  |              |
+|    approx_kl            | 0.0052631036 |
+|    clip_fraction        | 0.0141       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -4.42        |
+|    explained_variance   | 0            |
+|    learning_rate        | 0.0003       |
+|    loss                 | 6.66e+03     |
+|    n_updates            | 85           |
+|    policy_gradient_loss | -0.00531     |
+|    std                  | 1.06         |
+|    value_loss           | 1.31e+04     |
+------------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 317  |
+|    iterations      | 18   |
+|    time_elapsed    | 28   |
+|    total_timesteps | 9216 |
+-----------------------------
+------------------------------------------
+| time/                   |              |
+|    fps                  | 327          |
+|    iterations           | 19           |
+|    time_elapsed         | 29           |
+|    total_timesteps      | 9728         |
+| train/                  |              |
+|    approx_kl            | 0.0062863845 |
+|    clip_fraction        | 0.0195       |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -4.41        |
+|    explained_variance   | 0            |
+|    learning_rate        | 0.0003       |
+|    loss                 | 9.18e+03     |
+|    n_updates            | 90           |
+|    policy_gradient_loss | -0.00717     |
+|    std                  | 1.05         |
+|    value_loss           | 1.88e+04     |
+------------------------------------------
+[DEBUG] step=1 RAW ACTION: [2. 0. 0.]
+[DEBUG] step=2 RAW ACTION: [2. 0. 0.]
+Eval num_timesteps=10000, episode_reward=-20155.00 +/- 0.00
+Episode length: 4031.00 +/- 0.00
+------------------------------------------
+| eval/                   |              |
+|    mean_ep_length       | 4.03e+03     |
+|    mean_reward          | -2.02e+04    |
+| time/                   |              |
+|    total_timesteps      | 10000        |
+| train/                  |              |
+|    approx_kl            | 0.0007365043 |
+|    clip_fraction        | 0            |
+|    clip_range           | 0.2          |
+|    entropy_loss         | -4.41        |
+|    explained_variance   | -1.19e-07    |
+|    learning_rate        | 0.0003       |
+|    loss                 | 1.03e+04     |
+|    n_updates            | 95           |
+|    policy_gradient_loss | -0.000483    |
+|    std                  | 1.05         |
+|    value_loss           | 2.02e+04     |
+------------------------------------------
+------------------------------
+| time/              |       |
+|    fps             | 322   |
+|    iterations      | 20    |
+|    time_elapsed    | 31    |
+|    total_timesteps | 10240 |
+------------------------------
+ 100% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10,240/10,000  [ 0:00:31 < 0:00:00 , 324 it/s ]
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+[DEBUG] step=1 RAW ACTION: [2. 0. 0.]
+[DEBUG] step=2 RAW ACTION: [2. 0. 0.]
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: -20155.00
+  Steps: 4031
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+[DEBUG] step=1 RAW ACTION: [2. 0. 0.]
+[DEBUG] step=2 RAW ACTION: [2. 0. 0.]
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: -20160.00
+  Steps: 4032
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+

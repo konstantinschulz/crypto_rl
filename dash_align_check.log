@@ -1,0 +1,167 @@
+Loading 7 days of data...
+✓ Loaded 30243 rows from 3 symbols
+
+[DASHBOARD] RL dashboard: http://localhost:8766
+/home/konstantin/dev/crypto_rl/rl_trader.py:881: FutureWarning: The default of observed=False is deprecated and will be changed to True in a future version of pandas. Pass observed=False to retain current behavior or observed=True to adopt the future default and silence this warning.
+  for symbol, group in data.groupby('symbol', sort=False):
+
+======================================================================
+                 3-WAY BACKTEST (Train / Val / Test)                  
+======================================================================
+Train:  18144 rows ( 3 symbols) 1769299140000000 → 1769661960000000
+Val:     6048 rows ( 3 symbols) 1769662020000000 → 1769782920000000
+Test:    6051 rows ( 3 symbols) 1769782980000000 → 1769903940000000
+======================================================================
+
+Train env: 18144 rows, 3 symbols
+Eval env: 6048 rows, 3 symbols
+PHASE 1: Training on train set with val monitoring...
+[TRAIN] Warning: --train-steps is smaller than one episode length (2000 < 6048). Reward curves may be sparse.
+Using cpu device
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+2026-03-30 17:41:38.237 Port 8766 is not available
+Created new PPO model (device=cpu)
+  Hyperparameters:
+    learning_rate=0.0003, batch_size=16
+    n_steps=512, n_epochs=5
+    policy_arch=[256, 128, 64]
+
+Training for 2000 timesteps...
+[DEBUG] step=1 RAW ACTION: [0.36460122 0.         1.        ]
+[DEBUG] step=2 RAW ACTION: [0.        0.3925178 0.0829816]
+-----------------------------
+| time/              |      |
+|    fps             | 1639 |
+|    iterations      | 1    |
+|    time_elapsed    | 0    |
+|    total_timesteps | 512  |
+-----------------------------
+/home/konstantin/dev/crypto_rl/.conda/lib/python3.12/site-packages/stable_baselines3/common/evaluation.py:70: UserWarning: Evaluation environment is not wrapped with a ``Monitor`` wrapper. This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. Consider wrapping environment first with ``Monitor`` wrapper.
+  warnings.warn(
+[DEBUG] step=1 RAW ACTION: [0.13869047 0.05878251 0.02384437]
+[DEBUG] step=2 RAW ACTION: [0.13869117 0.05878304 0.02384442]
+Eval num_timesteps=1000, episode_reward=-10075.00 +/- 0.00
+Episode length: 2015.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 2.02e+03    |
+|    mean_reward          | -1.01e+04   |
+| time/                   |             |
+|    total_timesteps      | 1000        |
+| train/                  |             |
+|    approx_kl            | 0.011042989 |
+|    clip_fraction        | 0.135       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.27       |
+|    explained_variance   | 8.91e-05    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 1.4e+03     |
+|    n_updates            | 5           |
+|    policy_gradient_loss | -0.0153     |
+|    std                  | 1.01        |
+|    value_loss           | 2.7e+03     |
+-----------------------------------------
+New best mean reward!
+-----------------------------
+| time/              |      |
+|    fps             | 565  |
+|    iterations      | 2    |
+|    time_elapsed    | 1    |
+|    total_timesteps | 1024 |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 532         |
+|    iterations           | 3           |
+|    time_elapsed         | 2           |
+|    total_timesteps      | 1536        |
+| train/                  |             |
+|    approx_kl            | 0.013844546 |
+|    clip_fraction        | 0.192       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.29       |
+|    explained_variance   | 5.36e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 1.08e+03    |
+|    n_updates            | 10          |
+|    policy_gradient_loss | -0.0206     |
+|    std                  | 1.01        |
+|    value_loss           | 2.4e+03     |
+-----------------------------------------
+[DEBUG] step=1 RAW ACTION: [0.47213653 0.00881093 0.01573992]
+[DEBUG] step=2 RAW ACTION: [0.47213823 0.00881093 0.01573994]
+Eval num_timesteps=2000, episode_reward=-10075.00 +/- 0.00
+Episode length: 2015.00 +/- 0.00
+-----------------------------------------
+| eval/                   |             |
+|    mean_ep_length       | 2.02e+03    |
+|    mean_reward          | -1.01e+04   |
+| time/                   |             |
+|    total_timesteps      | 2000        |
+| train/                  |             |
+|    approx_kl            | 0.016302722 |
+|    clip_fraction        | 0.227       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.31       |
+|    explained_variance   | 1.19e-07    |
+|    learning_rate        | 0.0003      |
+|    loss                 | 901         |
+|    n_updates            | 15          |
+|    policy_gradient_loss | -0.0245     |
+|    std                  | 1.02        |
+|    value_loss           | 1.73e+03    |
+-----------------------------------------
+-----------------------------
+| time/              |      |
+|    fps             | 445  |
+|    iterations      | 4    |
+|    time_elapsed    | 4    |
+|    total_timesteps | 2048 |
+-----------------------------
+ 100% ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2,048/2,000  [ 0:00:04 < 0:00:00 , 408 it/s ]
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+[DEBUG] step=1 RAW ACTION: [0.7217536 0.        0.       ]
+[DEBUG] step=2 RAW ACTION: [0.72175527 0.         0.        ]
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: -10075.00
+  Steps: 2015
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+[DEBUG] step=1 RAW ACTION: [0.72114503 0.         0.        ]
+[DEBUG] step=2 RAW ACTION: [0.72115517 0.         0.        ]
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: -10080.00
+  Steps: 2016
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+

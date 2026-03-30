@@ -130,6 +130,12 @@ class RLDashboardWriter:
                 'win_rate': [],
                 'realized_pnl': [],
                 'trades': [],
+                'dev_portfolio_value': [],
+                'test_portfolio_value': [],
+                'dev_realized_pnl': [],
+                'test_realized_pnl': [],
+                'dev_trades': [],
+                'test_trades': [],
             },
         }
         self._write()
@@ -431,8 +437,10 @@ class RLDashboardWriter:
         self.state['run']['final_summary'] = self._build_final_summary()
         step = int(self.state['run']['current_step'])
         self._append(f'{split}_reward', step, payload['avg_reward_per_step'])
-        self._append('portfolio_value', step, payload['final_portfolio_value'])
-        self._append('trades', step, float(payload['trades']))
+        # Keep split/eval points separate from training series to avoid end-of-run chart jumps.
+        self._append(f'{split}_portfolio_value', step, payload['final_portfolio_value'])
+        self._append(f'{split}_realized_pnl', step, payload['realized_pnl'])
+        self._append(f'{split}_trades', step, float(payload['trades']))
         self._write()
 
 
@@ -542,6 +550,11 @@ class RLTrader:
         eval_freq: int = 10_000,
         dashboard_state_path: Optional[str] = None,
         dashboard_mode: str = 'train',
+        learning_rate: float = 3e-4,
+        batch_size: int = 8,
+        n_steps: int = 256,
+        n_epochs: int = 3,
+        policy_arch: Optional[List[int]] = None,
     ):
         """
         Train agent with PPO
@@ -549,6 +562,11 @@ class RLTrader:
         Args:
             timesteps: Total training timesteps
             eval_freq: Evaluate every N steps
+            learning_rate: PPO learning rate
+            batch_size: PPO batch size
+            n_steps: PPO n_steps (trajectory length)
+            n_epochs: PPO n_epochs (gradient updates per step)
+            policy_arch: Policy network architecture as list of ints
         """
         if self.train_env is None:
             raise ValueError("Call create_envs() first")
@@ -558,6 +576,9 @@ class RLTrader:
                 "[TRAIN] Warning: --train-steps is smaller than one episode length "
                 f"({timesteps} < {self.train_env.n_steps}). Reward curves may be sparse."
             )
+        
+        if policy_arch is None:
+            policy_arch = [32, 16]
         
         # Create callbacks
         checkpoint_callback = CheckpointCallback(
@@ -586,22 +607,25 @@ class RLTrader:
                 'MlpPolicy',
                 self.train_env,
                 device=self.device,
-                learning_rate=3e-4,
-                n_steps=256,  # Reduced from 512 for memory (fewer transitions to store)
-                batch_size=8,  # Reduced from 16 for memory (smaller replay buffer)
-                n_epochs=3,  # Reduced from 5 for memory (fewer gradient updates per step)
+                learning_rate=learning_rate,
+                n_steps=n_steps,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_range=0.2,
                 verbose=1,
-                tensorboard_log=None,  # Disable tensorboard to save memory
+                tensorboard_log=None,
                 policy_kwargs={
-                    'net_arch': [32, 16],  # Reduced from [64, 32]: smaller network = less memory
+                    'net_arch': policy_arch,
                 },
             )
             print(f"Created new PPO model (device={self.device})")
-            print(f"  Memory-optimized: n_steps=256, batch_size=8, n_epochs=3")
-            print(f"  Reduced policy network: [32, 16] instead of [64, 64]")
+            print(f"  Hyperparameters:")
+            print(f"    learning_rate={learning_rate}, batch_size={batch_size}")
+            print(f"    n_steps={n_steps}, n_epochs={n_epochs}")
+            print(f"    policy_arch={policy_arch}")
+
 
         if dashboard_state_path:
             num_rows = int(getattr(self.train_env, 'n_steps', 0))
@@ -767,6 +791,11 @@ class RLTrader:
         split_ratio: float = 0.8,
         dashboard_state_path: Optional[str] = None,
         timesteps: int = 50_000,
+        learning_rate: float = 3e-4,
+        batch_size: int = 8,
+        n_steps: int = 256,
+        n_epochs: int = 3,
+        policy_arch: Optional[List[int]] = None,
     ):
         """
         Backtest: train on first part, evaluate on second part
@@ -774,6 +803,12 @@ class RLTrader:
         Args:
             data: Full dataset
             split_ratio: Fraction to use for training (0.8 = 80% train, 20% test)
+            timesteps: Training timesteps
+            learning_rate: PPO learning rate
+            batch_size: PPO batch size
+            n_steps: PPO n_steps
+            n_epochs: PPO n_epochs
+            policy_arch: Policy network architecture
         """
         train_parts = []
         test_parts = []
@@ -800,6 +835,11 @@ class RLTrader:
             eval_freq=max(1_000, int(timesteps) // 10),
             dashboard_state_path=dashboard_state_path,
             dashboard_mode='backtest',
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            n_steps=n_steps,
+            n_epochs=n_epochs,
+            policy_arch=policy_arch,
         )
         
         print(f"\n{'='*60}")
@@ -815,6 +855,11 @@ class RLTrader:
         val_ratio: float = 0.2,
         dashboard_state_path: Optional[str] = None,
         timesteps: int = 50_000,
+        learning_rate: float = 3e-4,
+        batch_size: int = 8,
+        n_steps: int = 256,
+        n_epochs: int = 3,
+        policy_arch: Optional[List[int]] = None,
     ):
         """
         3-way backtest: train (60%) / val (20%) / test (20%)
@@ -825,6 +870,11 @@ class RLTrader:
             val_ratio: Fraction for validation (0.2 = 20%, remainder goes to test)
             dashboard_state_path: Path to write dashboard state
             timesteps: Training timesteps
+            learning_rate: PPO learning rate
+            batch_size: PPO batch size
+            n_steps: PPO n_steps
+            n_epochs: PPO n_epochs
+            policy_arch: Policy network architecture
         """
         train_parts, val_parts, test_parts = [], [], []
         
@@ -865,6 +915,11 @@ class RLTrader:
             eval_freq=max(1000, timesteps // 10),
             dashboard_state_path=dashboard_state_path,
             dashboard_mode='backtest_3way',
+            learning_rate=learning_rate,
+            batch_size=batch_size,
+            n_steps=n_steps,
+            n_epochs=n_epochs,
+            policy_arch=policy_arch,
         )
         
         # Clean up training data to free memory
@@ -961,6 +1016,16 @@ def main() -> None:
     parser.add_argument('--dashboard', action='store_true', help='Enable live RL dashboard JSON updates')
     parser.add_argument('--dashboard-port', type=int, default=8766, help='Port for local RL dashboard HTTP server')
     parser.add_argument('--dashboard-state', type=str, default='rl_dashboard_state.json', help='JSON file for RL dashboard state')
+    
+    # Hyperparameter tuning arguments
+    parser.add_argument('--model-arch', type=str, default='[256, 128, 64]', help='Model architecture as string, e.g. "[64, 32]" or "[128, 64, 32]"')
+    parser.add_argument('--max-positions', type=int, default=3, help='Maximum number of open positions (default: 3)')
+    parser.add_argument('--initial-cash', type=float, default=100.0, help='Starting portfolio value in USD')
+    parser.add_argument('--position-duration', type=int, default=1440, help='Max position hold time in minutes (default: 1440 = 1 day)')
+    parser.add_argument('--learning-rate', type=float, default=3e-4, help='PPO learning rate (default: 3e-4)')
+    parser.add_argument('--batch-size', type=int, default=16, help='PPO batch size (default: 16)')
+    parser.add_argument('--n-steps', type=int, default=512, help='PPO n_steps (default: 512)')
+    parser.add_argument('--n-epochs', type=int, default=5, help='PPO n_epochs (default: 5)')
 
     args = parser.parse_args()
 
@@ -975,9 +1040,20 @@ def main() -> None:
     )
     print(f"✓ Loaded {len(data)} rows from {data['symbol'].nunique()} symbols\n")
  
+    # Parse model architecture string
+    try:
+        model_arch = eval(args.model_arch)
+        if not isinstance(model_arch, list):
+            raise ValueError("model_arch must be a list")
+    except:
+        print(f"Error parsing model architecture: {args.model_arch}")
+        print("Using default [32, 16]")
+        model_arch = [32, 16]
+ 
     config = TradingConfig(
-        initial_cash=100.0,
-        max_positions=3,  # Reduced from 5 for memory efficiency
+        initial_cash=args.initial_cash,
+        max_positions=args.max_positions,
+        position_duration_limit=args.position_duration,
         max_budget_per_trade=20.0,
         keep_history=False,
     )
@@ -999,6 +1075,11 @@ def main() -> None:
             split_ratio=0.8,
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             timesteps=args.train_steps,
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
+            policy_arch=model_arch,
         )
         return
  
@@ -1009,6 +1090,11 @@ def main() -> None:
             val_ratio=0.2,
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             timesteps=args.train_steps,
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
+            policy_arch=model_arch,
         )
         return
  
@@ -1019,6 +1105,11 @@ def main() -> None:
             eval_freq=max(5_000, args.train_steps // 5),
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             dashboard_mode='train',
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
+            policy_arch=model_arch,
         )
         print("\n" + "=" * 60)
         print("Quick Evaluation on Training Slice")
