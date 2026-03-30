@@ -195,16 +195,21 @@ col5.metric("Win Rate", f"{kpis['win_rate_pct']:.2f}%")
 
 st.subheader("Training Series")
 
-st.markdown("### Portfolio vs PnL")
+# Portfolio Value
+st.markdown("### Portfolio Value")
 df_port = pd.DataFrame(series.get("portfolio_value", []))
-df_pnl = pd.DataFrame(series.get("realized_pnl", []))
-if not df_port.empty and not df_pnl.empty and "step" in df_port.columns and "step" in df_pnl.columns:
+if not df_port.empty and "step" in df_port.columns:
     df_port.drop_duplicates(subset=["step"], keep="last", inplace=True)
-    df_pnl.drop_duplicates(subset=["step"], keep="last", inplace=True)
     df_port.set_index("step", inplace=True)
+    st.line_chart(df_port[["value"]])
+
+# Realized PnL
+st.markdown("### Realized PnL")
+df_pnl = pd.DataFrame(series.get("realized_pnl", []))
+if not df_pnl.empty and "step" in df_pnl.columns:
+    df_pnl.drop_duplicates(subset=["step"], keep="last", inplace=True)
     df_pnl.set_index("step", inplace=True)
-    df_combined = pd.DataFrame({"Portfolio": df_port["value"], "PnL": df_pnl["value"]}).dropna(how="all")
-    st.line_chart(df_combined)
+    st.line_chart(df_pnl[["value"]])
 
 st.markdown("### Rewards")
 df_train_r = pd.DataFrame(series.get("train_reward", []))
