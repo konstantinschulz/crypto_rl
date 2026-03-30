@@ -47,7 +47,7 @@ def start_dashboard_server(directory: str, port: int = 8766) -> None:
 class RLDashboardWriter:
     """Persist live RL training metrics to JSON for browser dashboard polling."""
 
-    def __init__(self, state_path: str, total_timesteps: int, mode: str, config: TradingConfig):
+    def __init__(self, state_path: str, total_timesteps: int, mode: str, config: TradingConfig, num_data_rows: int = 0):
         self.state_path = Path(state_path)
         self.index_path = self.state_path.parent / 'rl_dashboard_index.json'
         self.runs_dir = self.state_path.parent / 'rl_dashboard_runs'
@@ -83,6 +83,7 @@ class RLDashboardWriter:
                 'n_steps': 0,
                 'batch_size': 0,
                 'learning_rate': 0.0,
+                'num_data_rows': int(num_data_rows),
                 'loss': {
                     'train': None,
                     'dev': None,
@@ -603,11 +604,13 @@ class RLTrader:
             print(f"  Reduced policy network: [32, 16] instead of [64, 64]")
 
         if dashboard_state_path:
+            num_rows = int(getattr(self.train_env, 'n_steps', 0))
             self.dashboard_writer = RLDashboardWriter(
                 state_path=dashboard_state_path,
                 total_timesteps=timesteps,
                 mode=dashboard_mode,
                 config=self.config,
+                num_data_rows=num_rows,
             )
             dashboard_callback = RLDashboardCallback(
                 writer=self.dashboard_writer,
@@ -1032,6 +1035,7 @@ def main() -> None:
             total_timesteps=0,
             mode='eval',
             config=config,
+            num_data_rows=len(data),
         )
         trader.dashboard_writer.set_status('running')
     trader.load_model(args.model)

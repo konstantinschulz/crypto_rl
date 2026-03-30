@@ -1,21 +1,28 @@
 {
-  "ts": "2026-03-27 17:17:03 UTC",
-  "latest_run_id": "run-20260327-171522-ea5504",
-  "latest_state_file": "rl_dashboard_runs/run-20260327-171522-ea5504.json",
+  "ts": "2026-03-30 14:12:15 UTC",
+  "latest_run_id": "run-20260330-141125-c8e674",
+  "latest_state_file": "rl_dashboard_runs/run-20260330-141125-c8e674.json",
   "latest_by_mode": {
+    "backtest": {
+      "run_id": "run-20260330-141125-c8e674",
+      "state_file": "rl_dashboard_runs/run-20260330-141125-c8e674.json",
+      "status": "completed",
+      "started_at": "2026-03-30 14:11:25 UTC",
+      "finished_at": "2026-03-30 14:12:14 UTC"
+    },
+    "test": {
+      "run_id": "run-20260330-133908-49600c",
+      "state_file": "rl_dashboard_runs/run-20260330-133908-49600c.json",
+      "status": "initializing",
+      "started_at": "2026-03-30 13:39:08 UTC",
+      "finished_at": null
+    },
     "backtest_3way": {
       "run_id": "run-20260327-171522-ea5504",
       "state_file": "rl_dashboard_runs/run-20260327-171522-ea5504.json",
       "status": "completed",
       "started_at": "2026-03-27 17:15:22 UTC",
       "finished_at": "2026-03-27 17:17:01 UTC"
-    },
-    "backtest": {
-      "run_id": "run-20260327-152911-d2debb",
-      "state_file": "rl_dashboard_runs/run-20260327-152911-d2debb.json",
-      "status": "completed",
-      "started_at": "2026-03-27 15:29:11 UTC",
-      "finished_at": "2026-03-27 15:29:13 UTC"
     },
     "train": {
       "run_id": "run-20260327-104159-fea787",
@@ -26,12 +33,12 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260327-171522-ea5504",
-    "state_file": "rl_dashboard_runs/run-20260327-171522-ea5504.json",
-    "mode": "backtest_3way",
+    "run_id": "run-20260330-141125-c8e674",
+    "state_file": "rl_dashboard_runs/run-20260330-141125-c8e674.json",
+    "mode": "backtest",
     "status": "completed",
-    "started_at": "2026-03-27 17:15:22 UTC",
-    "finished_at": "2026-03-27 17:17:01 UTC"
+    "started_at": "2026-03-30 14:11:25 UTC",
+    "finished_at": "2026-03-30 14:12:14 UTC"
   },
   "runs": [
     {
@@ -237,6 +244,60 @@
       "finished_at": "2026-03-27 17:17:01 UTC",
       "elapsed_seconds": 99,
       "state_file": "rl_dashboard_runs/run-20260327-171522-ea5504.json"
+    },
+    {
+      "run_id": "run-20260330-133908-49600c",
+      "mode": "test",
+      "status": "initializing",
+      "started_at": "2026-03-30 13:39:08 UTC",
+      "finished_at": null,
+      "elapsed_seconds": 0,
+      "state_file": "rl_dashboard_runs/run-20260330-133908-49600c.json"
+    },
+    {
+      "run_id": "run-20260330-134209-6ba992",
+      "mode": "backtest",
+      "status": "completed",
+      "started_at": "2026-03-30 13:42:09 UTC",
+      "finished_at": "2026-03-30 13:42:57 UTC",
+      "elapsed_seconds": 48,
+      "state_file": "rl_dashboard_runs/run-20260330-134209-6ba992.json"
+    },
+    {
+      "run_id": "run-20260330-134556-dce93d",
+      "mode": "backtest",
+      "status": "completed",
+      "started_at": "2026-03-30 13:45:56 UTC",
+      "finished_at": "2026-03-30 13:46:45 UTC",
+      "elapsed_seconds": 49,
+      "state_file": "rl_dashboard_runs/run-20260330-134556-dce93d.json"
+    },
+    {
+      "run_id": "run-20260330-135533-3b1a62",
+      "mode": "backtest",
+      "status": "completed",
+      "started_at": "2026-03-30 13:55:33 UTC",
+      "finished_at": "2026-03-30 13:56:30 UTC",
+      "elapsed_seconds": 57,
+      "state_file": "rl_dashboard_runs/run-20260330-135533-3b1a62.json"
+    },
+    {
+      "run_id": "run-20260330-140542-515e69",
+      "mode": "backtest",
+      "status": "completed",
+      "started_at": "2026-03-30 14:05:42 UTC",
+      "finished_at": "2026-03-30 14:06:29 UTC",
+      "elapsed_seconds": 47,
+      "state_file": "rl_dashboard_runs/run-20260330-140542-515e69.json"
+    },
+    {
+      "run_id": "run-20260330-141125-c8e674",
+      "mode": "backtest",
+      "status": "completed",
+      "started_at": "2026-03-30 14:11:25 UTC",
+      "finished_at": "2026-03-30 14:12:14 UTC",
+      "elapsed_seconds": 49,
+      "state_file": "rl_dashboard_runs/run-20260330-141125-c8e674.json"
     }
   ]
 }

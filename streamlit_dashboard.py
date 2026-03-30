@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -9,16 +10,25 @@ import streamlit as st
 st.set_page_config(page_title="RL Trader Dashboard", layout="wide")
 st.title("RL Training Dashboard")
 
-# Initialize session state to track selected run
+# Initialize session state to track selected run and auto-refresh
 if "current_run_id" not in st.session_state:
     st.session_state.current_run_id = None
+if "last_index_mtime" not in st.session_state:
+    st.session_state.last_index_mtime = 0
+if "last_run_mtime" not in st.session_state:
+    st.session_state.last_run_mtime = 0
+if "auto_refresh_enabled" not in st.session_state:
+    st.session_state.auto_refresh_enabled = True
 
 
-@st.cache_data(ttl=2)
 def load_index():
+    """Load index file with file modification time tracking for auto-refresh."""
     index_file = Path("rl_dashboard_index.json")
     if index_file.exists():
         try:
+            current_mtime = index_file.stat().st_mtime
+            # Update mtime tracking
+            st.session_state.last_index_mtime = current_mtime
             with open(index_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
@@ -31,6 +41,8 @@ def load_run(state_file):
     state_path = Path(state_file)
     if state_path.exists():
         try:
+            # Update mtime tracking
+            st.session_state.last_run_mtime = state_path.stat().st_mtime
             with open(state_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
@@ -152,14 +164,12 @@ if isinstance(latest_model_run, dict):
 
 sel_run_id = st.sidebar.selectbox("Select Run", run_opts, index=default_idx)
 
-# If run selection changed, clear the index cache to get fresh data
+# Track run selection changes
 if sel_run_id != st.session_state.current_run_id:
     st.session_state.current_run_id = sel_run_id
-    load_index.clear()
 
 sel_run = next((r for r in runs if r.get("run_id") == sel_run_id), runs[0])
 state_file = sel_run.get("state_file", "rl_dashboard_state.json")
-
 data = load_run(state_file)
 
 if not data:
@@ -177,7 +187,7 @@ st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
 st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
 
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Step", f"{int(_to_float(tech.get('step', 0), 0))}")
+col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
 col2.metric("Trades", f"{int(kpis['trades'])}")
 col3.metric("Portfolio Value", f"{kpis['portfolio_value']:.2f}")
 col4.metric("Realized PnL", f"{kpis['realized_pnl']:.2f}")
@@ -239,3 +249,55 @@ if not df_vl.empty and "step" in df_vl.columns:
 
 if loss_dict:
     st.line_chart(pd.DataFrame(loss_dict).dropna(how="all"))
+
+# Auto-refresh mechanism: check for file updates and rerun if needed
+st.sidebar.divider()
+st.sidebar.subheader("💾 Auto-Refresh")
+col1, col2 = st.sidebar.columns([3, 1])
+with col1:
+    st.session_state.auto_refresh_enabled = st.checkbox(
+        "Enable auto-refresh",
+        value=st.session_state.auto_refresh_enabled,
+        help="Automatically update dashboard every 2 seconds when enabled"
+    )
+with col2:
+    if st.button("↻", help="Refresh now", use_container_width=True):
+        st.rerun()
+
+if st.session_state.auto_refresh_enabled:
+    # Use an empty placeholder so we can show updates in the sidebar
+    status_msg = st.sidebar.empty()
+    status_msg.caption("🔄 Monitoring for changes...")
+    
+    # Enter polling loop at the very end of the file.
+    # At this point, Streamlit has already sent the UI to the browser.
+    # We sleep for exactly 2 seconds then check disk.
+    # The user can still interact - any interaction drops this thread and restarts.
+    index_file = Path("rl_dashboard_index.json")
+    run_file = Path(state_file)
+    
+    while True:
+        time.sleep(2)  # Wait 2 seconds before checking
+        
+        changed = False
+        
+        # Check if index file was modified
+        if index_file.exists():
+            try:
+                if index_file.stat().st_mtime > st.session_state.last_index_mtime:
+                    changed = True
+            except Exception:
+                pass
+                
+        # Check if run data file was modified
+        if not changed and run_file.exists():
+            try:
+                if run_file.stat().st_mtime > st.session_state.last_run_mtime:
+                    changed = True
+            except Exception:
+                pass
+                
+        # Trigger rerun if files changed!
+        if changed:
+            status_msg.success("🔄 Updating data...", icon="📊")
+            st.rerun()

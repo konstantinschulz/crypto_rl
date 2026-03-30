@@ -1,0 +1,72 @@
+{
+  "ts": "2026-03-30 13:39:08 UTC",
+  "run": {
+    "run_id": "run-20260330-133908-49600c",
+    "mode": "test",
+    "status": "initializing",
+    "started_at": "2026-03-30 13:39:08 UTC",
+    "started_ts_epoch": 1774877948,
+    "finished_at": null,
+    "finished_ts_epoch": null,
+    "elapsed_seconds": 0,
+    "state_file": "rl_dashboard_runs/run-20260330-133908-49600c.json",
+    "total_timesteps": 100,
+    "current_step": 0,
+    "progress_pct": 0.0
+  },
+  "technical": {
+    "step": 0,
+    "epoch": 0,
+    "n_updates": 0,
+    "n_steps": 0,
+    "batch_size": 0,
+    "learning_rate": 0.0,
+    "num_data_rows": 5000,
+    "loss": {
+      "train": null,
+      "dev": null,
+      "test": null,
+      "policy": null,
+      "value": null,
+      "entropy": null,
+      "approx_kl": null,
+      "clip_fraction": null
+    }
+  },
+  "rewards": {
+    "train": null,
+    "dev": null,
+    "test": null
+  },
+  "finance": {
+    "initial_cash": 100.0,
+    "portfolio_value": 100.0,
+    "total_return_pct": 0.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "num_positions": 0,
+    "trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate_pct": 0.0,
+    "stop_loss_exits": 0,
+    "fees_paid": 0.0,
+    "drawdown_pct": 0.0
+  },
+  "splits": {
+    "dev": null,
+    "test": null
+  },
+  "series": {
+    "train_loss": [],
+    "policy_loss": [],
+    "value_loss": [],
+    "train_reward": [],
+    "dev_reward": [],
+    "test_reward": [],
+    "portfolio_value": [],
+    "win_rate": [],
+    "realized_pnl": [],
+    "trades": []
+  }
+}
