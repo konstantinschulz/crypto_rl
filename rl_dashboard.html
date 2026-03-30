@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RL Trader Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a2b;
+      --panel-2: #18233a;
+      --border: #22304a;
+      --text: #e9eef8;
+      --muted: #8ea1c5;
+      --green: #27d69a;
+      --red: #f25f70;
+      --blue: #54a8ff;
+      --yellow: #f6c453;
+      --violet: #b08dff;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #090f1d, #0b1020);
+      color: var(--text);
+      font-family: Inter, Segoe UI, system-ui, sans-serif;
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+
+    .title { font-size: 18px; font-weight: 700; }
+    .meta { color: var(--muted); font-size: 12px; }
+    .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel-2);
+    }
+
+    .control {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .kpi {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .lbl { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .val { font-size: 21px; font-weight: 700; margin-top: 6px; }
+    .sub { margin-top: 6px; font-size: 11px; color: var(--muted); }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 10px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+
+    .panel h3 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: #d7e3fa;
+      font-weight: 600;
+    }
+
+    .chart-box { height: 210px; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .metric {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+    }
+
+    .metric .m-lbl { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .metric .m-val { margin-top: 4px; font-size: 14px; font-weight: 600; }
+
+    .footer {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+      padding-top: 2px;
+    }
+
+    .green { color: var(--green); }
+    .red { color: var(--red); }
+    .blue { color: var(--blue); }
+    .yellow { color: var(--yellow); }
+
+    @media (max-width: 1080px) {
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <div class="title">RL Training Dashboard</div>
+        <div class="meta" id="updatedAt">Waiting for `rl_dashboard_state.json`...</div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap: wrap; justify-content:flex-end;">
+        <label style="display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12px;">
+          run view
+          <select id="runView" class="control">
+            <option value="latest_model">Latest model run (all modes)</option>
+            <option value="latest_any">Latest run (any)</option>
+            <option value="mode_train">Latest train</option>
+            <option value="mode_backtest">Latest backtest</option>
+            <option value="mode_backtest_3way">Latest backtest_3way</option>
+            <option value="mode_eval">Latest eval</option>
+          </select>
+        </label>
+        <span class="pill" id="runId">run: -</span>
+        <span class="pill" id="runMode">mode: -</span>
+        <span class="pill" id="runStatus">status: -</span>
+        <span class="pill" id="runProgress">progress: -</span>
+        <span class="pill" id="runElapsed">elapsed: -</span>
+      </div>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi">
+        <div class="lbl">Step / Epoch</div>
+        <div class="val blue" id="kpiStep">-</div>
+        <div class="sub" id="kpiUpdates">updates: -</div>
+      </div>
+      <div class="kpi">
+        <div class="lbl">Train / Dev / Test Loss</div>
+        <div class="val" id="kpiLoss">-</div>
+        <div class="sub">dev/test are proxy loss = -avg reward/step</div>
+      </div>
+      <div class="kpi">
+        <div class="lbl">Rewards</div>
+        <div class="val" id="kpiReward">-</div>
+        <div class="sub">train/dev/test avg reward</div>
+      </div>
+      <div class="kpi">
+        <div class="lbl">Portfolio Value</div>
+        <div class="val" id="kpiPortfolio">-</div>
+        <div class="sub" id="kpiReturn">return: -</div>
+      </div>
+      <div class="kpi">
+        <div class="lbl">Trades / Win Rate</div>
+        <div class="val" id="kpiTrades">-</div>
+        <div class="sub" id="kpiPnl">realized PnL: -</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Loss Curves</h3>
+        <div class="chart-box"><canvas id="lossChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Technical Snapshot</h3>
+        <div class="metrics" id="technicalMetrics"></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Reward Scores</h3>
+        <div class="chart-box"><canvas id="rewardChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Financial Metrics</h3>
+        <div class="metrics" id="financeMetrics"></div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="panel">
+        <h3>Portfolio + Realized PnL</h3>
+        <div class="chart-box"><canvas id="financeChart"></canvas></div>
+      </div>
+      <div class="panel">
+        <h3>Dev/Test Split Results</h3>
+        <div class="metrics" id="splitMetrics"></div>
+      </div>
+    </div>
+
+    <div class="footer" id="pollInfo">Auto-refresh every 2 seconds</div>
+  </div>
+
+  <script>
+    function fmtNum(v, d = 4) {
+      if (v === null || v === undefined || Number.isNaN(v)) return '-';
+      return Number(v).toFixed(d);
+    }
+
+    function fmtMoney(v) {
+      if (v === null || v === undefined || Number.isNaN(v)) return '-';
+      const n = Number(v);
+      return (n >= 0 ? '+' : '') + n.toFixed(2) + ' USDT';
+    }
+
+    function fmtPct(v, d = 2) {
+      if (v === null || v === undefined || Number.isNaN(v)) return '-';
+      const n = Number(v);
+      return (n >= 0 ? '+' : '') + n.toFixed(d) + '%';
+    }
+
+    function fmtDuration(totalSeconds) {
+      if (totalSeconds === null || totalSeconds === undefined || Number.isNaN(totalSeconds)) return '-';
+      const seconds = Math.max(0, Math.floor(Number(totalSeconds)));
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+      return `${m}m ${String(s).padStart(2, '0')}s`;
+    }
+
+    function utcTextToEpochSeconds(tsText) {
+      if (!tsText || typeof tsText !== 'string') return null;
+      const parsed = Date.parse(tsText.replace(' UTC', 'Z'));
+      if (Number.isNaN(parsed)) return null;
+      return Math.floor(parsed / 1000);
+    }
+
+    function setMetricGrid(id, entries) {
+      const root = document.getElementById(id);
+      root.innerHTML = '';
+      for (const [label, value] of entries) {
+        const item = document.createElement('div');
+        item.className = 'metric';
+        item.innerHTML = `<div class="m-lbl">${label}</div><div class="m-val">${value}</div>`;
+        root.appendChild(item);
+      }
+    }
+
+    function points(series) {
+      return Array.isArray(series) ? series : [];
+    }
+
+    function asLineData(series) {
+      return points(series).map((p) => ({ x: p.step, y: p.value }));
+    }
+
+    function latestSeriesValue(series) {
+      const arr = points(series);
+      if (!arr.length) return null;
+      for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const v = arr[i] && arr[i].value;
+        if (v !== null && v !== undefined && !Number.isNaN(Number(v))) return Number(v);
+      }
+      return null;
+    }
+
+    function summarizeRun(finance, splits, series) {
+      const dev = splits.dev || null;
+      const test = splits.test || null;
+      const splitRows = [dev, test].filter((x) => x && Number(x.steps || 0) > 0);
+
+      const fallbackPortfolio = latestSeriesValue(series.portfolio_value);
+      const fallbackRealized = latestSeriesValue(series.realized_pnl);
+
+      const getNonZero = (...vals) => {
+        for (const v of vals) {
+          if (v !== undefined && v !== null && Number(v) !== 0) return Number(v);
+        }
+        return 0;
+      };
+
+      if (!splitRows.length) {
+        return {
+          trades: Number(finance.trades || 0),
+          winRatePct: Number(finance.win_rate_pct || 0),
+          realizedPnl: getNonZero(finance.realized_pnl, fallbackRealized),
+          unrealizedPnl: Number(finance.unrealized_pnl || 0),
+          portfolioValue: getNonZero(finance.portfolio_value, fallbackPortfolio),
+          totalReturnPct: Number(finance.total_return_pct || 0),
+          source: 'train/live snapshot',
+        };
+      }
+
+      const preferred = test && Number(test.steps || 0) > 0 ? test : dev;
+      const totalTrades = splitRows.reduce((acc, row) => acc + Number(row.trades || 0), 0);
+      const weightedWins = splitRows.reduce(
+        (acc, row) => acc + (Number(row.trades || 0) * Number(row.win_rate_pct || 0)),
+        0,
+      );
+
+      return {
+        trades: getNonZero(totalTrades, finance.trades),
+        winRatePct: getNonZero(totalTrades > 0 ? (weightedWins / totalTrades) : 0, preferred.win_rate_pct, finance.win_rate_pct),
+        realizedPnl: getNonZero(splitRows.reduce((acc, row) => acc + Number(row.realized_pnl || 0), 0), finance.realized_pnl, fallbackRealized),
+        unrealizedPnl: getNonZero(preferred.unrealized_pnl, finance.unrealized_pnl),
+        portfolioValue: getNonZero(preferred.final_portfolio_value, fallbackPortfolio, finance.portfolio_value),
+        totalReturnPct: getNonZero(preferred.total_return_pct, finance.total_return_pct),
+        source: splitRows.length > 1 ? 'dev+test aggregate' : 'test/dev final',
+      };
+    }
+
+    function mergeRunSummary(run, computedSummary) {
+      const stored = (run && typeof run.final_summary === 'object' && run.final_summary) ? run.final_summary : null;
+
+      const pick = (k, computedK) => {
+        const s = stored ? stored[k] : null;
+        const c = computedSummary[computedK || k];
+        if (s !== undefined && s !== null && Number(s) !== 0) return Number(s);
+        if (c !== undefined && c !== null && Number(c) !== 0) return Number(c);
+        return 0;
+      };
+
+      return {
+        trades: pick('trades'),
+        winRatePct: pick('win_rate_pct', 'winRatePct'),
+        realizedPnl: pick('realized_pnl', 'realizedPnl'),
+        unrealizedPnl: pick('unrealized_pnl', 'unrealizedPnl'),
+        portfolioValue: pick('portfolio_value', 'portfolioValue'),
+        totalReturnPct: pick('total_return_pct', 'totalReturnPct'),
+        winningTrades: pick('winning_trades', 'winningTrades'),
+        losingTrades: pick('losing_trades', 'losingTrades'),
+        source: stored && stored.source ? String(stored.source) : String(computedSummary.source || 'summary'),
+      };
+    }
+
+    const commonOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      parsing: false,
+      plugins: {
+        legend: { labels: { color: '#8ea1c5' } },
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          grid: { color: 'rgba(34, 48, 74, 0.5)' },
+          ticks: { color: '#8ea1c5' },
+        },
+        y: {
+          grid: { color: 'rgba(34, 48, 74, 0.5)' },
+          ticks: { color: '#8ea1c5' },
+        },
+      },
+    };
+
+    const lossChart = new Chart(document.getElementById('lossChart').getContext('2d'), {
+      type: 'line',
+      data: {
+        datasets: [
+          { label: 'Train Loss', data: [], borderColor: '#f25f70', borderWidth: 2, pointRadius: 0 },
+          { label: 'Policy Loss', data: [], borderColor: '#f6c453', borderWidth: 1.6, pointRadius: 0 },
+          { label: 'Value Loss', data: [], borderColor: '#54a8ff', borderWidth: 1.6, pointRadius: 0 },
+        ],
+      },
+      options: commonOptions,
+    });
+
+    const rewardChart = new Chart(document.getElementById('rewardChart').getContext('2d'), {
+      type: 'line',
+      data: {
+        datasets: [
+          { label: 'Train Reward', data: [], borderColor: '#27d69a', borderWidth: 2, pointRadius: 2 },
+          { label: 'Dev Reward', data: [], borderColor: '#b08dff', borderWidth: 1.8, pointRadius: 2 },
+          { label: 'Test Reward', data: [], borderColor: '#54a8ff', borderWidth: 1.8, pointRadius: 2 },
+        ],
+      },
+      options: commonOptions,
+    });
+
+    const financeChart = new Chart(document.getElementById('financeChart').getContext('2d'), {
+      type: 'line',
+      data: {
+        datasets: [
+          { label: 'Portfolio Value', data: [], borderColor: '#27d69a', borderWidth: 2, pointRadius: 0, yAxisID: 'y' },
+          { label: 'Realized PnL', data: [], borderColor: '#f6c453', borderWidth: 1.8, pointRadius: 0, yAxisID: 'y1' },
+        ],
+      },
+      options: {
+        ...commonOptions,
+        scales: {
+          x: commonOptions.scales.x,
+          y: { ...commonOptions.scales.y, position: 'left' },
+          y1: {
+            ...commonOptions.scales.y,
+            position: 'right',
+            grid: { drawOnChartArea: false },
+          },
+        },
+      },
+    });
+
+    const MODEL_MODES = new Set(['train', 'backtest', 'backtest_3way', 'eval']);
+    let activeRunId = null;
+    let activeStateFile = 'rl_dashboard_state.json';
+    const runViewEl = document.getElementById('runView');
+    const storedRunView = localStorage.getItem('rl_dashboard_run_view');
+    if (storedRunView) {
+      runViewEl.value = storedRunView;
+    }
+
+    function latestFromRuns(runs, predicate) {
+      if (!Array.isArray(runs)) return null;
+      for (let i = runs.length - 1; i >= 0; i -= 1) {
+        const row = runs[i] || {};
+        if (predicate(row)) return row;
+      }
+      return null;
+    }
+
+    function resolveBySelection(indexData, selection) {
+      const latestByMode = indexData.latest_by_mode || {};
+      const runs = Array.isArray(indexData.runs) ? indexData.runs : [];
+
+      if (selection === 'latest_any') {
+        return {
+          stateFile: indexData.latest_state_file || null,
+          runId: indexData.latest_run_id || null,
+          source: 'latest any run',
+        };
+      }
+
+      if (selection === 'latest_model') {
+        const model = indexData.latest_model_run
+          || latestFromRuns(runs, (r) => MODEL_MODES.has(String(r.mode || '')));
+        return {
+          stateFile: (model && model.state_file) || indexData.latest_state_file || null,
+          runId: (model && model.run_id) || indexData.latest_run_id || null,
+          source: 'latest model run',
+        };
+      }
+
+      if (selection.startsWith('mode_')) {
+        const mode = selection.replace('mode_', '');
+        const modeEntry = latestByMode[mode]
+          || latestFromRuns(runs, (r) => String(r.mode || '') === mode);
+        return {
+          stateFile: (modeEntry && modeEntry.state_file) || indexData.latest_state_file || null,
+          runId: (modeEntry && modeEntry.run_id) || indexData.latest_run_id || null,
+          source: `latest ${mode}`,
+        };
+      }
+
+      return {
+        stateFile: indexData.latest_state_file || null,
+        runId: indexData.latest_run_id || null,
+        source: 'latest run',
+      };
+    }
+
+    function render(data) {
+      const run = data.run || {};
+      const tech = data.technical || {};
+      const loss = (tech.loss || {});
+      const rewards = data.rewards || {};
+      const finance = data.finance || {};
+      const splits = data.splits || {};
+      const series = data.series || {};
+      const dev = splits.dev || {};
+      const test = splits.test || {};
+      const computedSummary = summarizeRun(finance, splits, series);
+      const runSummary = mergeRunSummary(run, computedSummary);
+
+      const rewardTrain = rewards.train;
+      const rewardDev = rewards.dev ?? dev.avg_reward_per_step;
+      const rewardTest = rewards.test ?? test.avg_reward_per_step;
+      const kpiTrades = runSummary.trades;
+      const kpiWinRate = runSummary.winRatePct;
+      const kpiRealized = runSummary.realizedPnl;
+
+      document.getElementById('updatedAt').textContent = `Updated: ${data.ts || '-'}`;
+      document.getElementById('runId').textContent = `run: ${run.run_id || '-'}`;
+      document.getElementById('runMode').textContent = `mode: ${run.mode || '-'}`;
+      document.getElementById('runStatus').textContent = `status: ${run.status || '-'}`;
+      document.getElementById('runProgress').textContent = `progress: ${fmtPct(run.progress_pct, 1)}`;
+
+      let elapsedSeconds = run.elapsed_seconds;
+      if ((elapsedSeconds === null || elapsedSeconds === undefined) && run.started_ts_epoch) {
+        const nowEpoch = Math.floor(Date.now() / 1000);
+        const endEpoch = run.finished_ts_epoch || nowEpoch;
+        elapsedSeconds = Math.max(0, endEpoch - run.started_ts_epoch);
+      }
+      if (elapsedSeconds === null || elapsedSeconds === undefined) {
+        const startedEpoch = utcTextToEpochSeconds(run.started_at);
+        const finishedEpoch = utcTextToEpochSeconds(run.finished_at);
+        if (startedEpoch !== null) {
+          const endEpoch = finishedEpoch !== null ? finishedEpoch : Math.floor(Date.now() / 1000);
+          elapsedSeconds = Math.max(0, endEpoch - startedEpoch);
+        }
+      }
+      document.getElementById('runElapsed').textContent = `elapsed: ${fmtDuration(elapsedSeconds)}`;
+
+      document.getElementById('kpiStep').textContent = `${tech.step || 0} / ${tech.epoch || 0}`;
+      document.getElementById('kpiUpdates').textContent = `updates: ${tech.n_updates || 0} | n_steps=${tech.n_steps || 0}`;
+      document.getElementById('kpiLoss').textContent = `T ${fmtNum(loss.train, 4)} | D ${fmtNum(loss.dev, 4)} | S ${fmtNum(loss.test, 4)}`;
+      document.getElementById('kpiReward').textContent = `T ${fmtNum(rewardTrain, 4)} | D ${fmtNum(rewardDev, 4)} | S ${fmtNum(rewardTest, 4)}`;
+      document.getElementById('kpiPortfolio').textContent = fmtMoney(runSummary.portfolioValue);
+      document.getElementById('kpiReturn').textContent =
+        `return: ${fmtPct(runSummary.totalReturnPct, 2)} | DD ${fmtPct(finance.drawdown_pct, 2)} | ${runSummary.source}`;
+      document.getElementById('kpiTrades').textContent = `${kpiTrades || 0} | ${fmtPct(kpiWinRate, 1)} WR`;
+      document.getElementById('kpiPnl').textContent = `realized: ${fmtMoney(kpiRealized)}`;
+
+      setMetricGrid('technicalMetrics', [
+        ['Learning Rate', fmtNum(tech.learning_rate, 6)],
+        ['Batch Size', String(tech.batch_size ?? '-')],
+        ['Approx KL', fmtNum(loss.approx_kl, 6)],
+        ['Clip Fraction', fmtNum(loss.clip_fraction, 4)],
+        ['Entropy Loss', fmtNum(loss.entropy, 4)],
+        ['Last Train Loss', fmtNum(loss.train, 4)],
+      ]);
+
+      setMetricGrid('financeMetrics', [
+        ['Trades', String(kpiTrades ?? 0)],
+        ['Winning Trades', String(runSummary.winningTrades ?? finance.winning_trades ?? 0)],
+        ['Losing Trades', String(runSummary.losingTrades ?? finance.losing_trades ?? 0)],
+        ['Win Rate', fmtPct(kpiWinRate, 2)],
+        ['Realized PnL', fmtMoney(kpiRealized)],
+        ['Unrealized PnL', fmtMoney(runSummary.unrealizedPnl)],
+        ['Fees Paid', fmtMoney(finance.fees_paid)],
+        ['Stop-loss Exits', String(finance.stop_loss_exits ?? 0)],
+        ['Source', runSummary.source],
+      ]);
+
+      setMetricGrid('splitMetrics', [
+        ['Dev Steps', String(dev.steps ?? '-')],
+        ['Dev Avg Reward', fmtNum(dev.avg_reward_per_step, 4)],
+        ['Dev Proxy Loss', fmtNum(dev.proxy_loss, 4)],
+        ['Dev Trades', String(dev.trades ?? '-')],
+        ['Dev Win Rate', fmtPct(dev.win_rate_pct, 2)],
+        ['Dev Return', fmtPct(dev.total_return_pct, 2)],
+        ['Test Steps', String(test.steps ?? '-')],
+        ['Test Avg Reward', fmtNum(test.avg_reward_per_step, 4)],
+        ['Test Proxy Loss', fmtNum(test.proxy_loss, 4)],
+        ['Test Trades', String(test.trades ?? '-')],
+        ['Test Win Rate', fmtPct(test.win_rate_pct, 2)],
+        ['Test Return', fmtPct(test.total_return_pct, 2)],
+      ]);
+
+      lossChart.data.datasets[0].data = asLineData(series.train_loss);
+      lossChart.data.datasets[1].data = asLineData(series.policy_loss);
+      lossChart.data.datasets[2].data = asLineData(series.value_loss);
+      lossChart.update();
+
+      rewardChart.data.datasets[0].data = asLineData(series.train_reward);
+      rewardChart.data.datasets[1].data = asLineData(series.dev_reward).length
+        ? asLineData(series.dev_reward)
+        : ((dev.avg_reward_per_step !== undefined && dev.avg_reward_per_step !== null)
+          ? [{ x: Number(tech.step || 0), y: Number(dev.avg_reward_per_step) }]
+          : []);
+      rewardChart.data.datasets[2].data = asLineData(series.test_reward).length
+        ? asLineData(series.test_reward)
+        : ((test.avg_reward_per_step !== undefined && test.avg_reward_per_step !== null)
+          ? [{ x: Number(tech.step || 0), y: Number(test.avg_reward_per_step) }]
+          : []);
+      rewardChart.update();
+
+      financeChart.data.datasets[0].data = asLineData(series.portfolio_value);
+      financeChart.data.datasets[1].data = asLineData(series.realized_pnl);
+      financeChart.update();
+
+      if (run.started_at) {
+        document.getElementById('pollInfo').textContent =
+          `Auto-refresh every 2 seconds | started: ${run.started_at} | elapsed: ${fmtDuration(elapsedSeconds)}`;
+      }
+    }
+
+    async function resolveLatestStateFile() {
+      const selection = runViewEl.value || 'latest_model';
+      try {
+        const indexResponse = await fetch('rl_dashboard_index.json?_=' + Date.now());
+        if (!indexResponse.ok) {
+          return {
+            stateFile: activeStateFile,
+            runId: activeRunId,
+            source: 'fallback state file',
+          };
+        }
+        const indexData = await indexResponse.json();
+        const picked = resolveBySelection(indexData, selection);
+        const latestFile = picked.stateFile || activeStateFile;
+        const latestRunId = picked.runId || null;
+
+        if (latestRunId && activeRunId && latestRunId !== activeRunId) {
+          document.getElementById('updatedAt').textContent = `Detected new run: ${latestRunId}`;
+        }
+
+        activeRunId = latestRunId;
+        activeStateFile = latestFile;
+        return {
+          stateFile: latestFile,
+          runId: latestRunId,
+          source: picked.source,
+        };
+      } catch (err) {
+        return {
+          stateFile: activeStateFile,
+          runId: activeRunId,
+          source: 'fallback state file',
+        };
+      }
+    }
+
+    async function loadAndRender() {
+      try {
+        const resolved = await resolveLatestStateFile();
+        const stateFile = resolved.stateFile || 'rl_dashboard_state.json';
+        const response = await fetch(stateFile + '?_=' + Date.now());
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} for ${stateFile}`);
+        }
+        let data;
+        try {
+          data = await response.json();
+        } catch (parseErr) {
+          // Legacy runs may contain non-JSON values like Infinity; fallback to stable latest file.
+          const fallbackFile = 'rl_dashboard_state.json';
+          if (stateFile !== fallbackFile) {
+            const fallbackResp = await fetch(fallbackFile + '?_=' + Date.now());
+            if (fallbackResp.ok) {
+              data = await fallbackResp.json();
+            } else {
+              throw parseErr;
+            }
+          } else {
+            throw parseErr;
+          }
+        }
+        if (data.run && data.run.run_id) {
+          activeRunId = data.run.run_id;
+        }
+        render(data);
+        document.getElementById('pollInfo').textContent =
+          `Auto-refresh every 2 seconds | source: ${resolved.source} | file: ${stateFile}`;
+      } catch (err) {
+        document.getElementById('updatedAt').textContent =
+          `Waiting for dashboard updates (${String(err.message || err)})`;
+        document.getElementById('pollInfo').textContent =
+          'If this page was opened as file://, use http://localhost:8766/rl_dashboard.html instead.';
+      }
+    }
+
+    runViewEl.addEventListener('change', () => {
+      localStorage.setItem('rl_dashboard_run_view', runViewEl.value);
+      loadAndRender();
+    });
+
+    loadAndRender();
+    setInterval(loadAndRender, 2000);
+  </script>
+</body>
+</html>
+
