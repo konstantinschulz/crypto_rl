@@ -31,6 +31,12 @@ python rl_trader.py --days 14 --mode backtest
 # 3-Way backtest (train 60%, validate 20%, test 20%)
 python rl_trader.py --days 14 --mode backtest_3way --train-steps 50000
 
+# Faster 3-way run (fewer validation passes during training)
+python rl_trader.py --days 14 --mode backtest_3way --train-steps 50000 --eval-freq 25000
+
+# Force GPU (if CUDA is available)
+python rl_trader.py --days 14 --mode backtest_3way --dashboard --device cuda
+
 # Evaluate existing model
 python rl_trader.py --mode eval --model models/final_model.zip --days 3
 ```
@@ -75,6 +81,12 @@ python rl_trader.py --mode eval --model models/final_model.zip --days 3
 - **Run Selection**: Switch between runs via dropdown
 - **Rich Metrics**: Portfolio value, PnL, rewards, losses, win rate
 - **Zero Reload**: No page refresh needed once opened
+
+### Compute Efficiency (new defaults)
+- **GPU Auto-Select**: `--device auto` is now the default (`cuda` if available, else `cpu`)
+- **Cheaper 3-Way Validation**: `backtest_3way` now validates less frequently during training by default
+- **Lower Dashboard I/O Cost**: run index writes are throttled while still auto-detecting new runs
+- **Lower Callback Overhead**: less frequent forced garbage collection during PPO training
 
 ### Memory Optimized
 - **70-80% RAM Reduction** from original implementation
@@ -141,6 +153,23 @@ python rl_trader.py \
   --max-symbols 5 \
   --train-steps 50000 \
   --mode backtest_3way
+```
+
+### Speed-Oriented Config
+```bash
+# Keep dashboard enabled, but reduce validation overhead during training
+python rl_trader.py \
+  --days 14 \
+  --mode backtest_3way \
+  --dashboard \
+  --eval-freq 25000
+
+# Prefer GPU explicitly (if available)
+python rl_trader.py \
+  --days 14 \
+  --mode backtest_3way \
+  --dashboard \
+  --device cuda
 ```
 
 ## 🐛 Troubleshooting

@@ -35,6 +35,7 @@ class TradingConfig:
     max_drawdown_pct: float = 0.20  # Max allowed drawdown from peak
     keep_history: bool = False  # NEVER keep history during training
     max_history_rows: int = 100  # Minimal history if enabled
+    debug_actions: bool = False
 
 
 class CryptoTradingEnv(Env):
@@ -158,7 +159,7 @@ class CryptoTradingEnv(Env):
         if self.current_step >= self.n_steps:
             return self._get_observation(), step_reward, True, False, {}
 
-        if self.current_step < 3:
+        if self.config.debug_actions and self.current_step < 3:
             print(f"[DEBUG] step={self.current_step} RAW ACTION: {action}")
         
         prices = self.price_matrix[self.current_step]

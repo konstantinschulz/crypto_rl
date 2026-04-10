@@ -22,6 +22,8 @@ if "auto_refresh_enabled" not in st.session_state:
     st.session_state.auto_refresh_enabled = True
 if "finance_view" not in st.session_state:
     st.session_state.finance_view = "Both"
+if "selected_run_id" not in st.session_state:
+    st.session_state.selected_run_id = None
 
 
 def load_index():
@@ -72,6 +74,54 @@ def _run_epoch_from_id(run_id: str) -> int:
         return int(dt.timestamp())
     except ValueError:
         return 0
+
+
+def _parse_dashboard_ts(ts_value):
+    if not ts_value or not isinstance(ts_value, str):
+        return None
+    try:
+        return datetime.strptime(ts_value, "%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return None
+
+
+def _format_elapsed(seconds):
+    if seconds is None:
+        return "-"
+    total = max(0, int(_to_float(seconds, 0)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes > 0:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _is_running_status(status):
+    return str(status or "").lower() in {"initializing", "running"}
+
+
+def _elapsed_seconds_for_run(run_meta, now_dt=None):
+    if not isinstance(run_meta, dict):
+        return None
+
+    now_dt = now_dt or datetime.utcnow()
+    status = run_meta.get("status")
+
+    started = _parse_dashboard_ts(run_meta.get("started_at"))
+    finished = _parse_dashboard_ts(run_meta.get("finished_at"))
+
+    if _is_running_status(status) and started is not None:
+        return max(0, int((now_dt - started).total_seconds()))
+
+    if started is not None and finished is not None:
+        return max(0, int((finished - started).total_seconds()))
+
+    elapsed = run_meta.get("elapsed_seconds")
+    if elapsed is None:
+        return None
+    return max(0, int(_to_float(elapsed, 0)))
 
 
 def _latest_series_value(series_map, key, default=0.0):
@@ -174,6 +224,7 @@ if not runs:
     st.stop()
 
 runs = sorted(runs, key=lambda r: (_run_epoch_from_id(r.get("run_id", "")), str(r.get("run_id", ""))), reverse=True)
+runs_by_id = {r.get("run_id", "unknown"): r for r in runs}
 
 run_opts = [r.get("run_id", "unknown") for r in runs]
 default_idx = 0
@@ -185,7 +236,27 @@ if isinstance(latest_model_run, dict):
             default_idx = i
             break
 
-sel_run_id = st.sidebar.selectbox("Select Run", run_opts, index=default_idx)
+if st.session_state.selected_run_id in run_opts:
+    selected_idx = run_opts.index(st.session_state.selected_run_id)
+else:
+    selected_idx = default_idx
+    st.session_state.selected_run_id = run_opts[selected_idx]
+
+def _run_label(run_id):
+    run_meta = runs_by_id.get(run_id, {})
+    mode = run_meta.get("mode", "-")
+    status = run_meta.get("status", "-")
+    elapsed_label = _format_elapsed(_elapsed_seconds_for_run(run_meta))
+    return f"{run_id} | {mode} | {status} | {elapsed_label}"
+
+
+sel_run_id = st.sidebar.selectbox(
+    "Select Run",
+    run_opts,
+    index=selected_idx,
+    format_func=_run_label,
+    key="selected_run_id",
+)
 st.session_state.finance_view = st.sidebar.selectbox(
     "Finance View",
     ["Both", "Train", "Eval"],
@@ -214,6 +285,7 @@ kpis = _resolve_dashboard_kpis(data)
 st.sidebar.markdown(f"**Mode:** {run.get('mode', '-')}")
 st.sidebar.markdown(f"**Status:** {run.get('status', '-')}")
 st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
+st.sidebar.markdown(f"**Elapsed:** {_format_elapsed(_elapsed_seconds_for_run(run))}")
 st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
 
 col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -362,6 +434,63 @@ if loss_dict:
     l_df = pd.DataFrame(loss_dict).dropna(how="all")
     l_df = l_df.interpolate(method="index").ffill().bfill()
     st.line_chart(l_df)
+
+st.markdown("### Memory Usage (MB)")
+memory_series = {}
+df_ram = pd.DataFrame(series.get("ram_mb", []))
+df_vram_alloc = pd.DataFrame(series.get("vram_allocated_mb", []))
+df_vram_reserved = pd.DataFrame(series.get("vram_reserved_mb", []))
+df_vram_process = pd.DataFrame(series.get("vram_process_mb", []))
+df_vram_gpu_used = pd.DataFrame(series.get("vram_gpu_used_mb", []))
+
+if not df_ram.empty and "step" in df_ram.columns:
+    df_ram.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_ram.set_index("step", inplace=True)
+    memory_series["RAM"] = df_ram["value"]
+
+if not df_vram_alloc.empty and "step" in df_vram_alloc.columns:
+    df_vram_alloc.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_vram_alloc.set_index("step", inplace=True)
+    memory_series["VRAM Allocated"] = df_vram_alloc["value"]
+
+if not df_vram_reserved.empty and "step" in df_vram_reserved.columns:
+    df_vram_reserved.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_vram_reserved.set_index("step", inplace=True)
+    memory_series["VRAM Reserved"] = df_vram_reserved["value"]
+
+if not df_vram_process.empty and "step" in df_vram_process.columns:
+    df_vram_process.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_vram_process.set_index("step", inplace=True)
+    memory_series["VRAM Process (nvidia-smi)"] = df_vram_process["value"]
+
+if not df_vram_gpu_used.empty and "step" in df_vram_gpu_used.columns:
+    df_vram_gpu_used.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_vram_gpu_used.set_index("step", inplace=True)
+    memory_series["VRAM GPU Used (nvidia-smi)"] = df_vram_gpu_used["value"]
+
+if memory_series:
+    memory_df = pd.DataFrame(memory_series).dropna(how="all")
+    if not memory_df.empty:
+        y_domain = _empirical_y_domain(memory_df)
+        memory_long = memory_df.reset_index().melt(
+            id_vars=["step"],
+            var_name="Series",
+            value_name="value",
+        )
+        memory_chart = (
+            alt.Chart(memory_long)
+            .mark_line()
+            .encode(
+                x=alt.X("step:Q", title="Step"),
+                y=alt.Y(
+                    "value:Q",
+                    title="Memory (MB)",
+                    scale=alt.Scale(domain=y_domain, zero=False, nice=False),
+                ),
+                color=alt.Color("Series:N", title="Series"),
+            )
+        )
+        st.altair_chart(memory_chart, use_container_width=True)
 
 # Auto-refresh mechanism: check for file updates and rerun if needed
 st.sidebar.divider()

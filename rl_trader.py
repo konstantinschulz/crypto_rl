@@ -6,7 +6,10 @@ import gc
 import json
 import math
 import os
+import subprocess
+import time
 import psutil
+import sys
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -35,7 +38,7 @@ def start_dashboard_server(directory: str, port: int = 8766) -> None:
         import subprocess
         thread = threading.Thread(
             target=subprocess.run,
-            args=(["streamlit", "run", "streamlit_dashboard.py", "--server.port", str(port), "--server.headless", "true"],),
+            args=([sys.executable, "-m", "streamlit", "run", "streamlit_dashboard.py", "--server.port", str(port), "--server.headless", "true"],),
             daemon=True
         )
         thread.start()
@@ -58,6 +61,9 @@ class RLDashboardWriter:
             os.path.relpath(self.run_state_path, start=self.index_path.parent)
         ).as_posix()
         self.max_points = 500
+        self._update_count = 0
+        # Rewriting index on every metric update is expensive; periodic refresh is enough for UI discovery.
+        self._index_write_stride = 10
         started_at = _utc_now()
         started_ts_epoch = _utc_now_epoch()
         self.state: Dict[str, Any] = {
@@ -84,6 +90,14 @@ class RLDashboardWriter:
                 'batch_size': 0,
                 'learning_rate': 0.0,
                 'num_data_rows': int(num_data_rows),
+                'memory': {
+                    'device': 'unknown',
+                    'ram_mb': None,
+                    'vram_allocated_mb': None,
+                    'vram_reserved_mb': None,
+                    'vram_process_mb': None,
+                    'vram_gpu_used_mb': None,
+                },
                 'loss': {
                     'train': None,
                     'dev': None,
@@ -136,9 +150,14 @@ class RLDashboardWriter:
                 'test_realized_pnl': [],
                 'dev_trades': [],
                 'test_trades': [],
+                'ram_mb': [],
+                'vram_allocated_mb': [],
+                'vram_reserved_mb': [],
+                'vram_process_mb': [],
+                'vram_gpu_used_mb': [],
             },
         }
-        self._write()
+        self._write(write_index=True)
 
     @staticmethod
     def _to_float(value: Any) -> Optional[float]:
@@ -236,7 +255,88 @@ class RLDashboardWriter:
             return self._to_float(lr_value(1.0)) or 0.0
         return self._to_float(lr_value) or 0.0
 
-    def _write(self) -> None:
+    @staticmethod
+    def _memory_snapshot(device_label: str) -> Dict[str, Any]:
+        mb = 1024.0 * 1024.0
+        snapshot: Dict[str, Any] = {
+            'device': str(device_label or 'unknown'),
+            'ram_mb': None,
+            'vram_allocated_mb': None,
+            'vram_reserved_mb': None,
+            'vram_process_mb': None,
+            'vram_gpu_used_mb': None,
+        }
+        try:
+            snapshot['ram_mb'] = float(psutil.Process().memory_info().rss) / mb
+        except Exception:
+            pass
+
+        try:
+            import torch
+
+            if str(device_label).startswith('cuda') and torch.cuda.is_available():
+                cuda_device = torch.device(str(device_label))
+                snapshot['vram_allocated_mb'] = float(torch.cuda.memory_allocated(cuda_device)) / mb
+                snapshot['vram_reserved_mb'] = float(torch.cuda.memory_reserved(cuda_device)) / mb
+        except Exception:
+            pass
+
+        # nvidia-smi reflects allocator + context + driver-visible process usage.
+        try:
+            if str(device_label).startswith('cuda'):
+                pid = os.getpid()
+                proc_query = subprocess.run(
+                    [
+                        'nvidia-smi',
+                        '--query-compute-apps=pid,used_memory',
+                        '--format=csv,noheader,nounits',
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                used_mb = 0.0
+                for line in proc_query.stdout.splitlines():
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        row_pid = int(parts[0])
+                        row_mb = float(parts[1])
+                    except ValueError:
+                        continue
+                    if row_pid == pid:
+                        used_mb += row_mb
+                if used_mb > 0:
+                    snapshot['vram_process_mb'] = used_mb
+
+                gpu_query = subprocess.run(
+                    [
+                        'nvidia-smi',
+                        '--query-gpu=memory.used',
+                        '--format=csv,noheader,nounits',
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                gpu_used_values = []
+                for line in gpu_query.stdout.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        gpu_used_values.append(float(line))
+                    except ValueError:
+                        continue
+                if gpu_used_values:
+                    snapshot['vram_gpu_used_mb'] = max(gpu_used_values)
+        except Exception:
+            pass
+
+        return snapshot
+
+    def _write(self, write_index: bool = False) -> None:
         self.state['ts'] = _utc_now()
         run = self.state.get('run', {})
         started_ts = int(run.get('started_ts_epoch') or 0)
@@ -256,7 +356,8 @@ class RLDashboardWriter:
         tmp_latest.write_text(self._json_dumps_safe(self.state), encoding='utf-8')
         tmp_latest.replace(self.state_path)
 
-        self._write_index()
+        if write_index:
+            self._write_index()
 
     def _write_index(self) -> None:
         index: Dict[str, Any]
@@ -323,7 +424,7 @@ class RLDashboardWriter:
             self.state['run']['finished_at'] = _utc_now()
             self.state['run']['finished_ts_epoch'] = _utc_now_epoch()
             self.state['run']['final_summary'] = self._build_final_summary()
-        self._write()
+        self._write(write_index=True)
 
     def update_training(
         self,
@@ -345,6 +446,8 @@ class RLDashboardWriter:
         n_updates = int(self._to_float(logger_values.get('train/n_updates')) or 0)
         epoch = n_updates // max(1, int(getattr(model, 'n_epochs', 1)))
         finance = env.get_metrics_snapshot()
+        model_device = str(getattr(model, 'device', 'unknown'))
+        memory = self._memory_snapshot(model_device)
 
         # SB3 logs ep_rew_mean only after completed episodes; use return proxy until then.
         if train_reward is None:
@@ -362,6 +465,7 @@ class RLDashboardWriter:
             'batch_size': int(getattr(model, 'batch_size', 0)),
             'learning_rate': self._current_learning_rate(model),
         })
+        self.state['technical']['memory'].update(memory)
         self.state['technical']['loss'].update({
             'train': train_loss,
             'policy': policy_loss,
@@ -399,7 +503,13 @@ class RLDashboardWriter:
         self._append('win_rate', step, float(finance['win_rate']) * 100.0)
         self._append('realized_pnl', step, float(finance['realized_pnl']))
         self._append('trades', step, float(finance['trades']))
-        self._write()
+        self._append('ram_mb', step, self._to_float(memory.get('ram_mb')))
+        self._append('vram_allocated_mb', step, self._to_float(memory.get('vram_allocated_mb')))
+        self._append('vram_reserved_mb', step, self._to_float(memory.get('vram_reserved_mb')))
+        self._append('vram_process_mb', step, self._to_float(memory.get('vram_process_mb')))
+        self._append('vram_gpu_used_mb', step, self._to_float(memory.get('vram_gpu_used_mb')))
+        self._update_count += 1
+        self._write(write_index=(self._update_count % self._index_write_stride == 0))
 
     def update_split_metrics(self, split: str, metrics: Dict[str, float]) -> None:
         if split not in ('dev', 'test'):
@@ -441,7 +551,7 @@ class RLDashboardWriter:
         self._append(f'{split}_portfolio_value', step, payload['final_portfolio_value'])
         self._append(f'{split}_realized_pnl', step, payload['realized_pnl'])
         self._append(f'{split}_trades', step, float(payload['trades']))
-        self._write()
+        self._write(write_index=True)
 
 
 class RLDashboardCallback(BaseCallback):
@@ -461,7 +571,7 @@ class RLDashboardCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.eval_callback = eval_callback
         self.update_freq = max(50, int(update_freq))
-        self.gc_freq = max(500, int(update_freq))  # Garbage collect every 500 steps
+        self.gc_freq = max(5_000, int(update_freq) * 5)
         self._last_gc_step = 0
         self._warned_memory = False
 
@@ -489,8 +599,8 @@ class RLDashboardCallback(BaseCallback):
         
         # Periodic garbage collection to free unused objects
         if self.n_calls - self._last_gc_step >= self.gc_freq:
-            gc.collect()
             self._check_memory()
+            gc.collect()
             self._last_gc_step = self.n_calls
         
         if self.n_calls % self.update_freq != 0:
@@ -555,6 +665,7 @@ class RLTrader:
         n_steps: int = 256,
         n_epochs: int = 3,
         policy_arch: Optional[List[int]] = None,
+        progress_bar: bool = False,
     ):
         """
         Train agent with PPO
@@ -647,12 +758,14 @@ class RLTrader:
         
         # Train
         print(f"\nTraining for {timesteps} timesteps...")
+        train_start = time.perf_counter()
         self.model.learn(
             total_timesteps=timesteps,
             callback=callbacks,
             tb_log_name='rl_trader',
-            progress_bar=True
+            progress_bar=bool(progress_bar)
         )
+        print(f"[TIMING] Training completed in {time.perf_counter() - train_start:.1f}s")
         
         # Save final model
         self.model.save(self.model_dir / 'final_model')
@@ -796,6 +909,7 @@ class RLTrader:
         n_steps: int = 256,
         n_epochs: int = 3,
         policy_arch: Optional[List[int]] = None,
+        eval_freq: Optional[int] = None,
     ):
         """
         Backtest: train on first part, evaluate on second part
@@ -832,7 +946,7 @@ class RLTrader:
         self.create_envs(train_data, test_data)
         self.train(
             timesteps=int(timesteps),
-            eval_freq=max(1_000, int(timesteps) // 10),
+            eval_freq=int(eval_freq) if eval_freq is not None else max(1_000, int(timesteps) // 10),
             dashboard_state_path=dashboard_state_path,
             dashboard_mode='backtest',
             learning_rate=learning_rate,
@@ -860,6 +974,7 @@ class RLTrader:
         n_steps: int = 256,
         n_epochs: int = 3,
         policy_arch: Optional[List[int]] = None,
+        eval_freq: Optional[int] = None,
     ):
         """
         3-way backtest: train (60%) / val (20%) / test (20%)
@@ -912,7 +1027,7 @@ class RLTrader:
         print("PHASE 1: Training on train set with val monitoring...")
         self.train(
             timesteps=timesteps,
-            eval_freq=max(1000, timesteps // 10),
+            eval_freq=int(eval_freq) if eval_freq is not None else max(10_000, timesteps // 2),
             dashboard_state_path=dashboard_state_path,
             dashboard_mode='backtest_3way',
             learning_rate=learning_rate,
@@ -920,6 +1035,7 @@ class RLTrader:
             n_steps=n_steps,
             n_epochs=n_epochs,
             policy_arch=policy_arch,
+            progress_bar=False,
         )
         
         # Clean up training data to free memory
@@ -1012,7 +1128,7 @@ def main() -> None:
     parser.add_argument('--mode', choices=['train', 'eval', 'backtest', 'backtest_3way'], default='train', help='Execution mode')
     parser.add_argument('--model', type=str, help='Path to saved model (for eval mode)')
     parser.add_argument('--no-cache', action='store_true', help='Disable cached parquet slices')
-    parser.add_argument('--device', choices=['cpu', 'cuda', 'auto'], default='cpu', help='Torch device for PPO')
+    parser.add_argument('--device', choices=['cpu', 'cuda', 'auto'], default='auto', help='Torch device for PPO')
     parser.add_argument('--dashboard', action='store_true', help='Enable live RL dashboard JSON updates')
     parser.add_argument('--dashboard-port', type=int, default=8766, help='Port for local RL dashboard HTTP server')
     parser.add_argument('--dashboard-state', type=str, default='rl_dashboard_state.json', help='JSON file for RL dashboard state')
@@ -1026,6 +1142,7 @@ def main() -> None:
     parser.add_argument('--batch-size', type=int, default=16, help='PPO batch size (default: 16)')
     parser.add_argument('--n-steps', type=int, default=512, help='PPO n_steps (default: 512)')
     parser.add_argument('--n-epochs', type=int, default=5, help='PPO n_epochs (default: 5)')
+    parser.add_argument('--eval-freq', type=int, default=0, help='Validation frequency in training steps (0 = mode default)')
 
     args = parser.parse_args()
 
@@ -1057,7 +1174,17 @@ def main() -> None:
         max_budget_per_trade=20.0,
         keep_history=False,
     )
-    trader = RLTrader(config=config, device=args.device)
+    resolved_device = args.device
+    if args.device == 'auto':
+        try:
+            import torch
+
+            resolved_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        except Exception:
+            resolved_device = 'cpu'
+    print(f"Using device: {resolved_device}")
+
+    trader = RLTrader(config=config, device=resolved_device)
  
     if args.dashboard:
         dashboard_dir = str(Path(__file__).resolve().parent)
@@ -1080,6 +1207,7 @@ def main() -> None:
             n_steps=args.n_steps,
             n_epochs=args.n_epochs,
             policy_arch=model_arch,
+            eval_freq=args.eval_freq if args.eval_freq > 0 else None,
         )
         return
  
@@ -1095,6 +1223,7 @@ def main() -> None:
             n_steps=args.n_steps,
             n_epochs=args.n_epochs,
             policy_arch=model_arch,
+            eval_freq=args.eval_freq if args.eval_freq > 0 else None,
         )
         return
  
@@ -1102,7 +1231,7 @@ def main() -> None:
         trader.create_envs(data)
         trader.train(
             timesteps=args.train_steps,
-            eval_freq=max(5_000, args.train_steps // 5),
+            eval_freq=args.eval_freq if args.eval_freq > 0 else max(5_000, args.train_steps // 5),
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             dashboard_mode='train',
             learning_rate=args.learning_rate,
@@ -1110,6 +1239,7 @@ def main() -> None:
             n_steps=args.n_steps,
             n_epochs=args.n_epochs,
             policy_arch=model_arch,
+            progress_bar=False,
         )
         print("\n" + "=" * 60)
         print("Quick Evaluation on Training Slice")
