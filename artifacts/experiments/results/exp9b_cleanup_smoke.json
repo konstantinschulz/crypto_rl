@@ -1,0 +1,40 @@
+{
+  "created_at_epoch": 1775838853.1122186,
+  "gate_aggregate": [
+    {
+      "config": "g_profit_both",
+      "n": 1,
+      "median_val_return_pct": 0.0,
+      "median_test_return_pct": 0.0,
+      "median_min_return_pct": 0.0,
+      "median_score": 0.0,
+      "trade_band_ok_rate": 0.0
+    }
+  ],
+  "winners": [],
+  "confirm_aggregate": [],
+  "robust_aggregate": [],
+  "results": [
+    {
+      "phase": "gate",
+      "config": "g_profit_both",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 1000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 8.09488844871521,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "artifacts/experiments/logs/exp9b_gate_g_profit_both_seed11.log"
+    }
+  ]
+}

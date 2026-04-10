@@ -1,0 +1,99 @@
+Loading 14 days of data...
+✓ Loaded 60483 rows from 3 symbols
+
+Fee regime: mexc_spot_mx | buy_fee=0.003% | sell_fee=0.003%
+Using device: cpu
+
+======================================================================
+                 3-WAY BACKTEST (Train / Val / Test)                  
+======================================================================
+Train:  36288 rows ( 3 symbols) 1768694340000000 → 1769420040000000
+Val:    12096 rows ( 3 symbols) 1769420100000000 → 1769661960000000
+Test:   12099 rows ( 3 symbols) 1769662020000000 → 1769903940000000
+======================================================================
+
+Train env: 36288 rows, 3 symbols
+Eval env: 12096 rows, 3 symbols
+PHASE 1: Training on train set with val monitoring...
+[TRAIN] Warning: --train-steps is smaller than one episode length (1000 < 12096). Reward curves may be sparse.
+Using cpu device
+Wrapping the env with a `Monitor` wrapper
+Wrapping the env in a DummyVecEnv.
+Created new PPO model (device=cpu)
+  Hyperparameters:
+    learning_rate=0.0002, batch_size=16
+    n_steps=512, n_epochs=5
+    policy_arch=[256, 128, 64]
+
+Training for 1000 timesteps...
+-----------------------------
+| time/              |      |
+|    fps             | 3067 |
+|    iterations      | 1    |
+|    time_elapsed    | 0    |
+|    total_timesteps | 512  |
+-----------------------------
+-----------------------------------------
+| time/                   |             |
+|    fps                  | 346         |
+|    iterations           | 2           |
+|    time_elapsed         | 2           |
+|    total_timesteps      | 1024        |
+| train/                  |             |
+|    approx_kl            | 0.011250531 |
+|    clip_fraction        | 0.146       |
+|    clip_range           | 0.2         |
+|    entropy_loss         | -4.26       |
+|    explained_variance   | 0.00111     |
+|    learning_rate        | 0.0002      |
+|    loss                 | 1.5e+03     |
+|    n_updates            | 5           |
+|    policy_gradient_loss | -0.0158     |
+|    std                  | 1           |
+|    value_loss           | 3.21e+03    |
+-----------------------------------------
+[TIMING] Training completed in 3.7s
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: -20155.00
+  Steps: 4031
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: -20160.00
+  Steps: 4032
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+
+
+/home/konstantin/dev/crypto_rl/rl_trader.py:1010: FutureWarning: The default of observed=False is deprecated and will be changed to True in a future version of pandas. Pass observed=False to retain current behavior or observed=True to adopt the future default and silence this warning.
+  for symbol, group in data.groupby('symbol', sort=False):

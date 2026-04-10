@@ -12,6 +12,7 @@ import psutil
 import sys
 import threading
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -633,11 +634,13 @@ class RLTrader:
         config: Optional[TradingConfig] = None,
         model_dir: str = 'models/',
         device: str = 'cpu',
+        seed: Optional[int] = None,
     ):
         self.config = config or TradingConfig()
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(exist_ok=True)
         self.device = device
+        self.seed = seed
         self.model = None
         self.train_env = None
         self.eval_env = None
@@ -648,7 +651,12 @@ class RLTrader:
         self.train_env = CryptoTradingEnv(train_data, self.config)
         
         if eval_data is not None:
-            self.eval_env = CryptoTradingEnv(eval_data, self.config)
+            eval_config = replace(
+                self.config,
+                randomize_episode_start=False,
+                fee_randomization_pct=0.0,
+            )
+            self.eval_env = CryptoTradingEnv(eval_data, eval_config)
         
         print(f"Train env: {len(train_data)} rows, {train_data['symbol'].nunique()} symbols")
         if eval_data is not None:
@@ -718,6 +726,7 @@ class RLTrader:
                 'MlpPolicy',
                 self.train_env,
                 device=self.device,
+                seed=self.seed,
                 learning_rate=learning_rate,
                 n_steps=n_steps,
                 batch_size=batch_size,
@@ -806,7 +815,12 @@ class RLTrader:
         if env_reuse is not None:
             env = env_reuse
         else:
-            env = CryptoTradingEnv(eval_data, self.config)
+            eval_config = replace(
+                self.config,
+                randomize_episode_start=False,
+                fee_randomization_pct=0.0,
+            )
+            env = CryptoTradingEnv(eval_data, eval_config)
 
         model_obs_dim = int(self.model.observation_space.shape[0])
         env_obs_dim = int(env.observation_space.shape[0])
@@ -1078,6 +1092,48 @@ def _parse_symbols(symbols_raw: Optional[str]) -> Optional[Sequence[str]]:
     return [x.strip().upper() for x in symbols_raw.split(',') if x.strip()]
 
 
+def _resolve_fee_profile(
+    fee_regime: str,
+    transaction_cost: Optional[float],
+    buy_fee_rate: Optional[float],
+    sell_fee_rate: Optional[float],
+) -> Dict[str, float]:
+    regime = str(fee_regime or 'mexc_spot_standard').lower()
+
+    # Manual overrides take precedence over presets.
+    if transaction_cost is not None and float(transaction_cost) >= 0:
+        base = float(transaction_cost)
+        return {
+            'transaction_cost': base,
+            'buy_fee_rate': base if buy_fee_rate is None else float(buy_fee_rate),
+            'sell_fee_rate': base if sell_fee_rate is None else float(sell_fee_rate),
+        }
+
+    if buy_fee_rate is not None or sell_fee_rate is not None:
+        buy = float(buy_fee_rate if buy_fee_rate is not None else 0.0005)
+        sell = float(sell_fee_rate if sell_fee_rate is not None else 0.0005)
+        return {
+            'transaction_cost': (buy + sell) / 2.0,
+            'buy_fee_rate': buy,
+            'sell_fee_rate': sell,
+        }
+
+    if regime == 'mexc_spot_mx':
+        # Typical discounted spot-fee tier when using MX deductions.
+        buy, sell = 0.0004, 0.0004
+    elif regime == 'legacy':
+        buy, sell = 0.0010, 0.0010
+    else:
+        # MEXC spot standard taker approximation for market-order style fills.
+        buy, sell = 0.0005, 0.0005
+
+    return {
+        'transaction_cost': (buy + sell) / 2.0,
+        'buy_fee_rate': buy,
+        'sell_fee_rate': sell,
+    }
+
+
 def _balanced_eval_slice(data: pd.DataFrame, max_rows_per_symbol: int = 300) -> pd.DataFrame:
     """Build evaluation sample with all symbols represented to avoid obs-size mismatch."""
     parts = []
@@ -1129,6 +1185,7 @@ def main() -> None:
     parser.add_argument('--model', type=str, help='Path to saved model (for eval mode)')
     parser.add_argument('--no-cache', action='store_true', help='Disable cached parquet slices')
     parser.add_argument('--device', choices=['cpu', 'cuda', 'auto'], default='auto', help='Torch device for PPO')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for PPO/environment sampling')
     parser.add_argument('--dashboard', action='store_true', help='Enable live RL dashboard JSON updates')
     parser.add_argument('--dashboard-port', type=int, default=8766, help='Port for local RL dashboard HTTP server')
     parser.add_argument('--dashboard-state', type=str, default='rl_dashboard_state.json', help='JSON file for RL dashboard state')
@@ -1139,7 +1196,10 @@ def main() -> None:
     parser.add_argument('--initial-cash', type=float, default=100.0, help='Starting portfolio value in USD')
     parser.add_argument('--position-duration', type=int, default=1440, help='Max position hold time in minutes (default: 1440 = 1 day)')
     parser.add_argument('--max-budget-per-trade', type=float, default=20.0, help='Maximum USD allocated per trade')
-    parser.add_argument('--transaction-cost', type=float, default=0.001, help='Per-trade transaction cost ratio (e.g., 0.001 = 0.1%)')
+    parser.add_argument('--fee-regime', choices=['mexc_spot_standard', 'mexc_spot_mx', 'legacy'], default='mexc_spot_standard', help='Fee preset profile')
+    parser.add_argument('--transaction-cost', type=float, default=-1.0, help='Override flat per-trade transaction cost ratio; negative uses fee regime')
+    parser.add_argument('--buy-fee-rate', type=float, default=-1.0, help='Override buy fee rate; negative uses fee regime')
+    parser.add_argument('--sell-fee-rate', type=float, default=-1.0, help='Override sell fee rate; negative uses fee regime')
     parser.add_argument('--learning-rate', type=float, default=3e-4, help='PPO learning rate (default: 3e-4)')
     parser.add_argument('--batch-size', type=int, default=16, help='PPO batch size (default: 16)')
     parser.add_argument('--n-steps', type=int, default=512, help='PPO n_steps (default: 512)')
@@ -1150,6 +1210,23 @@ def main() -> None:
     parser.add_argument('--invalid-sell-mode', choices=['force_buy', 'hold', 'penalize'], default='force_buy', help='Behavior when sell is chosen without open positions')
     parser.add_argument('--invalid-sell-penalty', type=float, default=3.0, help='Penalty magnitude for invalid sell attempts')
     parser.add_argument('--trade-execution-penalty', type=float, default=0.0, help='Additional penalty for each executed buy/sell to reduce churn')
+    parser.add_argument('--action-mapping-mode', choices=['legacy', 'validity_constrained'], default='legacy', help='Map actions through validity-constrained controller')
+    parser.add_argument('--action-deadzone', type=float, default=0.15, help='Intent deadzone for validity-constrained action mapping')
+    parser.add_argument('--trade-rate-window', type=int, default=240, help='Window size (steps) for recent trade-rate regularization')
+    parser.add_argument('--target-trade-rate', type=float, default=0.18, help='Target fraction of recent steps with trades')
+    parser.add_argument('--trade-rate-penalty', type=float, default=0.0, help='Penalty strength when recent trade rate exceeds target')
+    parser.add_argument('--min-hold-steps', type=int, default=0, help='Minimum steps to hold a position before sell is allowed')
+    parser.add_argument('--trade-cooldown-steps', type=int, default=0, help='Minimum steps between executed trades')
+    parser.add_argument('--max-trades-per-window', type=int, default=0, help='Maximum trades allowed in rolling window (0 disables)')
+    parser.add_argument('--trade-window-steps', type=int, default=240, help='Rolling window size used by max-trades-per-window')
+    parser.add_argument('--constraint-violation-penalty', type=float, default=0.0, help='Penalty applied when blocked by hard execution constraints')
+    parser.add_argument('--reward-equity-delta-scale', type=float, default=0.0, help='Reward scale applied to per-step equity delta ratio')
+    parser.add_argument('--turnover-penalty-rate', type=float, default=0.0, help='Penalty rate applied to executed notional / initial_cash')
+    parser.add_argument('--continuous-drawdown-penalty', type=float, default=0.0, help='Per-step drawdown penalty scale')
+    parser.add_argument('--randomize-episode-start', action='store_true', help='Sample random episode windows during training')
+    parser.add_argument('--min-episode-steps', type=int, default=0, help='Minimum randomized episode length when randomization is enabled')
+    parser.add_argument('--max-episode-steps', type=int, default=0, help='Maximum randomized episode length when randomization is enabled')
+    parser.add_argument('--fee-randomization-pct', type=float, default=0.0, help='Episode fee jitter ratio (0.10 = +/-10%)')
 
     args = parser.parse_args()
 
@@ -1174,18 +1251,51 @@ def main() -> None:
         print("Using default [32, 16]")
         model_arch = [32, 16]
  
+    fee_profile = _resolve_fee_profile(
+        fee_regime=args.fee_regime,
+        transaction_cost=(None if args.transaction_cost < 0 else args.transaction_cost),
+        buy_fee_rate=(None if args.buy_fee_rate < 0 else args.buy_fee_rate),
+        sell_fee_rate=(None if args.sell_fee_rate < 0 else args.sell_fee_rate),
+    )
+
+    print(
+        f"Fee regime: {args.fee_regime} | "
+        f"buy_fee={fee_profile['buy_fee_rate']*100:.03f}% | "
+        f"sell_fee={fee_profile['sell_fee_rate']*100:.03f}%"
+    )
+
     config = TradingConfig(
         initial_cash=args.initial_cash,
         max_positions=args.max_positions,
         position_duration_limit=args.position_duration,
         max_budget_per_trade=args.max_budget_per_trade,
-        transaction_cost=args.transaction_cost,
+        transaction_cost=fee_profile['transaction_cost'],
+        fee_regime=args.fee_regime,
+        buy_fee_rate=fee_profile['buy_fee_rate'],
+        sell_fee_rate=fee_profile['sell_fee_rate'],
         keep_history=False,
         trade_action_bonus=args.trade_action_bonus,
         inactivity_penalty=args.inactivity_penalty,
         invalid_sell_mode=args.invalid_sell_mode,
         invalid_sell_penalty=args.invalid_sell_penalty,
         trade_execution_penalty=args.trade_execution_penalty,
+        action_mapping_mode=args.action_mapping_mode,
+        action_deadzone=args.action_deadzone,
+        trade_rate_window=args.trade_rate_window,
+        target_trade_rate=args.target_trade_rate,
+        trade_rate_penalty=args.trade_rate_penalty,
+        min_hold_steps=args.min_hold_steps,
+        trade_cooldown_steps=args.trade_cooldown_steps,
+        max_trades_per_window=args.max_trades_per_window,
+        trade_window_steps=args.trade_window_steps,
+        constraint_violation_penalty=args.constraint_violation_penalty,
+        reward_equity_delta_scale=args.reward_equity_delta_scale,
+        turnover_penalty_rate=args.turnover_penalty_rate,
+        continuous_drawdown_penalty=args.continuous_drawdown_penalty,
+        randomize_episode_start=args.randomize_episode_start,
+        min_episode_steps=args.min_episode_steps,
+        max_episode_steps=args.max_episode_steps,
+        fee_randomization_pct=args.fee_randomization_pct,
     )
     resolved_device = args.device
     if args.device == 'auto':
@@ -1197,7 +1307,7 @@ def main() -> None:
             resolved_device = 'cpu'
     print(f"Using device: {resolved_device}")
 
-    trader = RLTrader(config=config, device=resolved_device)
+    trader = RLTrader(config=config, device=resolved_device, seed=args.seed)
  
     if args.dashboard:
         dashboard_dir = str(Path(__file__).resolve().parent)

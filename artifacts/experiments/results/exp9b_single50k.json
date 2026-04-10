@@ -1,0 +1,42 @@
+{
+  "created_at_epoch": 1775836045.9686682,
+  "gate_aggregate": [
+    {
+      "config": "a_mx_base",
+      "n": 1,
+      "median_val_return_pct": -0.08,
+      "median_test_return_pct": -0.16,
+      "median_min_return_pct": -0.16,
+      "median_score": -0.22,
+      "trade_band_ok_rate": 1.0
+    }
+  ],
+  "winners": [
+    "a_mx_base"
+  ],
+  "confirm_aggregate": [],
+  "robust_aggregate": [],
+  "results": [
+    {
+      "phase": "gate",
+      "config": "a_mx_base",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 50000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 83.1322603225708,
+      "metrics": {
+        "val_trades": 2381.0,
+        "val_win_rate_pct": 54.2,
+        "val_return_pct": -0.08,
+        "test_trades": 2383.0,
+        "test_win_rate_pct": 42.6,
+        "test_return_pct": -0.16
+      },
+      "trade_band_ok": true,
+      "score": -0.22,
+      "log_path": "exp9b_gate_a_mx_base_seed11.log"
+    }
+  ]
+}

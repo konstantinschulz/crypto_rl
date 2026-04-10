@@ -1,0 +1,21 @@
+{
+  "phase": "gate",
+  "config": "d_churn_guard",
+  "days": 14,
+  "max_symbols": 3,
+  "train_steps": 50000,
+  "seed": 11,
+  "return_code": -15,
+  "elapsed_sec": 329.7949514389038,
+  "metrics": {
+    "val_trades": 0.0,
+    "val_win_rate_pct": 0.0,
+    "val_return_pct": 0.0,
+    "test_trades": 0.0,
+    "test_win_rate_pct": 0.0,
+    "test_return_pct": 0.0
+  },
+  "trade_band_ok": false,
+  "score": 0.0,
+  "log_path": "exp9b_gate_d_churn_guard_seed11.log"
+}

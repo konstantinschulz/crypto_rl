@@ -1,0 +1,316 @@
+{
+  "created_at_epoch": 1775835884.1739423,
+  "gate_aggregate": [
+    {
+      "config": "a_balance",
+      "n": 2,
+      "median_val_return_pct": 0.0,
+      "median_test_return_pct": 0.0,
+      "median_min_return_pct": 0.0,
+      "median_score": 0.0,
+      "trade_band_ok_rate": 0.0
+    },
+    {
+      "config": "b_test_bias",
+      "n": 2,
+      "median_val_return_pct": 0.0,
+      "median_test_return_pct": 0.0,
+      "median_min_return_pct": 0.0,
+      "median_score": 0.0,
+      "trade_band_ok_rate": 0.0
+    },
+    {
+      "config": "c_drawdown_focus",
+      "n": 2,
+      "median_val_return_pct": 0.0,
+      "median_test_return_pct": 0.0,
+      "median_min_return_pct": 0.0,
+      "median_score": 0.0,
+      "trade_band_ok_rate": 0.0
+    },
+    {
+      "config": "d_low_churn",
+      "n": 2,
+      "median_val_return_pct": 0.0,
+      "median_test_return_pct": 0.0,
+      "median_min_return_pct": 0.0,
+      "median_score": 0.0,
+      "trade_band_ok_rate": 0.0
+    },
+    {
+      "config": "f_robust_mix",
+      "n": 2,
+      "median_val_return_pct": 0.0,
+      "median_test_return_pct": 0.0,
+      "median_min_return_pct": 0.0,
+      "median_score": 0.0,
+      "trade_band_ok_rate": 0.0
+    },
+    {
+      "config": "e_recovery",
+      "n": 2,
+      "median_val_return_pct": 0.155,
+      "median_test_return_pct": -0.795,
+      "median_min_return_pct": -0.795,
+      "median_score": -1.1207500000000001,
+      "trade_band_ok_rate": 0.0
+    }
+  ],
+  "winners": [],
+  "confirm_aggregate": [],
+  "robust_aggregate": [],
+  "results": [
+    {
+      "phase": "gate",
+      "config": "a_balance",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 13.260266065597534,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_a_balance_seed11.log"
+    },
+    {
+      "phase": "gate",
+      "config": "a_balance",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 23,
+      "return_code": 0,
+      "elapsed_sec": 12.389550685882568,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_a_balance_seed23.log"
+    },
+    {
+      "phase": "gate",
+      "config": "b_test_bias",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 11.344469785690308,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_b_test_bias_seed11.log"
+    },
+    {
+      "phase": "gate",
+      "config": "b_test_bias",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 23,
+      "return_code": 0,
+      "elapsed_sec": 13.081214189529419,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_b_test_bias_seed23.log"
+    },
+    {
+      "phase": "gate",
+      "config": "c_drawdown_focus",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 12.210485219955444,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_c_drawdown_focus_seed11.log"
+    },
+    {
+      "phase": "gate",
+      "config": "c_drawdown_focus",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 23,
+      "return_code": 0,
+      "elapsed_sec": 11.485333442687988,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_c_drawdown_focus_seed23.log"
+    },
+    {
+      "phase": "gate",
+      "config": "d_low_churn",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 11.308067798614502,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_d_low_churn_seed11.log"
+    },
+    {
+      "phase": "gate",
+      "config": "d_low_churn",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 23,
+      "return_code": 0,
+      "elapsed_sec": 12.534507274627686,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_d_low_churn_seed23.log"
+    },
+    {
+      "phase": "gate",
+      "config": "e_recovery",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 10.868531465530396,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_e_recovery_seed11.log"
+    },
+    {
+      "phase": "gate",
+      "config": "e_recovery",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 23,
+      "return_code": 0,
+      "elapsed_sec": 16.425256967544556,
+      "metrics": {
+        "val_trades": 6.0,
+        "val_win_rate_pct": 33.3,
+        "val_return_pct": 0.31,
+        "test_trades": 10.0,
+        "test_win_rate_pct": 10.0,
+        "test_return_pct": -1.59
+      },
+      "trade_band_ok": false,
+      "score": -2.2415000000000003,
+      "log_path": "exp9b_gate_e_recovery_seed23.log"
+    },
+    {
+      "phase": "gate",
+      "config": "f_robust_mix",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 11,
+      "return_code": 0,
+      "elapsed_sec": 17.943443298339844,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_f_robust_mix_seed11.log"
+    },
+    {
+      "phase": "gate",
+      "config": "f_robust_mix",
+      "days": 14,
+      "max_symbols": 3,
+      "train_steps": 6000,
+      "seed": 23,
+      "return_code": 0,
+      "elapsed_sec": 20.05813431739807,
+      "metrics": {
+        "val_trades": 0.0,
+        "val_win_rate_pct": 0.0,
+        "val_return_pct": 0.0,
+        "test_trades": 0.0,
+        "test_win_rate_pct": 0.0,
+        "test_return_pct": 0.0
+      },
+      "trade_band_ok": false,
+      "score": 0.0,
+      "log_path": "exp9b_gate_f_robust_mix_seed23.log"
+    }
+  ]
+}
