@@ -1138,11 +1138,18 @@ def main() -> None:
     parser.add_argument('--max-positions', type=int, default=3, help='Maximum number of open positions (default: 3)')
     parser.add_argument('--initial-cash', type=float, default=100.0, help='Starting portfolio value in USD')
     parser.add_argument('--position-duration', type=int, default=1440, help='Max position hold time in minutes (default: 1440 = 1 day)')
+    parser.add_argument('--max-budget-per-trade', type=float, default=20.0, help='Maximum USD allocated per trade')
+    parser.add_argument('--transaction-cost', type=float, default=0.001, help='Per-trade transaction cost ratio (e.g., 0.001 = 0.1%)')
     parser.add_argument('--learning-rate', type=float, default=3e-4, help='PPO learning rate (default: 3e-4)')
     parser.add_argument('--batch-size', type=int, default=16, help='PPO batch size (default: 16)')
     parser.add_argument('--n-steps', type=int, default=512, help='PPO n_steps (default: 512)')
     parser.add_argument('--n-epochs', type=int, default=5, help='PPO n_epochs (default: 5)')
     parser.add_argument('--eval-freq', type=int, default=0, help='Validation frequency in training steps (0 = mode default)')
+    parser.add_argument('--trade-action-bonus', type=float, default=15.0, help='Reward bonus for buy/sell actions')
+    parser.add_argument('--inactivity-penalty', type=float, default=-5.0, help='Per-step penalty for hold/inactivity')
+    parser.add_argument('--invalid-sell-mode', choices=['force_buy', 'hold', 'penalize'], default='force_buy', help='Behavior when sell is chosen without open positions')
+    parser.add_argument('--invalid-sell-penalty', type=float, default=3.0, help='Penalty magnitude for invalid sell attempts')
+    parser.add_argument('--trade-execution-penalty', type=float, default=0.0, help='Additional penalty for each executed buy/sell to reduce churn')
 
     args = parser.parse_args()
 
@@ -1171,8 +1178,14 @@ def main() -> None:
         initial_cash=args.initial_cash,
         max_positions=args.max_positions,
         position_duration_limit=args.position_duration,
-        max_budget_per_trade=20.0,
+        max_budget_per_trade=args.max_budget_per_trade,
+        transaction_cost=args.transaction_cost,
         keep_history=False,
+        trade_action_bonus=args.trade_action_bonus,
+        inactivity_penalty=args.inactivity_penalty,
+        invalid_sell_mode=args.invalid_sell_mode,
+        invalid_sell_penalty=args.invalid_sell_penalty,
+        trade_execution_penalty=args.trade_execution_penalty,
     )
     resolved_device = args.device
     if args.device == 'auto':

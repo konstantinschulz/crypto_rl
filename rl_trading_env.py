@@ -36,6 +36,9 @@ class TradingConfig:
     keep_history: bool = False  # NEVER keep history during training
     max_history_rows: int = 100  # Minimal history if enabled
     debug_actions: bool = False
+    invalid_sell_mode: str = 'force_buy'  # force_buy | hold | penalize
+    invalid_sell_penalty: float = 3.0
+    trade_execution_penalty: float = 0.0
 
 
 class CryptoTradingEnv(Env):
@@ -180,7 +183,16 @@ class CryptoTradingEnv(Env):
         if action_type == 2 and len(self.positions) == 0:
             self.invalid_sell_attempts += 1
             self.remapped_actions += 1
-            action_type = 1
+            mode = str(self.config.invalid_sell_mode).lower()
+            if mode == 'force_buy':
+                action_type = 1
+            elif mode == 'hold':
+                action_type = 0
+            elif mode == 'penalize':
+                pass
+            else:
+                action_type = 1
+            step_reward -= abs(float(self.config.invalid_sell_penalty))
         
         symbol = self.symbols[symbol_idx]
         current_price = float(prices[symbol_idx])
@@ -207,6 +219,9 @@ class CryptoTradingEnv(Env):
         else:
             # PENALTY for inactivity (doing nothing / hold action)
             step_reward += self.config.inactivity_penalty
+
+        if action_taken and self.config.trade_execution_penalty > 0:
+            step_reward -= float(self.config.trade_execution_penalty)
         
         # Process ongoing positions
         for sym in list(self.positions.keys()):

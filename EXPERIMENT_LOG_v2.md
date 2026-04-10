@@ -172,3 +172,143 @@ The core insight: **Model learns locally optimal "do nothing" strategy**
 - Starting with $100 and no losses is hard to beat
 - Removing inactivity penalty entirely makes holding cost too much
 - Adding explicit invalid-action penalties prevents "fake" trading
+
+---
+
+## Experiment 6 Campaign (April 2026) - Profitability-Oriented Tuning
+
+### Goal
+Move from the stable-but-unprofitable overtrading policy (about -0.65% on test) toward non-negative/positive test return.
+
+### Code/Config Enablers Added
+To run controlled experiments without editing code each time, added CLI knobs in `rl_trader.py` + `TradingConfig` fields in `rl_trading_env.py`:
+
+- `--trade-action-bonus`
+- `--inactivity-penalty`
+- `--invalid-sell-mode` (`force_buy|hold|penalize`)
+- `--invalid-sell-penalty`
+- `--trade-execution-penalty`
+- `--max-budget-per-trade`
+- `--transaction-cost`
+
+### Fresh Baseline (control)
+Command:
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu
+```
+
+Result:
+- Val: 4032 trades | WR 39.8% | Return **-0.61%**
+- Test: 4034 trades | WR 34.7% | Return **-0.65%**
+
+### Exp 6A - Hold remap + low-churn rewards
+Command:
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode hold --trade-action-bonus 2.0 --inactivity-penalty -0.2 \
+  --invalid-sell-penalty 1.0 --trade-execution-penalty 0.05 --learning-rate 0.0002 \
+  --n-epochs 4 --batch-size 32
+```
+
+Result:
+- Val/Test trades: **0**
+- Return: **0.00%**
+
+Conclusion:
+- Failure mode returned to no-trade collapse.
+
+### Exp 6B - Keep force-buy, add churn penalties
+Command:
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode force_buy --trade-action-bonus 1.5 --inactivity-penalty -0.5 \
+  --invalid-sell-penalty 0.5 --trade-execution-penalty 0.2 --learning-rate 0.0002 \
+  --n-epochs 4 --batch-size 32
+```
+
+Result:
+- Val/Test almost unchanged from baseline
+- Test return remained near **-0.65%**
+
+Conclusion:
+- Failure: force-buy remap still dominates behavior and keeps extreme trade count.
+
+### Exp 6C - Penalize invalid sells (no remap)
+Command:
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode penalize --trade-action-bonus 4.0 --inactivity-penalty -0.3 \
+  --invalid-sell-penalty 6.0 --trade-execution-penalty 0.02 --learning-rate 0.00025 \
+  --n-epochs 5 --batch-size 32
+```
+
+Result:
+- Val/Test trades: **0**
+- Return: **0.00%**
+
+Conclusion:
+- Failure: policy avoids trading under penalize-only invalid handling.
+
+### Exp 6D - Strong incentives + hold remap
+Command:
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode hold --trade-action-bonus 8.0 --inactivity-penalty -2.0 \
+  --invalid-sell-penalty 4.0 --trade-execution-penalty 0.1
+```
+
+Result:
+- Val/Test trades: **0**
+- Return: **0.00%**
+
+Conclusion:
+- Failure: hold remap consistently risks no-trade convergence in this action setup.
+
+### Exp 6F - Lower costs + smaller per-trade budget
+Command:
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode force_buy --trade-action-bonus 15.0 --inactivity-penalty -5.0 \
+  --max-budget-per-trade 10 --transaction-cost 0.0002
+```
+
+Result:
+- Val: 4032 trades | WR 52.1% | Return **-0.11%**
+- Test: 4034 trades | WR 41.6% | Return **-0.16%**
+
+Conclusion:
+- Significant improvement vs baseline, still slightly negative.
+
+### Exp 6G (Best So Far) - Very low cost + smaller budget
+Gate (10k):
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 10000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode force_buy --trade-action-bonus 15.0 --inactivity-penalty -5.0 \
+  --max-budget-per-trade 8 --transaction-cost 0.00005
+```
+
+Full confirmation (50k):
+```bash
+python rl_trader.py --days 14 --max-symbols 3 --train-steps 50000 --mode backtest_3way --device cpu \
+  --invalid-sell-mode force_buy --trade-action-bonus 15.0 --inactivity-penalty -5.0 \
+  --max-budget-per-trade 8 --transaction-cost 0.00005
+```
+
+Result (stable across 10k/50k):
+- Val: 4032 trades | WR 53.1% | Return **-0.02%**
+- Test: 4033 trades | WR 46.4% | Return **+0.03%**
+
+Conclusion:
+- First tested configuration with **positive test return**.
+- Caveat: profitability is achieved under a **much lower transaction-cost assumption** than baseline.
+
+### Key Takeaways
+1. Invalid-sell handling is still the dominant behavioral control:
+   - `force_buy` => reliable trading but overtrading.
+   - `hold`/`penalize` => frequent no-trade collapse.
+2. Within current action-space design, reward-only tuning did not remove overtrading robustly.
+3. Best measured profitability came from reducing trading friction (`transaction_cost`) and risk per trade (`max_budget_per_trade`).
+4. Next major step should be structural:
+   - redesign action parameterization (discrete valid action head),
+   - or add explicit trade-frequency regularization tied to recent activity.
+
