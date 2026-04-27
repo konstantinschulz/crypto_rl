@@ -234,10 +234,14 @@ def aggregate_by_config(results: Iterable[Dict]) -> List[Dict]:
     return agg
 
 
-def pick_gate_winners(gate_agg: Sequence[Dict], max_winners: int = 3) -> List[str]:
+def pick_gate_winners(
+    gate_agg: Sequence[Dict], max_winners: int = 3, min_median_min_return_pct: float = 0.0
+) -> List[str]:
     winners: List[str] = []
     for row in gate_agg:
         if row["trade_band_ok_rate"] < 1.0:
+            continue
+        if row["median_min_return_pct"] < float(min_median_min_return_pct):
             continue
         winners.append(row["config"])
         if len(winners) >= max_winners:
@@ -248,9 +252,8 @@ def pick_gate_winners(gate_agg: Sequence[Dict], max_winners: int = 3) -> List[st
 def build_gate_variants() -> List[ConfigVariant]:
     return [
         ConfigVariant(
-            name="g_profit_both",
+            name="r_mx_struct_base",
             overrides={
-                "--transaction-cost": "0.00003",
                 "--max-budget-per-trade": "7.0",
                 "--trade-action-bonus": "15.0",
                 "--inactivity-penalty": "-5.0",
@@ -263,55 +266,60 @@ def build_gate_variants() -> List[ConfigVariant]:
             },
         ),
         ConfigVariant(
-            name="a_mx_base",
+            name="r_mx_tighter_churn",
+            overrides={
+                "--max-budget-per-trade": "7.0",
+                "--trade-action-bonus": "14.0",
+                "--inactivity-penalty": "-4.8",
+                "--trade-rate-penalty": "0.28",
+                "--target-trade-rate": "0.14",
+                "--turnover-penalty-rate": "0.12",
+                "--min-hold-steps": "3",
+                "--trade-cooldown-steps": "1",
+                "--max-trades-per-window": "108",
+            },
+        ),
+        ConfigVariant(
+            name="r_mx_quality",
+            overrides={
+                "--max-budget-per-trade": "6.0",
+                "--trade-action-bonus": "13.0",
+                "--inactivity-penalty": "-4.5",
+                "--trade-execution-penalty": "0.14",
+                "--reward-equity-delta-scale": "90.0",
+                "--turnover-penalty-rate": "0.14",
+                "--continuous-drawdown-penalty": "4.5",
+                "--trade-rate-penalty": "0.24",
+                "--target-trade-rate": "0.14",
+            },
+        ),
+        ConfigVariant(
+            name="r_mx_budget8",
             overrides={
                 "--max-budget-per-trade": "8.0",
+                "--trade-action-bonus": "15.0",
+                "--inactivity-penalty": "-5.0",
+                "--trade-rate-penalty": "0.20",
+                "--target-trade-rate": "0.15",
+                "--min-hold-steps": "2",
+                "--trade-cooldown-steps": "1",
+                "--max-trades-per-window": "120",
             },
         ),
         ConfigVariant(
-            name="b_budget6",
+            name="r_mx_balanced_plus",
             overrides={
                 "--max-budget-per-trade": "6.0",
-            },
-        ),
-        ConfigVariant(
-            name="c_budget4",
-            overrides={
-                "--max-budget-per-trade": "4.0",
-            },
-        ),
-        ConfigVariant(
-            name="d_churn_guard",
-            overrides={
-                "--max-budget-per-trade": "6.0",
-                "--trade-rate-penalty": "0.35",
+                "--trade-action-bonus": "14.5",
+                "--inactivity-penalty": "-4.8",
+                "--trade-execution-penalty": "0.12",
+                "--trade-rate-penalty": "0.26",
                 "--target-trade-rate": "0.14",
                 "--turnover-penalty-rate": "0.16",
                 "--min-hold-steps": "3",
-                "--trade-cooldown-steps": "2",
+                "--trade-cooldown-steps": "1",
                 "--max-trades-per-window": "96",
-            },
-        ),
-        ConfigVariant(
-            name="e_quality",
-            overrides={
-                "--max-budget-per-trade": "6.0",
-                "--reward-equity-delta-scale": "90.0",
-                "--trade-action-bonus": "10.0",
-                "--trade-execution-penalty": "0.14",
-                "--continuous-drawdown-penalty": "5.0",
-            },
-        ),
-        ConfigVariant(
-            name="f_stability",
-            overrides={
-                "--max-budget-per-trade": "5.0",
-                "--reward-equity-delta-scale": "85.0",
-                "--trade-rate-penalty": "0.28",
-                "--target-trade-rate": "0.16",
-                "--turnover-penalty-rate": "0.14",
-                "--min-hold-steps": "3",
-                "--max-trades-per-window": "108",
+                "--constraint-violation-penalty": "0.14",
             },
         ),
     ]
@@ -328,6 +336,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robust-seeds", default="11,23,47")
     parser.add_argument("--max-gate-variants", type=int, default=6)
     parser.add_argument("--max-confirm-variants", type=int, default=3)
+    parser.add_argument("--min-gate-min-return", type=float, default=0.0)
     parser.add_argument("--log-dir", default="artifacts/experiments/logs")
     parser.add_argument("--results-dir", default="artifacts/experiments/results")
     parser.add_argument("--out", default="exp9b_results.json")
@@ -370,12 +379,20 @@ def main() -> None:
                 all_results.append(run_case(case, variant, log_dir))
 
     gate_agg = aggregate_by_config(r for r in all_results if r["phase"] == "gate")
-    winners = pick_gate_winners(gate_agg, max_winners=args.max_confirm_variants)
+    winners = pick_gate_winners(
+        gate_agg,
+        max_winners=args.max_confirm_variants,
+        min_median_min_return_pct=args.min_gate_min_return,
+    )
 
     # Allow running confirm/robust directly if winners are manually provided in prior out file.
     if args.phase in ("confirm", "robust") and not winners and out_path.exists():
         prior_gate_agg = aggregate_by_config(r for r in historical.get("results", []) if r["phase"] == "gate")
-        winners = pick_gate_winners(prior_gate_agg, max_winners=args.max_confirm_variants)
+        winners = pick_gate_winners(
+            prior_gate_agg,
+            max_winners=args.max_confirm_variants,
+            min_median_min_return_pct=args.min_gate_min_return,
+        )
 
     if args.phase in ("confirm", "robust", "all") and not winners:
         print("[EXP9B] No eligible gate winners found; skipping confirm/robust.")

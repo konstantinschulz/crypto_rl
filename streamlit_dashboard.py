@@ -168,6 +168,7 @@ def _empirical_y_domain(df: pd.DataFrame, pad_ratio: float = 0.08):
 
 def _resolve_dashboard_kpis(data):
     run = data.get("run", {}) if isinstance(data, dict) else {}
+    tech = data.get("technical", {}) if isinstance(data, dict) else {}
     finance = data.get("finance", {}) if isinstance(data, dict) else {}
     splits = data.get("splits", {}) if isinstance(data, dict) else {}
     series = data.get("series", {}) if isinstance(data, dict) else {}
@@ -208,11 +209,18 @@ def _resolve_dashboard_kpis(data):
         portfolio_value = _latest_series_value(series, "portfolio_value", 0.0)
 
     return {
+        "step": int(_to_float(run.get("current_step", 0), 0)),
+        "train_loss": _to_float(tech.get("loss", {}).get("train", 0.0), 0.0),
+        "train_reward": _to_float(data.get("rewards", {}).get("train", 0.0), 0.0),
         "trades": trades,
         "realized_pnl": realized_pnl,
+        "unrealized_pnl": _to_float(finance.get("unrealized_pnl", 0.0), 0.0),
         "win_rate_pct": win_rate_pct,
         "portfolio_value": portfolio_value,
+        "total_return_pct": _to_float(finance.get("total_return_pct", 0.0), 0.0),
+        "drawdown_pct": _to_float(finance.get("drawdown_pct", 0.0), 0.0),
         "train_realized_pnl": _latest_series_value(series, "realized_pnl", 0.0),
+        "train_unrealized_pnl": _latest_series_value(series, "unrealized_pnl", 0.0),
         "train_portfolio_value": _latest_series_value(series, "portfolio_value", 0.0),
     }
 
@@ -288,13 +296,15 @@ st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
 st.sidebar.markdown(f"**Elapsed:** {_format_elapsed(_elapsed_seconds_for_run(run))}")
 st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
 col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
-col2.metric("Eval Trades", f"{int(kpis['trades'])}")
-col3.metric("Eval Portfolio", f"{kpis['portfolio_value']:.2f}")
-col4.metric("Eval Realized PnL", f"{kpis['realized_pnl']:.2f}")
-col5.metric("Train Realized PnL", f"{kpis['train_realized_pnl']:.2f}")
-col6.metric("Eval Win Rate", f"{kpis['win_rate_pct']:.2f}%")
+col2.metric("Step", f"{int(kpis['step']):,}")
+col3.metric("Train Loss", f"{kpis['train_loss']:.5f}")
+col4.metric("Train Reward", f"{kpis['train_reward']:.4f}")
+col5.metric("Train Portfolio", f"{kpis['train_portfolio_value']:.2f}")
+col6.metric("Train PnL (R/U)", f"{kpis['train_realized_pnl']:.2f} / {kpis['train_unrealized_pnl']:.2f}")
+col7.metric("Eval Portfolio", f"{kpis['portfolio_value']:.2f}")
+col8.metric("Eval PnL", f"{kpis['realized_pnl']:.2f}")
 
 st.subheader("Training Series")
 
@@ -387,6 +397,30 @@ if pnl_series:
 
     st.line_chart(pnl_df)
 
+st.markdown("### Unrealized PnL")
+df_upnl = pd.DataFrame(series.get("unrealized_pnl", []))
+if not df_upnl.empty and "step" in df_upnl.columns:
+    df_upnl.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_upnl.set_index("step", inplace=True)
+    st.line_chart(df_upnl[["value"]].rename(columns={"value": "Train"}))
+
+st.markdown("### Return / Drawdown (%)")
+rd_series = {}
+df_ret = pd.DataFrame(series.get("total_return_pct", []))
+df_dd = pd.DataFrame(series.get("drawdown_pct", []))
+if not df_ret.empty and "step" in df_ret.columns:
+    df_ret.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_ret.set_index("step", inplace=True)
+    rd_series["Total Return %"] = df_ret["value"]
+if not df_dd.empty and "step" in df_dd.columns:
+    df_dd.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_dd.set_index("step", inplace=True)
+    rd_series["Drawdown %"] = df_dd["value"]
+if rd_series:
+    rd_df = pd.DataFrame(rd_series).dropna(how="all")
+    rd_df = rd_df.interpolate(method="index").ffill().bfill()
+    st.line_chart(rd_df)
+
 st.markdown("### Rewards")
 df_train_r = pd.DataFrame(series.get("train_reward", []))
 df_test_r = pd.DataFrame(series.get("test_reward", []))
@@ -434,6 +468,23 @@ if loss_dict:
     l_df = pd.DataFrame(loss_dict).dropna(how="all")
     l_df = l_df.interpolate(method="index").ffill().bfill()
     st.line_chart(l_df)
+
+st.markdown("### PPO Stability (KL / Clip Fraction)")
+stab_series = {}
+df_kl = pd.DataFrame(series.get("approx_kl", []))
+df_clip = pd.DataFrame(series.get("clip_fraction", []))
+if not df_kl.empty and "step" in df_kl.columns:
+    df_kl.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_kl.set_index("step", inplace=True)
+    stab_series["Approx KL"] = df_kl["value"]
+if not df_clip.empty and "step" in df_clip.columns:
+    df_clip.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_clip.set_index("step", inplace=True)
+    stab_series["Clip Fraction"] = df_clip["value"]
+if stab_series:
+    stab_df = pd.DataFrame(stab_series).dropna(how="all")
+    stab_df = stab_df.interpolate(method="index").ffill().bfill()
+    st.line_chart(stab_df)
 
 st.markdown("### Memory Usage (MB)")
 memory_series = {}

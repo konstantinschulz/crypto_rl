@@ -1,14 +1,21 @@
 {
-  "ts": "2026-04-10 15:19:24 UTC",
-  "latest_run_id": "run-20260410-151901-aa15e3",
-  "latest_state_file": "rl_dashboard_runs/run-20260410-151901-aa15e3.json",
+  "ts": "2026-04-23 09:23:12 UTC",
+  "latest_run_id": "run-20260423-091809-bab3f2",
+  "latest_state_file": "rl_dashboard_runs/run-20260423-091809-bab3f2.json",
   "latest_by_mode": {
     "backtest_3way": {
-      "run_id": "run-20260410-151901-aa15e3",
-      "state_file": "rl_dashboard_runs/run-20260410-151901-aa15e3.json",
+      "run_id": "run-20260423-091809-bab3f2",
+      "state_file": "rl_dashboard_runs/run-20260423-091809-bab3f2.json",
       "status": "completed",
-      "started_at": "2026-04-10 15:19:01 UTC",
-      "finished_at": "2026-04-10 15:19:20 UTC"
+      "started_at": "2026-04-23 09:18:09 UTC",
+      "finished_at": "2026-04-23 09:23:10 UTC"
+    },
+    "train": {
+      "run_id": "run-20260423-072319-825a2f",
+      "state_file": "rl_dashboard_runs/run-20260423-072319-825a2f.json",
+      "status": "completed",
+      "started_at": "2026-04-23 07:23:19 UTC",
+      "finished_at": "2026-04-23 07:37:02 UTC"
     },
     "backtest": {
       "run_id": "run-20260330-141125-c8e674",
@@ -26,77 +33,14 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260410-151901-aa15e3",
-    "state_file": "rl_dashboard_runs/run-20260410-151901-aa15e3.json",
+    "run_id": "run-20260423-091809-bab3f2",
+    "state_file": "rl_dashboard_runs/run-20260423-091809-bab3f2.json",
     "mode": "backtest_3way",
     "status": "completed",
-    "started_at": "2026-04-10 15:19:01 UTC",
-    "finished_at": "2026-04-10 15:19:20 UTC"
+    "started_at": "2026-04-23 09:18:09 UTC",
+    "finished_at": "2026-04-23 09:23:10 UTC"
   },
   "runs": [
-    {
-      "run_id": "run-20260327-160306-55aa08",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 16:03:06 UTC",
-      "finished_at": "2026-03-27 16:04:45 UTC",
-      "elapsed_seconds": 99,
-      "state_file": "rl_dashboard_runs/run-20260327-160306-55aa08.json"
-    },
-    {
-      "run_id": "run-20260327-161641-22fe8f",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 16:16:41 UTC",
-      "finished_at": "2026-03-27 16:18:16 UTC",
-      "elapsed_seconds": 95,
-      "state_file": "rl_dashboard_runs/run-20260327-161641-22fe8f.json"
-    },
-    {
-      "run_id": "run-20260327-162718-034bf0",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 16:27:18 UTC",
-      "finished_at": "2026-03-27 16:27:31 UTC",
-      "elapsed_seconds": 13,
-      "state_file": "rl_dashboard_runs/run-20260327-162718-034bf0.json"
-    },
-    {
-      "run_id": "run-20260327-162737-697755",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 16:27:37 UTC",
-      "finished_at": "2026-03-27 16:27:49 UTC",
-      "elapsed_seconds": 12,
-      "state_file": "rl_dashboard_runs/run-20260327-162737-697755.json"
-    },
-    {
-      "run_id": "run-20260327-162836-d8e92b",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 16:28:36 UTC",
-      "finished_at": "2026-03-27 16:28:48 UTC",
-      "elapsed_seconds": 12,
-      "state_file": "rl_dashboard_runs/run-20260327-162836-d8e92b.json"
-    },
-    {
-      "run_id": "run-20260327-170427-c94e50",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 17:04:27 UTC",
-      "finished_at": "2026-03-27 17:05:58 UTC",
-      "elapsed_seconds": 91,
-      "state_file": "rl_dashboard_runs/run-20260327-170427-c94e50.json"
-    },
-    {
-      "run_id": "run-20260327-171522-ea5504",
-      "mode": "backtest_3way",
-      "status": "completed",
-      "started_at": "2026-03-27 17:15:22 UTC",
-      "finished_at": "2026-03-27 17:17:01 UTC",
-      "elapsed_seconds": 99,
-      "state_file": "rl_dashboard_runs/run-20260327-171522-ea5504.json"
-    },
     {
       "run_id": "run-20260330-133908-49600c",
       "mode": "test",
@@ -393,6 +337,69 @@
       "finished_at": "2026-04-10 15:19:20 UTC",
       "elapsed_seconds": 19,
       "state_file": "rl_dashboard_runs/run-20260410-151901-aa15e3.json"
+    },
+    {
+      "run_id": "run-20260423-064854-25339f",
+      "mode": "train",
+      "status": "completed",
+      "started_at": "2026-04-23 06:48:54 UTC",
+      "finished_at": "2026-04-23 06:49:00 UTC",
+      "elapsed_seconds": 6,
+      "state_file": "rl_dashboard_runs/run-20260423-064854-25339f.json"
+    },
+    {
+      "run_id": "run-20260423-065958-66223e",
+      "mode": "train",
+      "status": "completed",
+      "started_at": "2026-04-23 06:59:58 UTC",
+      "finished_at": "2026-04-23 07:08:26 UTC",
+      "elapsed_seconds": 508,
+      "state_file": "rl_dashboard_runs/run-20260423-065958-66223e.json"
+    },
+    {
+      "run_id": "run-20260423-071937-744a94",
+      "mode": "train",
+      "status": "completed",
+      "started_at": "2026-04-23 07:19:37 UTC",
+      "finished_at": "2026-04-23 07:19:41 UTC",
+      "elapsed_seconds": 4,
+      "state_file": "rl_dashboard_runs/run-20260423-071937-744a94.json"
+    },
+    {
+      "run_id": "run-20260423-072319-825a2f",
+      "mode": "train",
+      "status": "completed",
+      "started_at": "2026-04-23 07:23:19 UTC",
+      "finished_at": "2026-04-23 07:37:02 UTC",
+      "elapsed_seconds": 823,
+      "state_file": "rl_dashboard_runs/run-20260423-072319-825a2f.json"
+    },
+    {
+      "run_id": "run-20260423-085752-fe113d",
+      "mode": "backtest_3way",
+      "status": "completed",
+      "started_at": "2026-04-23 08:57:52 UTC",
+      "finished_at": "2026-04-23 09:02:17 UTC",
+      "elapsed_seconds": 265,
+      "state_file": "rl_dashboard_runs/run-20260423-085752-fe113d.json"
+    },
+    {
+      "run_id": "run-20260423-090222-ea91dc",
+      "mode": "backtest_3way",
+      "status": "completed",
+      "started_at": "2026-04-23 09:02:22 UTC",
+      "finished_at": "2026-04-23 09:05:49 UTC",
+      "elapsed_seconds": 207,
+      "state_file": "rl_dashboard_runs/run-20260423-090222-ea91dc.json"
+    },
+    {
+      "run_id": "run-20260423-091809-bab3f2",
+      "mode": "backtest_3way",
+      "status": "completed",
+      "started_at": "2026-04-23 09:18:09 UTC",
+      "finished_at": "2026-04-23 09:23:10 UTC",
+      "elapsed_seconds": 301,
+      "state_file": "rl_dashboard_runs/run-20260423-091809-bab3f2.json"
     }
   ]
 }

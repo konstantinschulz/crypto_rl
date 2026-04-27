@@ -16,6 +16,23 @@ In a separate terminal:
 python rl_trader.py --days 7 --train-steps 50000 --mode train
 ```
 
+### 2b. Run the profile-based heavy launcher (recommended for long runs)
+```bash
+python run_heavy_training.py --profile smoke --dashboard
+python run_heavy_training.py --profile first_long --dashboard
+```
+
+Profiles in `run_heavy_training.py`:
+- `smoke`: quick wiring test (few thousand steps)
+- `first_long`: first serious long run
+- `first_long_recovery`: improved long-run config after no-trade collapse (recommended)
+- `full_long`: larger follow-up run once `first_long` is stable
+
+Every launch now writes persistent artifacts:
+- `artifacts/experiments/launches/<timestamp>_<profile>.json` (exact command + overrides)
+- `artifacts/experiments/logs/<timestamp>_<profile>.log` (full stdout/stderr)
+- `artifacts/experiments/summaries/<timestamp>_<profile>.json` (return code, elapsed time, dashboard final summary)
+
 ### 3. View Results
 - Dashboard automatically detects the new run
 - Metrics update every 2 seconds
@@ -100,13 +117,13 @@ rl_dashboard_runs/run-20260327-143200-a9d770.json
 
 ### Top Bar (Key Performance Indicators)
 ```
-Step: 21250    Trades: 15    Portfolio: $12,450.50    PnL: $2,450.50    Win Rate: 60.0%
+Step: 21250    Train Loss: 0.01234    Train Reward: 0.1050    Train Portfolio: 101.82
+Train PnL (R/U): 0.78 / 1.04    Eval Portfolio: 103.15    Eval PnL: 2.43
 ```
 - **Step**: Current training step (updated every 2 seconds)
-- **Trades**: Total trades executed during run
-- **Portfolio Value**: Current portfolio worth
-- **Realized PnL**: Profit/Loss from closed trades
-- **Win Rate**: Percentage of winning trades
+- **Train Loss / Reward**: live learning quality indicators
+- **Train Portfolio / PnL (R/U)**: live trading equity and realized/unrealized PnL
+- **Eval Portfolio / PnL**: latest evaluated split outcome
 
 ### Left Sidebar
 ```
@@ -156,6 +173,11 @@ Use this to:
 - Monitor training stability
 - Detect divergence (loss spikes = problems)
 - Confirm learning progress (loss should decrease)
+
+#### Additional Monitoring Series
+- **Unrealized PnL**: open-position PnL path over training
+- **Return / Drawdown (%)**: reward-quality vs risk path
+- **PPO Stability (KL / Clip Fraction)**: update step health and clipping pressure
 
 ## Usage Patterns
 

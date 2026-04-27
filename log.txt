@@ -1,0 +1,11 @@
+====================================
+MANUAL TUNING EXPERIMENT 1
+Objective: Test High Batch Size + Low Learning Rate + Targeted Penalties
+====================================
+Running command: /home/konstantin/miniconda3/bin/python rl_trader.py --mode backtest_3way --algo recurrent_ppo --device cuda --days 30 --max-symbols 5 --train-steps 30000 --learning-rate 0.0001 --batch-size 128 --n-steps 1024 --n-epochs 10 --trade-execution-penalty 0.1 --inactivity-penalty -0.8 --fee-regime mexc_spot_mx --model-arch [256, 128, 64] --lstm-hidden-size 128 --lstm-layers 1
+
+Traceback (most recent call last):
+  File "/home/konstantin/dev/crypto_rl/rl_trader.py", line 22, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'
+Experiment failed with code 1

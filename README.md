@@ -6,16 +6,20 @@ A minimal but production-grade reinforcement learning system for learning optima
 
 ### Installation
 ```bash
-pip install -r requirements.txt
+./.conda/bin/pip install -r requirements.txt
 ```
+
+### Workspace Interpreter Note
+This workspace uses a project-local interpreter at `./.conda/bin/python`.
+Use `./.conda/bin/python` (and matching `./.conda/bin/streamlit`) to avoid environment drift.
 
 ### Run Training with Dashboard
 ```bash
 # Terminal 1: Start the Streamlit dashboard
-streamlit run streamlit_dashboard.py --server.port 8766
+./.conda/bin/streamlit run streamlit_dashboard.py --server.port 8766
 
 # Terminal 2: Run training (dashboard auto-detects new runs)
-python rl_trader.py --days 7 --train-steps 50000 --mode train
+./.conda/bin/python rl_trader.py --days 7 --train-steps 50000 --mode train
 ```
 
 Open `http://localhost:8766` to monitor training in real-time.
@@ -52,6 +56,11 @@ python rl_trader.py --mode eval --model models/final_model.zip --days 3
   - Troubleshooting
 
 - **[DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)** — Streamlit dashboard deep dive
+    - **[GITHUB_INSTRUCTIONS.md](GITHUB_INSTRUCTIONS.md)** — Workspace execution conventions
+      - Required interpreter path (`./.conda/bin/python`)
+      - Command patterns for python/pip/streamlit
+      - Why subprocesses should inherit the local interpreter
+
   - How the dashboard works
   - Interface walkthrough
   - Metrics interpretation
@@ -171,6 +180,27 @@ python rl_trader.py \
   --dashboard \
   --device cuda
 ```
+
+### Conservative Walk-Forward Config
+For longer-history, rolling validation experiments, use the walk-forward mode:
+
+```bash
+./.conda/bin/python rl_trader.py \
+  --mode backtest_walk_forward \
+  --days 90 \
+  --max-symbols 5 \
+  --train-steps 25000 \
+  --walk-forward-folds 3 \
+  --walk-forward-train-ratio 0.50 \
+  --walk-forward-val-ratio 0.15 \
+  --walk-forward-test-ratio 0.15 \
+  --walk-forward-step-ratio 0.10 \
+  --model-arch "[384, 192, 96]"
+```
+
+This evaluates multiple contiguous windows and reports median Val/Test metrics across folds.
+
+For a ready-made sweep harness, use `run_experiment10.py`.
 
 ## 🐛 Troubleshooting
 

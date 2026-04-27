@@ -16,6 +16,9 @@ from gymnasium import Env, spaces
 @dataclass
 class TradingConfig:
     """Trading environment configuration - optimized for memory efficiency"""
+    timeframe_minutes: int = 15  # Coarser input timeframe reduces noise
+    lookback_steps: int = 12  # Rolling observation window length
+    reward_mode: str = 'equity_delta'  # equity_delta | shaped
     initial_cash: float = 100.0  # Smaller starting capital = smaller portfolio tracking
     max_positions: int = 3  # Reduced from 5 for memory efficiency
     max_budget_per_trade: float = 20.0  # Smaller per-trade limit
@@ -45,6 +48,9 @@ class TradingConfig:
     trade_execution_penalty: float = 0.0
     action_mapping_mode: str = 'legacy'  # legacy | validity_constrained
     action_deadzone: float = 0.15
+    sell_redirect_mode: str = 'oldest'  # oldest | largest_notional
+    semantic_bootstrap_buy_pct: float = 0.18
+    semantic_bootstrap_penalty: float = 0.05
     trade_rate_window: int = 240
     target_trade_rate: float = 0.18
     trade_rate_penalty: float = 0.0
@@ -53,13 +59,68 @@ class TradingConfig:
     max_trades_per_window: int = 0
     trade_window_steps: int = 240
     constraint_violation_penalty: float = 0.0
-    reward_equity_delta_scale: float = 0.0
+    reward_equity_delta_scale: float = 100.0
     turnover_penalty_rate: float = 0.0
     continuous_drawdown_penalty: float = 0.0
     randomize_episode_start: bool = False
     min_episode_steps: int = 0
     max_episode_steps: int = 0
     fee_randomization_pct: float = 0.0
+
+
+def _infer_time_unit(open_times: np.ndarray) -> str:
+    """Infer the timestamp unit used by the parquet file."""
+    if open_times.size < 2:
+        return 'ms'
+
+    window = open_times[-min(5000, len(open_times)):].astype(np.int64)
+    diffs = np.diff(window)
+    diffs = diffs[diffs > 0]
+    median_step = int(np.median(diffs)) if diffs.size else 60_000
+    if median_step >= 10_000_000_000:
+        return 'ns'
+    if median_step >= 10_000_000:
+        return 'us'
+    return 'ms'
+
+
+def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1.0 / max(1, period), adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / max(1, period), adjust=False).mean()
+    rs = gain / loss.replace(0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return rsi.fillna(50.0)
+
+
+def _add_technical_features(part: pd.DataFrame) -> pd.DataFrame:
+    """Add compact OHLCV-derived features for the policy input window."""
+    close = part['close'].astype(np.float32)
+    high = part['high'].astype(np.float32)
+    low = part['low'].astype(np.float32)
+    volume = part['volume'].astype(np.float32)
+
+    close_prev = close.shift(1)
+    part['log_close'] = np.log1p(np.maximum(close, 1e-9))
+    part['return_1'] = close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    part['log_return_1'] = np.log((close / close_prev).replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    part['range_pct'] = ((high - low) / close.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    part['volume_log'] = np.log1p(np.maximum(volume, 0.0))
+
+    vol_mean = volume.rolling(20, min_periods=3).mean()
+    vol_std = volume.rolling(20, min_periods=3).std(ddof=0).replace(0, np.nan)
+    part['volume_z'] = ((volume - vol_mean) / vol_std).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    ema_fast = close.ewm(span=12, adjust=False).mean()
+    ema_slow = close.ewm(span=26, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    part['ema_fast_gap'] = ((close - ema_fast) / close.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    part['ema_slow_gap'] = ((close - ema_slow) / close.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    part['macd_hist_pct'] = ((macd - macd_signal) / close.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    part['rsi_14'] = _compute_rsi(close, period=14) / 100.0
+
+    return part
 
 
 class CryptoTradingEnv(Env):
@@ -73,6 +134,7 @@ class CryptoTradingEnv(Env):
         """
         super().__init__()
         self.config = config or TradingConfig()
+        self.lookback_steps = max(1, int(self.config.lookback_steps))
 
         required_cols = {'symbol', 'open_time', 'close'}
         missing = required_cols - set(df.columns)
@@ -82,30 +144,59 @@ class CryptoTradingEnv(Env):
         self.symbols = sorted(df['symbol'].unique().tolist())
         self.symbol_to_idx = {s: i for i, s in enumerate(self.symbols)}
 
-        # Keep only a compact close-price matrix in memory: [time, symbol]
+        preferred_features = [
+            'log_close',
+            'return_1',
+            'log_return_1',
+            'range_pct',
+            'volume_log',
+            'volume_z',
+            'ema_fast_gap',
+            'ema_slow_gap',
+            'macd_hist_pct',
+            'rsi_14',
+        ]
+
+        # Keep a compact feature cube in memory: [time, symbol, feature]
         close_columns: List[np.ndarray] = []
+        feature_columns: List[np.ndarray] = []
         min_steps: Optional[int] = None
+        selected_features: Optional[List[str]] = None
         for symbol in self.symbols:
-            part = df.loc[df['symbol'] == symbol, ['open_time', 'close']]
+            part_cols = ['open_time', 'close'] + [c for c in preferred_features if c in df.columns]
+            part = df.loc[df['symbol'] == symbol, part_cols].copy()
             if part.empty:
                 continue
             idx = np.argsort(part['open_time'].to_numpy(dtype=np.int64))
-            symbol_close = part['close'].to_numpy(dtype=np.float32)[idx]
-            if symbol_close.size == 0:
+            part = part.iloc[idx].reset_index(drop=True)
+
+            if selected_features is None:
+                selected_features = [c for c in preferred_features if c in part.columns]
+            if not selected_features:
+                selected_features = ['close']
+
+            symbol_close = part['close'].to_numpy(dtype=np.float32)
+            symbol_features = part[selected_features].to_numpy(dtype=np.float32)
+            if symbol_close.size == 0 or symbol_features.size == 0:
                 continue
             if min_steps is None:
                 min_steps = int(symbol_close.size)
             else:
                 min_steps = min(min_steps, int(symbol_close.size))
             close_columns.append(symbol_close)
+            feature_columns.append(symbol_features)
 
         if not close_columns or min_steps is None or min_steps < 2:
             raise ValueError('Not enough aligned rows to build environment.')
 
-        trimmed = [col[-min_steps:] for col in close_columns]
-        self.price_matrix = np.column_stack(trimmed).astype(np.float32)
+        trimmed_close = [col[-min_steps:] for col in close_columns]
+        trimmed_features = [col[-min_steps:] for col in feature_columns]
+        self.price_matrix = np.column_stack(trimmed_close).astype(np.float32)
+        self.feature_names = list(selected_features or ['close'])
+        self.feature_cube = np.stack(trimmed_features, axis=1).astype(np.float32)
         self.n_steps, self.n_symbols = self.price_matrix.shape
-        
+        self.n_features = int(self.feature_cube.shape[2])
+
         # Trading state
         self.current_step = 0
         self.positions = {}  # {symbol: {'qty': float, 'entry_price': float, 'entry_step': int}}
@@ -126,6 +217,8 @@ class CryptoTradingEnv(Env):
         self.sell_actions = 0
         self.invalid_sell_attempts = 0
         self.remapped_actions = 0
+        self.semantic_sell_redirects = 0
+        self.semantic_bootstrap_buys = 0
         self.recent_trade_actions = deque(maxlen=max(10, int(self.config.trade_rate_window)))
         self.executed_trade_steps = deque()
         self.last_trade_step_by_symbol: Dict[str, int] = {}
@@ -149,9 +242,10 @@ class CryptoTradingEnv(Env):
             high = np.array([2, len(self.symbols) - 1, 1], dtype=np.float32)
         self.action_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
-        # State: [log-prices for all symbols] + [cash, num_positions, return, bias]
+        # State: [rolling feature window] + [cash, num_positions, return, progress]
+        obs_dim = self.lookback_steps * self.n_symbols * self.n_features + 4
         self.observation_space = spaces.Box(
-            low=-20.0, high=1e6, shape=(self.n_symbols + 4,), dtype=np.float32
+            low=-1e6, high=1e6, shape=(obs_dim,), dtype=np.float32
         )
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -175,6 +269,8 @@ class CryptoTradingEnv(Env):
         self.sell_actions = 0
         self.invalid_sell_attempts = 0
         self.remapped_actions = 0
+        self.semantic_sell_redirects = 0
+        self.semantic_bootstrap_buys = 0
         self.recent_trade_actions.clear()
         self.executed_trade_steps.clear()
         self.last_trade_step_by_symbol = {}
@@ -248,6 +344,25 @@ class CryptoTradingEnv(Env):
     def _resolve_action_components(self, action: np.ndarray) -> Tuple[int, int, float]:
         mode = str(self.config.action_mapping_mode).lower()
         if mode != 'validity_constrained':
+            if mode == 'inventory_delta':
+                intent = float(np.clip(action[0], -1, 1))
+                symbol_idx = int(np.clip(action[1], 0, len(self.symbols) - 1))
+                amount_pct = float(np.clip(action[2], 0, 1))
+                deadzone = max(0.0, float(self.config.action_deadzone))
+
+                if abs(intent) <= deadzone:
+                    action_type = 0
+                elif intent > deadzone:
+                    action_type = 1
+                else:
+                    if len(self.positions) > 0:
+                        action_type = 2
+                    else:
+                        action_type = 1
+                        amount_pct = max(amount_pct, float(self.config.semantic_bootstrap_buy_pct))
+
+                return action_type, symbol_idx, amount_pct
+
             action_type = int(np.clip(action[0], 0, 2))
             symbol_idx = int(np.clip(action[1], 0, len(self.symbols) - 1))
             amount_pct = float(np.clip(action[2], 0, 1))
@@ -266,6 +381,27 @@ class CryptoTradingEnv(Env):
             action_type = 2 if len(self.positions) > 0 else 0
 
         return action_type, symbol_idx, amount_pct
+
+    def _select_redirect_sell_symbol(self, requested_symbol: str) -> str:
+        if requested_symbol in self.positions:
+            return requested_symbol
+        if not self.positions:
+            return requested_symbol
+
+        mode = str(self.config.sell_redirect_mode).lower()
+        if mode == 'largest_notional':
+            best_symbol = requested_symbol
+            best_notional = -1.0
+            for sym, pos in self.positions.items():
+                sym_idx = self.symbol_to_idx[sym]
+                notional = float(pos['qty']) * float(self.last_prices[sym_idx])
+                if notional > best_notional:
+                    best_notional = notional
+                    best_symbol = sym
+            return best_symbol
+
+        # Default: oldest held position.
+        return min(self.positions.items(), key=lambda item: int(item[1]['entry_step']))[0]
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         """
@@ -280,6 +416,7 @@ class CryptoTradingEnv(Env):
         prev_portfolio_value = self._get_portfolio_value(self.last_prices)
         self.current_step += 1
         step_reward = 0.0
+        use_equity_delta_reward = str(self.config.reward_mode).lower() == 'equity_delta'
         action_taken = False  # Track if a real action (buy/sell) was taken
         self._last_executed_notional = 0.0
         
@@ -295,6 +432,16 @@ class CryptoTradingEnv(Env):
         
         # Parse action
         action_type, symbol_idx, amount_pct = self._resolve_action_components(action)
+
+        mode = str(self.config.action_mapping_mode).lower()
+        is_inventory_delta = mode == 'inventory_delta'
+
+        if is_inventory_delta and len(self.positions) == 0:
+            intent = float(np.clip(action[0], -1, 1))
+            deadzone = max(0.0, float(self.config.action_deadzone))
+            if intent < -deadzone and action_type == 1:
+                self.semantic_bootstrap_buys += 1
+                step_reward -= float(self.config.semantic_bootstrap_penalty)
         
         # IMPORTANT: If model is trying to trade (action_type > 0), force a minimum amount
         # This prevents model from "intending" to trade but using 0 amount
@@ -303,7 +450,7 @@ class CryptoTradingEnv(Env):
 
         # Validity gate: selling with no open positions is invalid.
         # Remap invalid sell actions to buy so impossible actions still explore the market.
-        if action_type == 2 and len(self.positions) == 0:
+        if (not is_inventory_delta) and action_type == 2 and len(self.positions) == 0:
             self.invalid_sell_attempts += 1
             self.remapped_actions += 1
             mode = str(self.config.invalid_sell_mode).lower()
@@ -318,6 +465,12 @@ class CryptoTradingEnv(Env):
             step_reward -= abs(float(self.config.invalid_sell_penalty))
         
         symbol = self.symbols[symbol_idx]
+        if is_inventory_delta and action_type == 2 and len(self.positions) > 0 and symbol not in self.positions:
+            redirected = self._select_redirect_sell_symbol(symbol)
+            if redirected != symbol:
+                self.semantic_sell_redirects += 1
+                symbol = redirected
+                symbol_idx = self.symbol_to_idx[symbol]
         current_price = float(prices[symbol_idx])
 
         # Hard execution constraints to reduce pathological churn.
@@ -339,18 +492,22 @@ class CryptoTradingEnv(Env):
 
         # Execute trading action and give bonus for attempting to trade
         if action_type == 1 and amount_pct > 0.05:  # BUY (lowered threshold from 0.1)
-            step_reward += self._execute_buy(symbol, current_price, amount_pct)
+            buy_reward = self._execute_buy(symbol, current_price, amount_pct)
+            if not use_equity_delta_reward:
+                step_reward += buy_reward
             action_taken = True
         elif action_type == 2 and amount_pct > 0.05:  # SELL (lowered threshold from 0.1)
             sell_reward = self._execute_sell(symbol, current_price, amount_pct)
             if sell_reward > 0:  # Actual position was sold
-                step_reward += sell_reward
+                if not use_equity_delta_reward:
+                    step_reward += sell_reward
                 action_taken = True
             else:  # Invalid sell (no position to sell)
                 step_reward -= 3.0  # HEAVY penalty for invalid action
         else:
-            # PENALTY for inactivity (doing nothing / hold action)
-            step_reward += self.config.inactivity_penalty
+            if not use_equity_delta_reward:
+                # PENALTY for inactivity (doing nothing / hold action)
+                step_reward += self.config.inactivity_penalty
 
         self.recent_trade_actions.append(1 if action_taken else 0)
 
@@ -389,33 +546,38 @@ class CryptoTradingEnv(Env):
             elif self.current_step - pos['entry_step'] > self.config.position_duration_limit:
                 self._close_position(sym, current_price, reason='time_limit')
         
-        # Calculate reward components
         portfolio_value = self._get_portfolio_value(prices)
 
-        if self.config.reward_equity_delta_scale != 0:
+        if use_equity_delta_reward:
             delta_ratio = (portfolio_value - prev_portfolio_value) / max(1e-6, float(self.config.initial_cash))
             step_reward += float(self.config.reward_equity_delta_scale) * float(delta_ratio)
-        
-        # Remove the passive profit bonus - force trading for profits
-        # Profit bonus (only if profitable and we have active positions)
-        if len(self.positions) > 0:
-            unrealized_pnl = portfolio_value - self.config.initial_cash
-            if unrealized_pnl > 0:
-                step_reward += unrealized_pnl / 200.0  # Much smaller bonus
-        
-        # Drawdown penalty
-        drawdown_pct = 0.0
-        if portfolio_value < self.peak_portfolio_value:
-            drawdown_pct = (self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value
-            if drawdown_pct > self.config.max_drawdown_pct:
-                step_reward -= self.config.drawdown_penalty
-        if self.config.continuous_drawdown_penalty > 0 and drawdown_pct > 0:
-            step_reward -= float(self.config.continuous_drawdown_penalty) * float(drawdown_pct)
-        
-        # Diversification bonus - encourage multiple positions
-        if len(self.positions) > 1:
-            step_reward += len(self.positions) * 0.1  # Reduced bonus
-        
+            if self.config.continuous_drawdown_penalty > 0:
+                drawdown_pct = 0.0
+                if portfolio_value < self.peak_portfolio_value:
+                    drawdown_pct = (self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value
+                if drawdown_pct > 0:
+                    step_reward -= float(self.config.continuous_drawdown_penalty) * float(drawdown_pct)
+        else:
+            # Remove the passive profit bonus - force trading for profits
+            # Profit bonus (only if profitable and we have active positions)
+            if len(self.positions) > 0:
+                unrealized_pnl = portfolio_value - self.config.initial_cash
+                if unrealized_pnl > 0:
+                    step_reward += unrealized_pnl / 200.0  # Much smaller bonus
+
+            # Drawdown penalty
+            drawdown_pct = 0.0
+            if portfolio_value < self.peak_portfolio_value:
+                drawdown_pct = (self.peak_portfolio_value - portfolio_value) / self.peak_portfolio_value
+                if drawdown_pct > self.config.max_drawdown_pct:
+                    step_reward -= self.config.drawdown_penalty
+            if self.config.continuous_drawdown_penalty > 0 and drawdown_pct > 0:
+                step_reward -= float(self.config.continuous_drawdown_penalty) * float(drawdown_pct)
+
+            # Diversification bonus - encourage multiple positions
+            if len(self.positions) > 1:
+                step_reward += len(self.positions) * 0.1  # Reduced bonus
+
         self.peak_portfolio_value = max(self.peak_portfolio_value, portfolio_value)
         
         if self.config.keep_history:
@@ -449,6 +611,8 @@ class CryptoTradingEnv(Env):
             'sell_actions': self.sell_actions,
             'invalid_sell_attempts': self.invalid_sell_attempts,
             'remapped_actions': self.remapped_actions,
+            'semantic_sell_redirects': self.semantic_sell_redirects,
+            'semantic_bootstrap_buys': self.semantic_bootstrap_buys,
             'recent_trade_rate': float(sum(self.recent_trade_actions)) / float(len(self.recent_trade_actions))
             if len(self.recent_trade_actions) > 0
             else 0.0,
@@ -484,10 +648,10 @@ class CryptoTradingEnv(Env):
         self.fees_paid_total += fee
         self.total_trades += 1
         
-        # STRONG bonus for taking a trade action (buy)
-        trade_bonus = self.config.trade_action_bonus  # 5.0 - strong signal
-        fee_penalty = fee_rate * amount
-        return trade_bonus - fee_penalty
+        # No immediate reward for buying — reward comes when the position is closed profitably.
+        # Returning 0 here prevents the perma-buy exploit where the agent earns a bonus just
+        # for entering a trade regardless of whether it is profitable.
+        return 0.0
     
     def _execute_sell(self, symbol: str, price: float, pct: float) -> float:
         """Execute sell order"""
@@ -528,15 +692,19 @@ class CryptoTradingEnv(Env):
         if len(self.closed_trades) > self.max_closed_trades_history:
             self.closed_trades = self.closed_trades[-self.max_closed_trades_history:]
         
-        # Reward = strong bonus for selling + realized P&L
-        sell_action_bonus = self.config.trade_action_bonus  # 5.0
+        # Reward = realized PnL scaled to portfolio, plus a bonus only on profitable exits.
+        # Losses are penalized proportionally, winning trades get an amplified bonus.
+        realized_pct = realized_pnl / max(1e-6, float(self.config.initial_cash))
         if realized_pnl > 0:
-            profit_bonus = min(realized_pnl * 10, self.config.realized_pnl_bonus)  # Scale up small profits
-            return sell_action_bonus + profit_bonus
+            # Amplify wins: bonus scales with actual profit fraction, capped at realized_pnl_bonus
+            profit_bonus = min(
+                realized_pnl * float(self.config.profit_bonus_scale),
+                float(self.config.realized_pnl_bonus),
+            )
+            return profit_bonus
         else:
-            # Even losses get the action bonus to encourage trying
-            loss_penalty = realized_pnl / 10.0  # Small loss scaling
-            return sell_action_bonus + loss_penalty
+            # Losses hurt proportionally — no action bonus on losing trades
+            return realized_pnl
 
     def _close_position(self, symbol: str, price: float, reason: str = 'forced') -> None:
         """Force-close a position (stop loss or max duration)"""
@@ -613,6 +781,8 @@ class CryptoTradingEnv(Env):
             'sell_actions': float(self.sell_actions),
             'invalid_sell_attempts': float(self.invalid_sell_attempts),
             'remapped_actions': float(self.remapped_actions),
+            'semantic_sell_redirects': float(self.semantic_sell_redirects),
+            'semantic_bootstrap_buys': float(self.semantic_bootstrap_buys),
             'hold_action_pct': float(self.hold_actions) / actions_den,
             'buy_action_pct': float(self.buy_actions) / actions_den,
             'sell_action_pct': float(self.sell_actions) / actions_den,
@@ -623,21 +793,26 @@ class CryptoTradingEnv(Env):
     
     def _get_observation(self) -> np.ndarray:
         """Build observation state for agent"""
-        prices = self.last_prices
-
-        # Normalize prices (log scale for stability)
-        price_features = np.log1p(np.maximum(prices, 1e-9)).astype(np.float32)
+        end = max(0, self.current_step)
+        start = max(self.episode_start_step, end - self.lookback_steps + 1)
+        window = self.feature_cube[start:end + 1]
+        if window.shape[0] < self.lookback_steps:
+            pad_len = self.lookback_steps - window.shape[0]
+            pad = np.repeat(window[:1], pad_len, axis=0)
+            window = np.concatenate([pad, window], axis=0)
 
         # Portfolio state
+        prices = self.last_prices
         portfolio_value = self._get_portfolio_value(prices)
         cash_norm = np.log1p(self.cash / 1e6)
         num_positions = len(self.positions) / self.config.max_positions
         portfolio_return = (portfolio_value - self.config.initial_cash) / self.config.initial_cash
+        progress = self.current_step / max(1, self.episode_end_step)
 
         # Combine into state vector
         obs = np.concatenate([
-            price_features,
-            np.array([cash_norm, num_positions, portfolio_return, 0.0], dtype=np.float32),
+            window.reshape(-1).astype(np.float32),
+            np.array([cash_norm, num_positions, portfolio_return, progress], dtype=np.float32),
         ]).astype(np.float32)
 
         return obs
@@ -663,6 +838,7 @@ def load_training_data(
     num_days: int = 7,
     symbols: Optional[Sequence[str]] = None,
     max_symbols: int = 3,  # Reduced default from 10 for memory efficiency
+    timeframe_minutes: int = 15,
     use_cache: bool = True,
     cache_dir: str = '.cache',
 ) -> pd.DataFrame:
@@ -678,15 +854,14 @@ def load_training_data(
 
     cache_path = (
         Path(cache_dir)
-        / f"v3_train_days{num_days}_sym{len(symbol_list)}_{'-'.join(symbol_list)}.parquet"
+        / f"v4_train_tf{int(timeframe_minutes)}_days{num_days}_sym{len(symbol_list)}_{'-'.join(symbol_list)}.parquet"
     )
     if use_cache and cache_path.exists():
         return pd.read_parquet(cache_path)
 
     dataset = ds.dataset(filepath, format='parquet')
     frames: List[pd.DataFrame] = []
-    # ONLY load close price - reduces memory footprint significantly
-    columns = ['symbol', 'open_time', 'close']
+    columns = ['symbol', 'open_time', 'open', 'high', 'low', 'close', 'volume']
 
     for symbol in symbol_list:
         symbol_filter = ds.field('symbol') == symbol
@@ -722,8 +897,37 @@ def load_training_data(
 
         part = table.to_pandas()
         part['symbol'] = part['symbol'].astype('category')
-        part['close'] = part['close'].astype(np.float32)  # Use float32 for prices
         part['open_time'] = part['open_time'].astype(np.int64)
+
+        ts_unit = _infer_time_unit(part['open_time'].to_numpy(dtype=np.int64))
+        part['open_time_dt'] = pd.to_datetime(part['open_time'], unit=ts_unit, utc=True)
+        part = part.sort_values('open_time_dt').set_index('open_time_dt')
+
+        if int(timeframe_minutes) > 1:
+            rule = f'{int(timeframe_minutes)}min'
+            part = part.resample(rule).agg(
+                {
+                    'symbol': 'last',
+                    'open_time': 'last',
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum',
+                }
+            )
+            part = part.dropna(subset=['close'])
+            if part.empty:
+                continue
+            part[['open', 'high', 'low', 'close']] = part[['open', 'high', 'low', 'close']].ffill()
+            part['volume'] = part['volume'].fillna(0.0)
+            part = part.reset_index(drop=True)
+
+        part = _add_technical_features(part.reset_index(drop=True))
+        part[['open', 'high', 'low', 'close', 'volume']] = part[['open', 'high', 'low', 'close', 'volume']].astype(np.float32)
+        part['open_time'] = part['open_time'].astype(np.int64)
+        numeric_cols = [c for c in part.columns if c != 'symbol']
+        part[numeric_cols] = part[numeric_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
         frames.append(part)
 
     if not frames:

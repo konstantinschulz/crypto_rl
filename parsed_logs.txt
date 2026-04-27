@@ -1,0 +1,364 @@
+=== manual_log.txt ===
+|    ep_rew_mean     | -5.94    |
+| time/              |          |
+|    fps             | 239      |
+|    iterations      | 30       |
+|    time_elapsed    | 128      |
+|    total_timesteps | 30720    |
+---------------------------------
+[TIMING] Training completed in 129.3s
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 575
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 576
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+
+Experiment 1 completed in 139.46 seconds.
+
+=== manual_log_2.txt ===
+|    ep_rew_mean     | -9.41    |
+| time/              |          |
+|    fps             | 232      |
+|    iterations      | 30       |
+|    time_elapsed    | 132      |
+|    total_timesteps | 30720    |
+---------------------------------
+[TIMING] Training completed in 133.3s
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 575
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 576
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+
+Experiment 2 completed in 144.30 seconds.
+
+=== manual_log_3.txt ===
+|    ep_rew_mean     | -45.1    |
+| time/              |          |
+|    fps             | 223      |
+|    iterations      | 59       |
+|    time_elapsed    | 135      |
+|    total_timesteps | 30208    |
+---------------------------------
+[TIMING] Training completed in 136.1s
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 575
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 576
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+
+Experiment 3 completed in 146.74 seconds.
+
+=== manual_log_4.txt ===
+|    ep_rew_mean     | -0.47    |
+| time/              |          |
+|    fps             | 222      |
+|    iterations      | 391      |
+|    time_elapsed    | 449      |
+|    total_timesteps | 100096   |
+---------------------------------
+[TIMING] Training completed in 449.6s
+✓ Model saved to models/final_model
+
+======================================================================
+PHASE 2: Validation on val set
+======================================================================
+
+Evaluating...
+  [DEV] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 575
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+  [TEST] No trades closed
+
+Evaluation Results:
+  Total Return: 0.00%
+  Final Portfolio Value: $100.00
+  Max Portfolio Value: $100.00
+  Total Reward: 0.00
+  Steps: 576
+  Trades: 0 | Win Rate: 0.0%
+  Realized PnL: $0.00 | Unrealized: $0.00
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    0 | WR:   0.0% | Return:   0.00%
+Test Trades:   0 | WR:   0.0% | Return:   0.00%
+======================================================================
+
+Experiment 4 completed in 457.75 seconds.
+
+=== manual_log_5.txt ===
+    Total PnL: $0.01 | Avg PnL/Trade: $0.0000
+    Top 5 Trades:
+      1. BNBUSDT  | Entry: $873.000000 → Exit: $882.599976 | Return:   1.10% | PnL: $  0.0086 | Reason: sell
+      2. BNBUSDT  | Entry: $873.000000 → Exit: $881.010010 | Return:   0.92% | PnL: $  0.0079 | Reason: sell
+      3. BNBUSDT  | Entry: $873.000000 → Exit: $878.859985 | Return:   0.67% | PnL: $  0.0063 | Reason: sell
+      4. BNBUSDT  | Entry: $873.000000 → Exit: $880.549988 | Return:   0.86% | PnL: $  0.0060 | Reason: sell
+      5. BNBUSDT  | Entry: $924.210022 → Exit: $930.030029 | Return:   0.63% | PnL: $  0.0053 | Reason: sell
+
+Evaluation Results:
+  Total Return: -0.01%
+  Final Portfolio Value: $99.99
+  Max Portfolio Value: $100.13
+  Total Reward: 14261.32
+  Steps: 575
+  Trades: 577 | Win Rate: 25.6%
+  Realized PnL: $0.01 | Unrealized: $-0.02
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+
+  [TEST] Trade Summary (573 trades):
+    Wins: 325 | Losses: 248 | Win Rate: 56.7%
+    Total PnL: $-0.22 | Avg PnL/Trade: $-0.0004
+    Top 5 Trades:
+      1. BNBUSDT  | Entry: $772.349976 → Exit: $781.380005 | Return:   1.17% | PnL: $  0.0137 | Reason: end_of_episode
+      2. BNBUSDT  | Entry: $772.349976 → Exit: $778.150024 | Return:   0.75% | PnL: $  0.0071 | Reason: sell
+      3. BNBUSDT  | Entry: $856.159973 → Exit: $861.640015 | Return:   0.64% | PnL: $  0.0060 | Reason: sell
+      4. BNBUSDT  | Entry: $856.159973 → Exit: $864.510010 | Return:   0.98% | PnL: $  0.0055 | Reason: sell
+      5. BNBUSDT  | Entry: $856.159973 → Exit: $865.169983 | Return:   1.05% | PnL: $  0.0054 | Reason: sell
+
+Evaluation Results:
+  Total Return: -0.25%
+  Final Portfolio Value: $99.75
+  Max Portfolio Value: $100.08
+  Total Reward: 14080.51
+  Steps: 576
+  Trades: 580 | Win Rate: 56.0%
+  Realized PnL: $-0.22 | Unrealized: $-0.03
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:  577 | WR:  25.6% | Return:  -0.01%
+Test Trades: 580 | WR:  56.0% | Return:  -0.25%
+======================================================================
+
+Experiment 5 completed in 118.29 seconds.
+
+=== manual_log_6.txt ===
+    Total PnL: $0.01 | Avg PnL/Trade: $0.0000
+    Top 5 Trades:
+      1. BNBUSDT  | Entry: $873.000000 → Exit: $882.599976 | Return:   1.10% | PnL: $  0.0086 | Reason: sell
+      2. BNBUSDT  | Entry: $873.000000 → Exit: $881.010010 | Return:   0.92% | PnL: $  0.0079 | Reason: sell
+      3. BNBUSDT  | Entry: $873.000000 → Exit: $878.859985 | Return:   0.67% | PnL: $  0.0063 | Reason: sell
+      4. BNBUSDT  | Entry: $873.000000 → Exit: $880.549988 | Return:   0.86% | PnL: $  0.0060 | Reason: sell
+      5. BNBUSDT  | Entry: $924.210022 → Exit: $930.030029 | Return:   0.63% | PnL: $  0.0053 | Reason: sell
+
+Evaluation Results:
+  Total Return: -0.01%
+  Final Portfolio Value: $99.99
+  Max Portfolio Value: $100.13
+  Total Reward: 1007.57
+  Steps: 575
+  Trades: 577 | Win Rate: 25.6%
+  Realized PnL: $0.01 | Unrealized: $-0.02
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+
+  [TEST] Trade Summary (573 trades):
+    Wins: 325 | Losses: 248 | Win Rate: 56.7%
+    Total PnL: $-0.22 | Avg PnL/Trade: $-0.0004
+    Top 5 Trades:
+      1. BNBUSDT  | Entry: $772.349976 → Exit: $781.380005 | Return:   1.17% | PnL: $  0.0137 | Reason: end_of_episode
+      2. BNBUSDT  | Entry: $772.349976 → Exit: $778.150024 | Return:   0.75% | PnL: $  0.0071 | Reason: sell
+      3. BNBUSDT  | Entry: $856.159973 → Exit: $861.640015 | Return:   0.64% | PnL: $  0.0060 | Reason: sell
+      4. BNBUSDT  | Entry: $856.159973 → Exit: $864.510010 | Return:   0.98% | PnL: $  0.0055 | Reason: sell
+      5. BNBUSDT  | Entry: $856.159973 → Exit: $865.169983 | Return:   1.05% | PnL: $  0.0054 | Reason: sell
+
+Evaluation Results:
+  Total Return: -0.25%
+  Final Portfolio Value: $99.75
+  Max Portfolio Value: $100.08
+  Total Reward: 803.71
+  Steps: 576
+  Trades: 580 | Win Rate: 56.0%
+  Realized PnL: $-0.22 | Unrealized: $-0.03
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:  577 | WR:  25.6% | Return:  -0.01%
+Test Trades: 580 | WR:  56.0% | Return:  -0.25%
+======================================================================
+
+Experiment 6 completed in 97.26 seconds.
+
+=== manual_log_7.txt ===
+======================================================================
+
+Evaluating...
+
+  [DEV] Trade Summary (2 trades):
+    Wins: 0 | Losses: 2 | Win Rate: 0.0%
+    Total PnL: $-0.87 | Avg PnL/Trade: $-0.4365
+    Top 5 Trades:
+      1. BNBUSDT  | Entry: $884.150024 → Exit: $863.750000 | Return:  -2.31% | PnL: $ -0.2330 | Reason: end_of_episode
+      2. BNBUSDT  | Entry: $930.030029 → Exit: $870.830017 | Return:  -6.37% | PnL: $ -0.6400 | Reason: stop_loss
+
+Evaluation Results:
+  Total Return: -0.88%
+  Final Portfolio Value: $99.12
+  Max Portfolio Value: $100.02
+  Total Reward: -100.00
+  Steps: 575
+  Trades: 4 | Win Rate: 0.0%
+  Realized PnL: $-0.87 | Unrealized: $-0.01
+
+======================================================================
+PHASE 3: Testing on test set
+======================================================================
+
+Evaluating...
+
+  [TEST] Trade Summary (2 trades):
+    Wins: 0 | Losses: 2 | Win Rate: 0.0%
+    Total PnL: $-1.06 | Avg PnL/Trade: $-0.5280
+    Top 5 Trades:
+      1. BNBUSDT  | Entry: $812.049988 → Exit: $769.619995 | Return:  -5.23% | PnL: $ -0.5233 | Reason: stop_loss
+      2. BNBUSDT  | Entry: $872.789978 → Exit: $826.609985 | Return:  -5.29% | PnL: $ -0.5327 | Reason: stop_loss
+
+Evaluation Results:
+  Total Return: -1.06%
+  Final Portfolio Value: $98.94
+  Max Portfolio Value: $100.41
+  Total Reward: -200.00
+  Steps: 576
+  Trades: 4 | Win Rate: 0.0%
+  Realized PnL: $-1.06 | Unrealized: $-0.01
+
+======================================================================
+BACKTEST SUMMARY
+======================================================================
+Val Trades:    4 | WR:   0.0% | Return:  -0.88%
+Test Trades:   4 | WR:   0.0% | Return:  -1.06%
+======================================================================
+
+Experiment 7 completed in 110.19 seconds.
+

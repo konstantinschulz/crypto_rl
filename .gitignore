@@ -6,3 +6,4 @@ rl_dashboard_runs/
 tb_logs/
 .env
 *.parquet
+artifacts/

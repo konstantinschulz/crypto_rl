@@ -1,0 +1,508 @@
+{
+  "ts": "2026-04-23 07:19:41 UTC",
+  "run": {
+    "run_id": "run-20260423-071937-744a94",
+    "mode": "train",
+    "status": "completed",
+    "started_at": "2026-04-23 07:19:37 UTC",
+    "started_ts_epoch": 1776928777,
+    "finished_at": "2026-04-23 07:19:41 UTC",
+    "finished_ts_epoch": 1776928781,
+    "elapsed_seconds": 4,
+    "state_file": "rl_dashboard_runs/run-20260423-071937-744a94.json",
+    "total_timesteps": 1200,
+    "current_step": 1400,
+    "progress_pct": 100.0,
+    "final_summary": {
+      "kind": "split_aggregate",
+      "mode": "train",
+      "portfolio_value": 100.0,
+      "total_return_pct": 0.0,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0,
+      "trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate_pct": 0.0,
+      "source": "test/dev final"
+    }
+  },
+  "technical": {
+    "step": 1400,
+    "epoch": 2,
+    "n_updates": 10,
+    "n_steps": 512,
+    "batch_size": 64,
+    "learning_rate": 0.0003,
+    "num_data_rows": 1345,
+    "memory": {
+      "device": "cpu",
+      "ram_mb": 732.99609375,
+      "vram_allocated_mb": null,
+      "vram_reserved_mb": null,
+      "vram_process_mb": null,
+      "vram_gpu_used_mb": null
+    },
+    "loss": {
+      "train": 522.0159301757812,
+      "dev": -0.0,
+      "test": null,
+      "policy": -0.001496265549212694,
+      "value": 632.8224143981934,
+      "entropy": -4.2717596888542175,
+      "approx_kl": 0.0036446815356612206,
+      "clip_fraction": 0.00703125
+    }
+  },
+  "rewards": {
+    "train": 0.0005497786445575059,
+    "dev": 0.0,
+    "test": null
+  },
+  "finance": {
+    "initial_cash": 100.0,
+    "portfolio_value": 100.0,
+    "total_return_pct": 0.0,
+    "realized_pnl": 0.0,
+    "unrealized_pnl": 0.0,
+    "num_positions": 3,
+    "trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate_pct": 0.0,
+    "stop_loss_exits": 0,
+    "fees_paid": 0.01084,
+    "drawdown_pct": 0.0191534160347265
+  },
+  "splits": {
+    "dev": {
+      "steps": 299,
+      "total_reward": 0.0,
+      "avg_reward_per_step": 0.0,
+      "proxy_loss": -0.0,
+      "final_portfolio_value": 100.0,
+      "total_return_pct": 0.0,
+      "trades": 0,
+      "winning_trades": 0,
+      "losing_trades": 0,
+      "win_rate_pct": 0.0,
+      "realized_pnl": 0.0,
+      "unrealized_pnl": 0.0
+    },
+    "test": null
+  },
+  "series": {
+    "train_loss": [
+      {
+        "step": 600,
+        "value": 430.5008544921875
+      },
+      {
+        "step": 800,
+        "value": 430.5008544921875
+      },
+      {
+        "step": 1000,
+        "value": 430.5008544921875
+      },
+      {
+        "step": 1200,
+        "value": 522.0159301757812
+      },
+      {
+        "step": 1400,
+        "value": 522.0159301757812
+      }
+    ],
+    "policy_loss": [
+      {
+        "step": 600,
+        "value": -0.0025059318635612727
+      },
+      {
+        "step": 800,
+        "value": -0.0025059318635612727
+      },
+      {
+        "step": 1000,
+        "value": -0.0025059318635612727
+      },
+      {
+        "step": 1200,
+        "value": -0.001496265549212694
+      },
+      {
+        "step": 1400,
+        "value": -0.001496265549212694
+      }
+    ],
+    "value_loss": [
+      {
+        "step": 600,
+        "value": 860.5955841064454
+      },
+      {
+        "step": 800,
+        "value": 860.5955841064454
+      },
+      {
+        "step": 1000,
+        "value": 860.5955841064454
+      },
+      {
+        "step": 1200,
+        "value": 632.8224143981934
+      },
+      {
+        "step": 1400,
+        "value": 632.8224143981934
+      }
+    ],
+    "approx_kl": [
+      {
+        "step": 600,
+        "value": 0.000987442210316658
+      },
+      {
+        "step": 800,
+        "value": 0.000987442210316658
+      },
+      {
+        "step": 1000,
+        "value": 0.000987442210316658
+      },
+      {
+        "step": 1200,
+        "value": 0.0036446815356612206
+      },
+      {
+        "step": 1400,
+        "value": 0.0036446815356612206
+      }
+    ],
+    "clip_fraction": [
+      {
+        "step": 600,
+        "value": 0.01875
+      },
+      {
+        "step": 800,
+        "value": 0.01875
+      },
+      {
+        "step": 1000,
+        "value": 0.01875
+      },
+      {
+        "step": 1200,
+        "value": 0.00703125
+      },
+      {
+        "step": 1400,
+        "value": 0.00703125
+      }
+    ],
+    "train_reward": [
+      {
+        "step": 200,
+        "value": -0.01015044649333305
+      },
+      {
+        "step": 400,
+        "value": -0.022400834035212824
+      },
+      {
+        "step": 600,
+        "value": -0.02456432927113326
+      },
+      {
+        "step": 800,
+        "value": -0.03524520386310002
+      },
+      {
+        "step": 1000,
+        "value": -0.021235125515540573
+      },
+      {
+        "step": 1200,
+        "value": -0.060058801684533876
+      },
+      {
+        "step": 1400,
+        "value": 0.0005497786445575059
+      }
+    ],
+    "dev_reward": [
+      {
+        "step": 1400,
+        "value": 0.0
+      }
+    ],
+    "test_reward": [],
+    "portfolio_value": [
+      {
+        "step": 200,
+        "value": 98.9849553506667
+      },
+      {
+        "step": 400,
+        "value": 97.75991659647872
+      },
+      {
+        "step": 600,
+        "value": 97.54356707288667
+      },
+      {
+        "step": 800,
+        "value": 96.47547961369
+      },
+      {
+        "step": 1000,
+        "value": 97.87648744844594
+      },
+      {
+        "step": 1200,
+        "value": 93.99411983154661
+      },
+      {
+        "step": 1400,
+        "value": 100.05497786445575
+      }
+    ],
+    "total_return_pct": [
+      {
+        "step": 200,
+        "value": -1.015044649333305
+      },
+      {
+        "step": 400,
+        "value": -2.2400834035212824
+      },
+      {
+        "step": 600,
+        "value": -2.456432927113326
+      },
+      {
+        "step": 800,
+        "value": -3.5245203863100016
+      },
+      {
+        "step": 1000,
+        "value": -2.1235125515540574
+      },
+      {
+        "step": 1200,
+        "value": -6.005880168453388
+      },
+      {
+        "step": 1400,
+        "value": 0.05497786445575059
+      }
+    ],
+    "win_rate": [
+      {
+        "step": 200,
+        "value": 0.0
+      },
+      {
+        "step": 400,
+        "value": 0.0
+      },
+      {
+        "step": 600,
+        "value": 0.0
+      },
+      {
+        "step": 800,
+        "value": 0.0
+      },
+      {
+        "step": 1000,
+        "value": 0.0
+      },
+      {
+        "step": 1200,
+        "value": 0.0
+      },
+      {
+        "step": 1400,
+        "value": 0.0
+      }
+    ],
+    "realized_pnl": [
+      {
+        "step": 200,
+        "value": 0.0
+      },
+      {
+        "step": 400,
+        "value": -2.367609627967788
+      },
+      {
+        "step": 600,
+        "value": -2.367609627967788
+      },
+      {
+        "step": 800,
+        "value": -3.122845543684009
+      },
+      {
+        "step": 1000,
+        "value": -3.122845543684009
+      },
+      {
+        "step": 1200,
+        "value": -5.919785702170372
+      },
+      {
+        "step": 1400,
+        "value": 0.0
+      }
+    ],
+    "unrealized_pnl": [
+      {
+        "step": 200,
+        "value": -1.015044649333305
+      },
+      {
+        "step": 400,
+        "value": 0.1275262244465054
+      },
+      {
+        "step": 600,
+        "value": -0.08882329914553821
+      },
+      {
+        "step": 800,
+        "value": -0.40167484262599285
+      },
+      {
+        "step": 1000,
+        "value": 0.9993329921299514
+      },
+      {
+        "step": 1200,
+        "value": -0.08609446628301587
+      },
+      {
+        "step": 1400,
+        "value": 0.05497786445575059
+      }
+    ],
+    "drawdown_pct": [
+      {
+        "step": 200,
+        "value": 1.295707699248256
+      },
+      {
+        "step": 400,
+        "value": 2.517272964846009
+      },
+      {
+        "step": 600,
+        "value": 2.7330090485781886
+      },
+      {
+        "step": 800,
+        "value": 3.7980680406425398
+      },
+      {
+        "step": 1000,
+        "value": 2.401032639176729
+      },
+      {
+        "step": 1200,
+        "value": 6.272392147496429
+      },
+      {
+        "step": 1400,
+        "value": 0.0191534160347265
+      }
+    ],
+    "trades": [
+      {
+        "step": 200,
+        "value": 3.0
+      },
+      {
+        "step": 400,
+        "value": 9.0
+      },
+      {
+        "step": 600,
+        "value": 9.0
+      },
+      {
+        "step": 800,
+        "value": 12.0
+      },
+      {
+        "step": 1000,
+        "value": 13.0
+      },
+      {
+        "step": 1200,
+        "value": 18.0
+      },
+      {
+        "step": 1400,
+        "value": 3.0
+      }
+    ],
+    "dev_portfolio_value": [
+      {
+        "step": 1400,
+        "value": 100.0
+      }
+    ],
+    "test_portfolio_value": [],
+    "dev_realized_pnl": [
+      {
+        "step": 1400,
+        "value": 0.0
+      }
+    ],
+    "test_realized_pnl": [],
+    "dev_trades": [
+      {
+        "step": 1400,
+        "value": 0.0
+      }
+    ],
+    "test_trades": [],
+    "ram_mb": [
+      {
+        "step": 200,
+        "value": 713.5390625
+      },
+      {
+        "step": 400,
+        "value": 713.625
+      },
+      {
+        "step": 600,
+        "value": 731.00390625
+      },
+      {
+        "step": 800,
+        "value": 731.0078125
+      },
+      {
+        "step": 1000,
+        "value": 731.296875
+      },
+      {
+        "step": 1200,
+        "value": 733.0078125
+      },
+      {
+        "step": 1400,
+        "value": 732.99609375
+      }
+    ],
+    "vram_allocated_mb": [],
+    "vram_reserved_mb": [],
+    "vram_process_mb": [],
+    "vram_gpu_used_mb": []
+  }
+}

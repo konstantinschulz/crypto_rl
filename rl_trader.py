@@ -7,6 +7,7 @@ import json
 import math
 import os
 import subprocess
+import statistics
 import time
 import psutil
 import sys
@@ -19,10 +20,32 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
+import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
+
+try:
+    from sb3_contrib import RecurrentPPO
+except Exception:
+    RecurrentPPO = None
 
 from rl_trading_env import CryptoTradingEnv, TradingConfig, load_training_data
+
+
+SUPPORTED_ALGOS = {'ppo', 'recurrent_ppo'}
+
+
+def _is_recurrent_algo(algo_name: str) -> bool:
+    return str(algo_name).lower() == 'recurrent_ppo'
+
+
+def _default_policy_for_algo(algo_name: str) -> str:
+    return 'MlpLstmPolicy' if _is_recurrent_algo(algo_name) else 'MlpPolicy'
+
+
+def _is_recurrent_model(model: Any) -> bool:
+    return model is not None and model.__class__.__name__.lower().startswith('recurrentppo')
 
 
 def _utc_now() -> str:
@@ -138,12 +161,17 @@ class RLDashboardWriter:
                 'train_loss': [],
                 'policy_loss': [],
                 'value_loss': [],
+                'approx_kl': [],
+                'clip_fraction': [],
                 'train_reward': [],
                 'dev_reward': [],
                 'test_reward': [],
                 'portfolio_value': [],
+                'total_return_pct': [],
                 'win_rate': [],
                 'realized_pnl': [],
+                'unrealized_pnl': [],
+                'drawdown_pct': [],
                 'trades': [],
                 'dev_portfolio_value': [],
                 'test_portfolio_value': [],
@@ -446,7 +474,7 @@ class RLDashboardWriter:
 
         n_updates = int(self._to_float(logger_values.get('train/n_updates')) or 0)
         epoch = n_updates // max(1, int(getattr(model, 'n_epochs', 1)))
-        finance = env.get_metrics_snapshot()
+        finance = env.env_method('get_metrics_snapshot')[0] if hasattr(env, 'env_method') else env.get_metrics_snapshot()
         model_device = str(getattr(model, 'device', 'unknown'))
         memory = self._memory_snapshot(model_device)
 
@@ -498,11 +526,16 @@ class RLDashboardWriter:
         self._append('train_loss', step, train_loss)
         self._append('policy_loss', step, policy_loss)
         self._append('value_loss', step, value_loss)
+        self._append('approx_kl', step, approx_kl)
+        self._append('clip_fraction', step, clip_fraction)
         self._append('train_reward', step, train_reward)
         self._append('dev_reward', step, dev_reward)
         self._append('portfolio_value', step, float(finance['portfolio_value']))
+        self._append('total_return_pct', step, float(finance['total_return']) * 100.0)
         self._append('win_rate', step, float(finance['win_rate']) * 100.0)
         self._append('realized_pnl', step, float(finance['realized_pnl']))
+        self._append('unrealized_pnl', step, float(finance['unrealized_pnl']))
+        self._append('drawdown_pct', step, float(finance['drawdown_pct']) * 100.0)
         self._append('trades', step, float(finance['trades']))
         self._append('ram_mb', step, self._to_float(memory.get('ram_mb')))
         self._append('vram_allocated_mb', step, self._to_float(memory.get('vram_allocated_mb')))
@@ -635,12 +668,16 @@ class RLTrader:
         model_dir: str = 'models/',
         device: str = 'cpu',
         seed: Optional[int] = None,
+        algo: str = 'ppo',
+        num_envs: int = 1,
     ):
         self.config = config or TradingConfig()
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(exist_ok=True)
         self.device = device
         self.seed = seed
+        self.algo = str(algo).lower()
+        self.num_envs = max(1, int(num_envs))
         self.model = None
         self.train_env = None
         self.eval_env = None
@@ -648,7 +685,13 @@ class RLTrader:
     
     def create_envs(self, train_data: pd.DataFrame, eval_data: Optional[pd.DataFrame] = None):
         """Create training and evaluation environments"""
-        self.train_env = CryptoTradingEnv(train_data, self.config)
+        def make_train_env():
+            return CryptoTradingEnv(train_data, self.config)
+            
+        if self.num_envs > 1:
+            self.train_env = SubprocVecEnv([make_train_env for _ in range(self.num_envs)])
+        else:
+            self.train_env = make_train_env()
         
         if eval_data is not None:
             eval_config = replace(
@@ -658,9 +701,10 @@ class RLTrader:
             )
             self.eval_env = CryptoTradingEnv(eval_data, eval_config)
         
-        print(f"Train env: {len(train_data)} rows, {train_data['symbol'].nunique()} symbols")
+        train_symbols = self.train_env.get_attr('symbols')[0] if hasattr(self.train_env, 'get_attr') else getattr(self.train_env, 'symbols', [])
+        print(f"Train env: {len(train_data)} rows, {len(train_symbols)} symbols, {self.num_envs} workers")
         if eval_data is not None:
-            print(f"Eval env: {len(eval_data)} rows, {eval_data['symbol'].nunique()} symbols")
+            print(f"Eval env: {len(eval_data)} rows, {len(self.eval_env.symbols)} symbols")
     
     def train(
         self,
@@ -668,7 +712,13 @@ class RLTrader:
         eval_freq: int = 10_000,
         dashboard_state_path: Optional[str] = None,
         dashboard_mode: str = 'train',
+        algo: Optional[str] = None,
+        policy: Optional[str] = None,
+        lstm_hidden_size: int = 128,
+        lstm_layers: int = 1,
+        shared_lstm: bool = False,
         learning_rate: float = 3e-4,
+        ent_coef: float = 0.0,
         batch_size: int = 8,
         n_steps: int = 256,
         n_epochs: int = 3,
@@ -690,14 +740,21 @@ class RLTrader:
         if self.train_env is None:
             raise ValueError("Call create_envs() first")
 
-        if int(timesteps) < int(getattr(self.train_env, 'n_steps', 0)):
+        env_n_steps = self.train_env.get_attr('n_steps')[0] if hasattr(self.train_env, 'get_attr') else getattr(self.train_env, 'n_steps', 0)
+        if int(timesteps) < int(env_n_steps):
             print(
                 "[TRAIN] Warning: --train-steps is smaller than one episode length "
-                f"({timesteps} < {self.train_env.n_steps}). Reward curves may be sparse."
+                f"({timesteps} < {env_n_steps}). Reward curves may be sparse."
             )
         
         if policy_arch is None:
             policy_arch = [32, 16]
+
+        selected_algo = str(algo or self.algo).lower()
+        if selected_algo not in SUPPORTED_ALGOS:
+            raise ValueError(f"Unsupported --algo={selected_algo}. Supported: {sorted(SUPPORTED_ALGOS)}")
+        self.algo = selected_algo
+        selected_policy = str(policy or _default_policy_for_algo(selected_algo))
         
         # Create callbacks
         checkpoint_callback = CheckpointCallback(
@@ -722,33 +779,61 @@ class RLTrader:
         
         # Create or load model
         if self.model is None:
-            self.model = PPO(
-                'MlpPolicy',
-                self.train_env,
-                device=self.device,
-                seed=self.seed,
-                learning_rate=learning_rate,
-                n_steps=n_steps,
-                batch_size=batch_size,
-                n_epochs=n_epochs,
-                gamma=0.99,
-                gae_lambda=0.95,
-                clip_range=0.2,
-                verbose=1,
-                tensorboard_log=None,
-                policy_kwargs={
-                    'net_arch': policy_arch,
-                },
-            )
-            print(f"Created new PPO model (device={self.device})")
+            policy_kwargs: Dict[str, Any] = {
+                'net_arch': policy_arch,
+            }
+            model_kwargs: Dict[str, Any] = {
+                'device': self.device,
+                'seed': self.seed,
+                'learning_rate': learning_rate,
+                'ent_coef': ent_coef,
+                'batch_size': batch_size,
+                'n_steps': n_steps,
+                'n_epochs': n_epochs,
+                'gamma': 0.99,
+                'gae_lambda': 0.95,
+                'clip_range': 0.2,
+                'verbose': 1,
+                'tensorboard_log': None,
+                'policy_kwargs': policy_kwargs,
+            }
+
+            if _is_recurrent_algo(selected_algo):
+                if RecurrentPPO is None:
+                    raise ImportError(
+                        "RecurrentPPO requires sb3-contrib. Install with ./.conda/bin/pip install sb3-contrib==2.7.1"
+                    )
+                policy_kwargs.update(
+                    {
+                        'lstm_hidden_size': int(lstm_hidden_size),
+                        'n_lstm_layers': int(lstm_layers),
+                        'shared_lstm': bool(shared_lstm),
+                        'enable_critic_lstm': not bool(shared_lstm),
+                    }
+                )
+                self.model = RecurrentPPO(selected_policy, self.train_env, **model_kwargs)
+            else:
+                self.model = PPO(selected_policy, self.train_env, **model_kwargs)
+
+            print(f"Created new {selected_algo} model (device={self.device})")
             print(f"  Hyperparameters:")
             print(f"    learning_rate={learning_rate}, batch_size={batch_size}")
             print(f"    n_steps={n_steps}, n_epochs={n_epochs}")
             print(f"    policy_arch={policy_arch}")
+            print(f"    policy={selected_policy}")
+            if _is_recurrent_algo(selected_algo):
+                print(
+                    f"    lstm_hidden_size={int(lstm_hidden_size)}, lstm_layers={int(lstm_layers)}, "
+                    f"shared_lstm={bool(shared_lstm)}"
+                )
+        else:
+            # Warm-start path: ensure loaded model is bound to the current training env.
+            self.model.set_env(self.train_env)
+            print(f"Using warm-start model with env reset (device={self.device})")
 
 
         if dashboard_state_path:
-            num_rows = int(getattr(self.train_env, 'n_steps', 0))
+            num_rows = self.train_env.get_attr('n_steps')[0] if hasattr(self.train_env, 'get_attr') else getattr(self.train_env, 'n_steps', 0)
             self.dashboard_writer = RLDashboardWriter(
                 state_path=dashboard_state_path,
                 total_timesteps=timesteps,
@@ -778,13 +863,39 @@ class RLTrader:
         
         # Save final model
         self.model.save(self.model_dir / 'final_model')
+        metadata = {
+            'algo': selected_algo,
+            'policy': selected_policy,
+            'lstm_hidden_size': int(lstm_hidden_size),
+            'lstm_layers': int(lstm_layers),
+            'shared_lstm': bool(shared_lstm),
+        }
+        (self.model_dir / 'final_model.meta.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
         print(f"✓ Model saved to {self.model_dir}/final_model")
     
-    def load_model(self, path: Optional[str] = None):
+    def load_model(self, path: Optional[str] = None, algo: Optional[str] = None):
         """Load pre-trained model"""
         model_path = Path(path) if path is not None else (self.model_dir / 'final_model')
 
-        self.model = PPO.load(model_path)
+        selected_algo = str(algo or self.algo or 'ppo').lower()
+        meta_path = model_path.parent / f"{model_path.name}.meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding='utf-8'))
+                selected_algo = str(meta.get('algo') or selected_algo).lower()
+            except Exception:
+                pass
+
+        if _is_recurrent_algo(selected_algo):
+            if RecurrentPPO is None:
+                raise ImportError(
+                    "Cannot load recurrent model because sb3-contrib is not installed. "
+                    "Install with ./.conda/bin/pip install sb3-contrib==2.7.1"
+                )
+            self.model = RecurrentPPO.load(model_path)
+        else:
+            self.model = PPO.load(model_path)
+        self.algo = selected_algo
         print(f"✓ Loaded model from {model_path}")
     
     def evaluate(
@@ -834,11 +945,22 @@ class RLTrader:
         total_reward = 0
         done = False
         step_count = 0
+        lstm_state = None
+        episode_start = np.array([True], dtype=bool)
         
         print("Evaluating...")
         while not done:
-            action, _ = self.model.predict(obs, deterministic=deterministic)
+            if _is_recurrent_model(self.model):
+                action, lstm_state = self.model.predict(
+                    obs,
+                    state=lstm_state,
+                    episode_start=episode_start,
+                    deterministic=deterministic,
+                )
+            else:
+                action, _ = self.model.predict(obs, deterministic=deterministic)
             obs, reward, done, _, info = env.step(action)
+            episode_start = np.array([done], dtype=bool)
             total_reward += reward
             step_count += 1
             
@@ -865,6 +987,28 @@ class RLTrader:
             'fees_paid': float(finance['fees_paid']),
             'drawdown_pct': float(finance['drawdown_pct']),
         }
+        action_mix = {
+            'hold_pct': float(finance.get('hold_action_pct', 0.0)),
+            'buy_pct': float(finance.get('buy_action_pct', 0.0)),
+            'sell_pct': float(finance.get('sell_action_pct', 0.0)),
+            'invalid_sell_pct': float(finance.get('invalid_sell_pct', 0.0)),
+            'remapped_action_pct': float(finance.get('remapped_action_pct', 0.0)),
+            'semantic_sell_redirects': int(finance.get('semantic_sell_redirects', 0.0)),
+            'semantic_bootstrap_buys': int(finance.get('semantic_bootstrap_buys', 0.0)),
+        }
+        metrics.update(action_mix)
+
+        # Recovery diagnostics for no-trade outcomes:
+        # distinguish hold-dominant policy behavior from action-remap failures.
+        zero_trade_diagnostic = "n/a"
+        if metrics['trades'] <= 0:
+            if metrics['hold_pct'] >= 0.90:
+                zero_trade_diagnostic = "hold_dominant"
+            elif metrics['remapped_action_pct'] >= 0.25 or metrics['invalid_sell_pct'] >= 0.25:
+                zero_trade_diagnostic = "remap_or_invalid_dominant"
+            else:
+                zero_trade_diagnostic = "mixed_low_activity"
+        metrics['zero_trade_diagnostic'] = zero_trade_diagnostic
 
         if split_name and 'closed_trades' in finance:
             _log_trades_summary(finance['closed_trades'], split_name)
@@ -877,6 +1021,21 @@ class RLTrader:
         print(f"  Steps: {metrics['steps']}")
         print(f"  Trades: {metrics['trades']} | Win Rate: {metrics['win_rate']*100:.1f}%")
         print(f"  Realized PnL: ${metrics['realized_pnl']:.2f} | Unrealized: ${metrics['unrealized_pnl']:.2f}")
+        print(
+            "  Action Mix: "
+            f"hold={metrics['hold_pct']*100:.1f}% "
+            f"buy={metrics['buy_pct']*100:.1f}% "
+            f"sell={metrics['sell_pct']*100:.1f}%"
+        )
+        print(
+            "  Remap Diagnostics: "
+            f"invalid_sell={metrics['invalid_sell_pct']*100:.1f}% "
+            f"remapped={metrics['remapped_action_pct']*100:.1f}% "
+            f"bootstrap_buys={metrics['semantic_bootstrap_buys']} "
+            f"redirects={metrics['semantic_sell_redirects']}"
+        )
+        if metrics['trades'] <= 0:
+            print(f"  Zero-Trade Diagnostic: {metrics['zero_trade_diagnostic']}")
 
         if split_name and self.dashboard_writer is not None:
             self.dashboard_writer.update_split_metrics(split_name, metrics)
@@ -893,7 +1052,10 @@ class RLTrader:
         if self.train_env is None:
             return eval_data
 
-        required_symbols = list(self.train_env.symbols)
+        if hasattr(self.train_env, 'get_attr'):
+            required_symbols = list(self.train_env.get_attr('symbols')[0])
+        else:
+            required_symbols = list(self.train_env.symbols)
         available_symbols = set(eval_data['symbol'].unique())
         missing = [s for s in required_symbols if s not in available_symbols]
         if missing:
@@ -918,10 +1080,15 @@ class RLTrader:
         split_ratio: float = 0.8,
         dashboard_state_path: Optional[str] = None,
         timesteps: int = 50_000,
+        algo: Optional[str] = None,
+        policy: Optional[str] = None,
+        lstm_hidden_size: int = 128,
+        lstm_layers: int = 1,
+        shared_lstm: bool = False,
         learning_rate: float = 3e-4,
+        ent_coef: float = 0.0,
         batch_size: int = 8,
         n_steps: int = 256,
-        n_epochs: int = 3,
         policy_arch: Optional[List[int]] = None,
         eval_freq: Optional[int] = None,
     ):
@@ -940,7 +1107,7 @@ class RLTrader:
         """
         train_parts = []
         test_parts = []
-        for symbol, group in data.groupby('symbol', sort=False):
+        for symbol, group in data.groupby('symbol', sort=False, observed=True):
             group = group.sort_values('open_time')
             split_idx = int(len(group) * split_ratio)
             split_idx = max(1, min(split_idx, len(group) - 1))
@@ -963,11 +1130,16 @@ class RLTrader:
             eval_freq=int(eval_freq) if eval_freq is not None else max(1_000, int(timesteps) // 10),
             dashboard_state_path=dashboard_state_path,
             dashboard_mode='backtest',
+            algo=algo,
+            policy=policy,
+            lstm_hidden_size=lstm_hidden_size,
+            lstm_layers=lstm_layers,
+            shared_lstm=shared_lstm,
             learning_rate=learning_rate,
+            ent_coef=ent_coef,
             batch_size=batch_size,
             n_steps=n_steps,
             n_epochs=n_epochs,
-            policy_arch=policy_arch,
         )
         
         print(f"\n{'='*60}")
@@ -983,7 +1155,13 @@ class RLTrader:
         val_ratio: float = 0.2,
         dashboard_state_path: Optional[str] = None,
         timesteps: int = 50_000,
+        algo: Optional[str] = None,
+        policy: Optional[str] = None,
+        lstm_hidden_size: int = 128,
+        lstm_layers: int = 1,
+        shared_lstm: bool = False,
         learning_rate: float = 3e-4,
+        ent_coef: float = 0.0,
         batch_size: int = 8,
         n_steps: int = 256,
         n_epochs: int = 3,
@@ -1007,7 +1185,7 @@ class RLTrader:
         """
         train_parts, val_parts, test_parts = [], [], []
         
-        for symbol, group in data.groupby('symbol', sort=False):
+        for symbol, group in data.groupby('symbol', sort=False, observed=True):
             group = group.sort_values('open_time').reset_index(drop=True)
             n = len(group)
             train_idx = int(n * train_ratio)
@@ -1044,14 +1222,19 @@ class RLTrader:
             eval_freq=int(eval_freq) if eval_freq is not None else max(10_000, timesteps // 2),
             dashboard_state_path=dashboard_state_path,
             dashboard_mode='backtest_3way',
+            algo=algo,
+            policy=policy,
+            lstm_hidden_size=lstm_hidden_size,
+            lstm_layers=lstm_layers,
+            shared_lstm=shared_lstm,
             learning_rate=learning_rate,
+            ent_coef=ent_coef,
             batch_size=batch_size,
             n_steps=n_steps,
             n_epochs=n_epochs,
             policy_arch=policy_arch,
             progress_bar=False,
         )
-        
         # Clean up training data to free memory
         del train_data
         gc.collect()
@@ -1085,6 +1268,182 @@ class RLTrader:
         print(f"{'='*70}\n")
         
         return val_metrics, test_metrics
+
+    def backtest_walk_forward(
+        self,
+        data: pd.DataFrame,
+        train_ratio: float = 0.50,
+        val_ratio: float = 0.15,
+        test_ratio: float = 0.15,
+        step_ratio: float = 0.10,
+        max_folds: int = 3,
+        dashboard_state_path: Optional[str] = None,
+        timesteps: int = 25_000,
+        algo: Optional[str] = None,
+        policy: Optional[str] = None,
+        lstm_hidden_size: int = 128,
+        lstm_layers: int = 1,
+        shared_lstm: bool = False,
+        learning_rate: float = 2e-4,
+        ent_coef: float = 0.0,
+        batch_size: int = 16,
+        n_steps: int = 512,
+        n_epochs: int = 5,
+        policy_arch: Optional[List[int]] = None,
+        eval_freq: Optional[int] = None,
+        promotion_test_floor_pct: float = -0.75,
+        enforce_promotion_gate: bool = False,
+    ):
+        """Rolling walk-forward backtest over contiguous longer-history windows."""
+        folds = _rolling_walk_forward_splits(
+            data,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            step_ratio=step_ratio,
+            max_folds=max_folds,
+        )
+
+        print(f"\n{'='*78}")
+        print(f"{'ROLLING WALK-FORWARD BACKTEST':^78}")
+        print(f"{'='*78}")
+        print(
+            f"window ratios -> train={train_ratio:.2f}, val={val_ratio:.2f}, test={test_ratio:.2f}, "
+            f"step={step_ratio:.2f}, folds={len(folds)}"
+        )
+
+        fold_results: List[Dict[str, Any]] = []
+        for fold in folds:
+            fold_idx = int(fold['fold'])
+            train_data = fold['train_data']
+            val_data = fold['val_data']
+            test_data = fold['test_data']
+
+            print(f"\n{'-'*78}")
+            print(
+                f"FOLD {fold_idx}: train={len(train_data)} rows, val={len(val_data)} rows, "
+                f"test={len(test_data)} rows, start={fold['start']}"
+            )
+            print(
+                f"  train {train_data['open_time'].min()} → {train_data['open_time'].max()} | "
+                f"val {val_data['open_time'].min()} → {val_data['open_time'].max()} | "
+                f"test {test_data['open_time'].min()} → {test_data['open_time'].max()}"
+            )
+
+            fold_model_dir = self.model_dir / f'walk_forward_fold{fold_idx}'
+            fold_trader = RLTrader(
+                config=self.config,
+                model_dir=str(fold_model_dir),
+                device=self.device,
+                seed=None if self.seed is None else self.seed + fold_idx,
+                algo=(algo or self.algo),
+                num_envs=self.num_envs,
+            )
+
+            fold_dashboard_state = dashboard_state_path if fold_idx == len(folds) else None
+            fold_trader.create_envs(train_data, val_data)
+            fold_trader.train(
+                timesteps=timesteps,
+                eval_freq=int(eval_freq) if eval_freq is not None else max(10_000, timesteps // 2),
+                dashboard_state_path=fold_dashboard_state,
+                dashboard_mode='backtest_walk_forward',
+                algo=algo,
+                policy=policy,
+                lstm_hidden_size=lstm_hidden_size,
+                lstm_layers=lstm_layers,
+                shared_lstm=shared_lstm,
+                learning_rate=learning_rate,
+                ent_coef=ent_coef,
+                batch_size=batch_size,
+                n_steps=n_steps,
+                n_epochs=n_epochs,
+                policy_arch=policy_arch,
+                progress_bar=False,
+            )
+
+            del train_data
+
+            print(f"\n  Evaluating fold {fold_idx} on validation set...")
+            val_metrics = fold_trader.evaluate(val_data, deterministic=True, split_name=f'val_fold{fold_idx}', env_reuse=fold_trader.eval_env)
+
+            del val_data
+            gc.collect()
+
+            print(f"  Evaluating fold {fold_idx} on test set...")
+            test_metrics = fold_trader.evaluate(test_data, deterministic=True, split_name=f'test_fold{fold_idx}')
+
+            fold_results.append(
+                {
+                    'fold': fold_idx,
+                    'val_metrics': val_metrics,
+                    'test_metrics': test_metrics,
+                }
+            )
+
+            print(
+                f"  Fold {fold_idx} summary: "
+                f"val_return={val_metrics.get('total_return', 0)*100:6.2f}% | "
+                f"test_return={test_metrics.get('total_return', 0)*100:6.2f}%"
+            )
+
+            del test_data
+            del fold_trader
+            gc.collect()
+
+        if not fold_results:
+            raise RuntimeError('Walk-forward backtest produced no results.')
+
+        val_returns = [float(row['val_metrics'].get('total_return', 0.0)) for row in fold_results]
+        test_returns = [float(row['test_metrics'].get('total_return', 0.0)) for row in fold_results]
+        val_trades = [float(row['val_metrics'].get('trades', 0.0)) for row in fold_results]
+        test_trades = [float(row['test_metrics'].get('trades', 0.0)) for row in fold_results]
+        val_win_rates = [float(row['val_metrics'].get('win_rate', 0.0)) for row in fold_results]
+        test_win_rates = [float(row['test_metrics'].get('win_rate', 0.0)) for row in fold_results]
+
+        summary = {
+            'fold_results': fold_results,
+            'median_val_return': statistics.median(val_returns),
+            'median_test_return': statistics.median(test_returns),
+            'median_val_trades': statistics.median(val_trades),
+            'median_test_trades': statistics.median(test_trades),
+            'median_val_win_rate': statistics.median(val_win_rates),
+            'median_test_win_rate': statistics.median(test_win_rates),
+        }
+        min_test_return_pct = min(test_returns) * 100.0
+        gate_floor_pct = float(promotion_test_floor_pct)
+        promotion_gate_pass = min_test_return_pct >= gate_floor_pct
+        summary['promotion_gate'] = {
+            'test_floor_pct': gate_floor_pct,
+            'min_fold_test_return_pct': min_test_return_pct,
+            'pass': promotion_gate_pass,
+        }
+
+        print(f"\n{'='*78}")
+        print('WALK-FORWARD SUMMARY')
+        print(f"{'='*78}")
+        print(
+            f"Val Trades:  {int(summary['median_val_trades']):3d} | "
+            f"WR: {summary['median_val_win_rate']*100:5.1f}% | "
+            f"Return: {summary['median_val_return']*100:6.2f}%"
+        )
+        print(
+            f"Test Trades: {int(summary['median_test_trades']):3d} | "
+            f"WR: {summary['median_test_win_rate']*100:5.1f}% | "
+            f"Return: {summary['median_test_return']*100:6.2f}%"
+        )
+        gate_status = 'PASS' if promotion_gate_pass else 'FAIL'
+        print(
+            f"Promotion Gate (any fold test >= {gate_floor_pct:.2f}%): {gate_status} "
+            f"| worst fold test: {min_test_return_pct:.2f}%"
+        )
+        print(f"{'='*78}\n")
+
+        if bool(enforce_promotion_gate) and not promotion_gate_pass:
+            raise RuntimeError(
+                f"Promotion gate failed: worst fold test {min_test_return_pct:.2f}% < floor {gate_floor_pct:.2f}%"
+            )
+
+        return summary
 
 def _parse_symbols(symbols_raw: Optional[str]) -> Optional[Sequence[str]]:
     if not symbols_raw:
@@ -1137,9 +1496,81 @@ def _resolve_fee_profile(
 def _balanced_eval_slice(data: pd.DataFrame, max_rows_per_symbol: int = 300) -> pd.DataFrame:
     """Build evaluation sample with all symbols represented to avoid obs-size mismatch."""
     parts = []
-    for _, group in data.groupby('symbol', sort=False):
+    for _, group in data.groupby('symbol', sort=False, observed=True):
         parts.append(group.sort_values('open_time').tail(max_rows_per_symbol))
     return pd.concat(parts, ignore_index=True)
+
+
+def _rolling_walk_forward_splits(
+    data: pd.DataFrame,
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    step_ratio: float,
+    max_folds: int,
+) -> List[Dict[str, Any]]:
+    """Create contiguous walk-forward folds per symbol using aligned row windows."""
+    if min(train_ratio, val_ratio, test_ratio) <= 0:
+        raise ValueError('Walk-forward ratios must be positive.')
+
+    window_ratio = float(train_ratio) + float(val_ratio) + float(test_ratio)
+    if window_ratio > 1.0 + 1e-9:
+        raise ValueError('Walk-forward train/val/test ratios must sum to <= 1.0.')
+
+    symbol_groups = {
+        symbol: group.sort_values('open_time').reset_index(drop=True)
+        for symbol, group in data.groupby('symbol', sort=False, observed=True)
+    }
+    if not symbol_groups:
+        raise ValueError('Walk-forward split received empty data.')
+
+    min_rows = min(len(group) for group in symbol_groups.values())
+    train_len = max(1, int(min_rows * float(train_ratio)))
+    val_len = max(1, int(min_rows * float(val_ratio)))
+    test_len = max(1, int(min_rows * float(test_ratio)))
+
+    window_len = train_len + val_len + test_len
+    if window_len > min_rows:
+        test_len = max(1, min_rows - train_len - val_len)
+        window_len = train_len + val_len + test_len
+
+    if window_len > min_rows:
+        raise ValueError(
+            'Walk-forward split window is larger than the available per-symbol history.'
+        )
+
+    step_len = max(1, int(min_rows * float(step_ratio)))
+    max_start = min_rows - window_len
+    fold_limit = max(1, int(max_folds))
+
+    folds: List[Dict[str, Any]] = []
+    start = 0
+    while start <= max_start and len(folds) < fold_limit:
+        train_parts, val_parts, test_parts = [], [], []
+        for group in symbol_groups.values():
+            train_parts.append(group.iloc[start:start + train_len])
+            val_parts.append(group.iloc[start + train_len:start + train_len + val_len])
+            test_parts.append(group.iloc[start + train_len + val_len:start + window_len])
+
+        train_data = pd.concat(train_parts, ignore_index=True)
+        val_data = pd.concat(val_parts, ignore_index=True)
+        test_data = pd.concat(test_parts, ignore_index=True)
+
+        folds.append(
+            {
+                'fold': len(folds) + 1,
+                'start': start,
+                'train_data': train_data,
+                'val_data': val_data,
+                'test_data': test_data,
+            }
+        )
+        start += step_len
+
+    if not folds:
+        raise ValueError('Could not construct any walk-forward folds from the provided data.')
+
+    return folds
 
 
 def _log_trades_summary(closed_trades: List[Dict], split_name: str) -> None:
@@ -1175,16 +1606,25 @@ def main() -> None:
     parser.add_argument('--days', type=int, default=7, help='Recent days to load (default: 7)')
     parser.add_argument('--symbols', type=str, default='', help='Comma separated symbols, e.g. BTCUSDT,ETHUSDT')
     parser.add_argument('--max-symbols', type=int, default=3, help='Max symbols when --symbols not set (default: 3 for memory efficiency)')
+    parser.add_argument('--timeframe-minutes', type=int, default=15, help='Aggregate 1m candles into this timeframe before training')
+    parser.add_argument('--lookback-steps', type=int, default=12, help='Rolling observation window length in steps')
     parser.add_argument(
         '--train-steps',
         type=int,
         default=50_000,
         help='Training timesteps for train/backtest/backtest_3way modes',
     )
-    parser.add_argument('--mode', choices=['train', 'eval', 'backtest', 'backtest_3way'], default='train', help='Execution mode')
+    parser.add_argument('--mode', choices=['train', 'eval', 'backtest', 'backtest_3way', 'backtest_walk_forward'], default='train', help='Execution mode')
+    parser.add_argument('--num-envs', type=int, default=1, help='Number of parallel environments for training')
     parser.add_argument('--model', type=str, help='Path to saved model (for eval mode)')
+    parser.add_argument('--init-model', type=str, default='', help='Optional checkpoint path to warm-start training/backtest modes')
     parser.add_argument('--no-cache', action='store_true', help='Disable cached parquet slices')
     parser.add_argument('--device', choices=['cpu', 'cuda', 'auto'], default='auto', help='Torch device for PPO')
+    parser.add_argument('--algo', choices=['ppo', 'recurrent_ppo'], default='ppo', help='RL algorithm family')
+    parser.add_argument('--policy', type=str, default='', help='Policy class (default depends on --algo)')
+    parser.add_argument('--lstm-hidden-size', type=int, default=128, help='LSTM hidden size for recurrent_ppo')
+    parser.add_argument('--lstm-layers', type=int, default=1, help='Number of LSTM layers for recurrent_ppo')
+    parser.add_argument('--shared-lstm', action='store_true', help='Use shared actor/critic LSTM for recurrent_ppo')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for PPO/environment sampling')
     parser.add_argument('--dashboard', action='store_true', help='Enable live RL dashboard JSON updates')
     parser.add_argument('--dashboard-port', type=int, default=8766, help='Port for local RL dashboard HTTP server')
@@ -1201,17 +1641,28 @@ def main() -> None:
     parser.add_argument('--buy-fee-rate', type=float, default=-1.0, help='Override buy fee rate; negative uses fee regime')
     parser.add_argument('--sell-fee-rate', type=float, default=-1.0, help='Override sell fee rate; negative uses fee regime')
     parser.add_argument('--learning-rate', type=float, default=3e-4, help='PPO learning rate (default: 3e-4)')
+    parser.add_argument('--ent-coef', type=float, default=0.0, help='PPO entropy coefficient (encourages exploration when >0)')
     parser.add_argument('--batch-size', type=int, default=16, help='PPO batch size (default: 16)')
-    parser.add_argument('--n-steps', type=int, default=512, help='PPO n_steps (default: 512)')
+    parser.add_argument('--n-steps', type=int, default=256, help='PPO rollout steps per update (default: 256)')
     parser.add_argument('--n-epochs', type=int, default=5, help='PPO n_epochs (default: 5)')
     parser.add_argument('--eval-freq', type=int, default=0, help='Validation frequency in training steps (0 = mode default)')
+    parser.add_argument('--walk-forward-folds', type=int, default=3, help='Number of walk-forward folds to evaluate')
+    parser.add_argument('--walk-forward-train-ratio', type=float, default=0.50, help='Fraction of history used for each walk-forward training window')
+    parser.add_argument('--walk-forward-val-ratio', type=float, default=0.15, help='Fraction of history used for each walk-forward validation window')
+    parser.add_argument('--walk-forward-test-ratio', type=float, default=0.15, help='Fraction of history used for each walk-forward test window')
+    parser.add_argument('--walk-forward-step-ratio', type=float, default=0.10, help='Fraction of history to advance between walk-forward folds')
+    parser.add_argument('--promotion-test-floor-pct', type=float, default=-0.75, help='Reject candidate when any walk-forward fold test return drops below this percent')
+    parser.add_argument('--strict-promotion-gate', action='store_true', help='Exit with error when walk-forward promotion gate fails')
     parser.add_argument('--trade-action-bonus', type=float, default=15.0, help='Reward bonus for buy/sell actions')
     parser.add_argument('--inactivity-penalty', type=float, default=-5.0, help='Per-step penalty for hold/inactivity')
     parser.add_argument('--invalid-sell-mode', choices=['force_buy', 'hold', 'penalize'], default='force_buy', help='Behavior when sell is chosen without open positions')
     parser.add_argument('--invalid-sell-penalty', type=float, default=3.0, help='Penalty magnitude for invalid sell attempts')
     parser.add_argument('--trade-execution-penalty', type=float, default=0.0, help='Additional penalty for each executed buy/sell to reduce churn')
-    parser.add_argument('--action-mapping-mode', choices=['legacy', 'validity_constrained'], default='legacy', help='Map actions through validity-constrained controller')
+    parser.add_argument('--action-mapping-mode', choices=['legacy', 'validity_constrained', 'inventory_delta'], default='legacy', help='Map actions through controller semantics')
     parser.add_argument('--action-deadzone', type=float, default=0.15, help='Intent deadzone for validity-constrained action mapping')
+    parser.add_argument('--sell-redirect-mode', choices=['oldest', 'largest_notional'], default='oldest', help='Inventory-delta sell redirection policy when selected symbol is not held')
+    parser.add_argument('--semantic-bootstrap-buy-pct', type=float, default=0.18, help='Inventory-delta bootstrap buy pct when flat and intent is negative')
+    parser.add_argument('--semantic-bootstrap-penalty', type=float, default=0.05, help='Penalty applied when inventory-delta bootstrap buy is triggered')
     parser.add_argument('--trade-rate-window', type=int, default=240, help='Window size (steps) for recent trade-rate regularization')
     parser.add_argument('--target-trade-rate', type=float, default=0.18, help='Target fraction of recent steps with trades')
     parser.add_argument('--trade-rate-penalty', type=float, default=0.0, help='Penalty strength when recent trade rate exceeds target')
@@ -1227,6 +1678,7 @@ def main() -> None:
     parser.add_argument('--min-episode-steps', type=int, default=0, help='Minimum randomized episode length when randomization is enabled')
     parser.add_argument('--max-episode-steps', type=int, default=0, help='Maximum randomized episode length when randomization is enabled')
     parser.add_argument('--fee-randomization-pct', type=float, default=0.0, help='Episode fee jitter ratio (0.10 = +/-10%)')
+    parser.add_argument('--reward-mode', choices=['equity_delta', 'shaped'], default='equity_delta', help='Reward formulation used in the environment')
 
     args = parser.parse_args()
 
@@ -1237,6 +1689,7 @@ def main() -> None:
         num_days=args.days,
         symbols=selected_symbols,
         max_symbols=args.max_symbols,
+        timeframe_minutes=args.timeframe_minutes,
         use_cache=not args.no_cache,
     )
     print(f"✓ Loaded {len(data)} rows from {data['symbol'].nunique()} symbols\n")
@@ -1265,6 +1718,9 @@ def main() -> None:
     )
 
     config = TradingConfig(
+        timeframe_minutes=args.timeframe_minutes,
+        lookback_steps=args.lookback_steps,
+        reward_mode=args.reward_mode,
         initial_cash=args.initial_cash,
         max_positions=args.max_positions,
         position_duration_limit=args.position_duration,
@@ -1281,6 +1737,9 @@ def main() -> None:
         trade_execution_penalty=args.trade_execution_penalty,
         action_mapping_mode=args.action_mapping_mode,
         action_deadzone=args.action_deadzone,
+        sell_redirect_mode=args.sell_redirect_mode,
+        semantic_bootstrap_buy_pct=args.semantic_bootstrap_buy_pct,
+        semantic_bootstrap_penalty=args.semantic_bootstrap_penalty,
         trade_rate_window=args.trade_rate_window,
         target_trade_rate=args.target_trade_rate,
         trade_rate_penalty=args.trade_rate_penalty,
@@ -1307,7 +1766,15 @@ def main() -> None:
             resolved_device = 'cpu'
     print(f"Using device: {resolved_device}")
 
-    trader = RLTrader(config=config, device=resolved_device, seed=args.seed)
+    trader = RLTrader(
+        config=config,
+        model_dir='models/',
+        device=args.device,
+        seed=args.seed,
+        algo=args.algo,
+        num_envs=args.num_envs,
+    )
+    selected_policy = args.policy if args.policy else _default_policy_for_algo(args.algo)
  
     if args.dashboard:
         dashboard_dir = str(Path(__file__).resolve().parent)
@@ -1320,12 +1787,20 @@ def main() -> None:
         start_dashboard_server(dashboard_dir, port=args.dashboard_port)
  
     if args.mode == 'backtest':
+        if args.init_model:
+            trader.load_model(args.init_model, algo=args.algo)
         trader.backtest_period(
             data,
             split_ratio=0.8,
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             timesteps=args.train_steps,
+            algo=args.algo,
+            policy=selected_policy,
+            lstm_hidden_size=args.lstm_hidden_size,
+            lstm_layers=args.lstm_layers,
+            shared_lstm=args.shared_lstm,
             learning_rate=args.learning_rate,
+            ent_coef=args.ent_coef,
             batch_size=args.batch_size,
             n_steps=args.n_steps,
             n_epochs=args.n_epochs,
@@ -1335,13 +1810,20 @@ def main() -> None:
         return
  
     if args.mode == 'backtest_3way':
+        if args.init_model:
+            trader.load_model(args.init_model, algo=args.algo)
         trader.backtest_3way(
             data,
-            train_ratio=0.6,
             val_ratio=0.2,
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             timesteps=args.train_steps,
+            algo=args.algo,
+            policy=selected_policy,
+            lstm_hidden_size=args.lstm_hidden_size,
+            lstm_layers=args.lstm_layers,
+            shared_lstm=args.shared_lstm,
             learning_rate=args.learning_rate,
+            ent_coef=args.ent_coef,
             batch_size=args.batch_size,
             n_steps=args.n_steps,
             n_epochs=args.n_epochs,
@@ -1349,15 +1831,51 @@ def main() -> None:
             eval_freq=args.eval_freq if args.eval_freq > 0 else None,
         )
         return
- 
+
+    if args.mode == 'backtest_walk_forward':
+        if args.init_model:
+            trader.load_model(args.init_model, algo=args.algo)
+        trader.backtest_walk_forward(
+            data,
+            val_ratio=args.walk_forward_val_ratio,
+            test_ratio=args.walk_forward_test_ratio,
+            step_ratio=args.walk_forward_step_ratio,
+            max_folds=args.walk_forward_folds,
+            dashboard_state_path=args.dashboard_state if args.dashboard else None,
+            timesteps=args.train_steps,
+            algo=args.algo,
+            policy=selected_policy,
+            lstm_hidden_size=args.lstm_hidden_size,
+            lstm_layers=args.lstm_layers,
+            shared_lstm=args.shared_lstm,
+            learning_rate=args.learning_rate,
+            ent_coef=args.ent_coef,
+            batch_size=args.batch_size,
+            n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
+            policy_arch=model_arch,
+            eval_freq=args.eval_freq if args.eval_freq > 0 else None,
+            promotion_test_floor_pct=args.promotion_test_floor_pct,
+            enforce_promotion_gate=args.strict_promotion_gate,
+        )
+        return
+
     if args.mode == 'train':
         trader.create_envs(data)
+        if args.init_model:
+            trader.load_model(args.init_model, algo=args.algo)
         trader.train(
             timesteps=args.train_steps,
             eval_freq=args.eval_freq if args.eval_freq > 0 else max(5_000, args.train_steps // 5),
             dashboard_state_path=args.dashboard_state if args.dashboard else None,
             dashboard_mode='train',
+            algo=args.algo,
+            policy=selected_policy,
+            lstm_hidden_size=args.lstm_hidden_size,
+            lstm_layers=args.lstm_layers,
+            shared_lstm=args.shared_lstm,
             learning_rate=args.learning_rate,
+            ent_coef=args.ent_coef,
             batch_size=args.batch_size,
             n_steps=args.n_steps,
             n_epochs=args.n_epochs,
@@ -1370,22 +1888,23 @@ def main() -> None:
         eval_slice = _balanced_eval_slice(data, max_rows_per_symbol=300)
         trader.evaluate(eval_slice, deterministic=True, split_name='dev')
         return
- 
-    if not args.model:
-        raise ValueError('--model required for eval mode')
-    if args.dashboard:
-        trader.dashboard_writer = RLDashboardWriter(
-            state_path=args.dashboard_state,
-            total_timesteps=0,
-            mode='eval',
-            config=config,
-            num_data_rows=len(data),
-        )
-        trader.dashboard_writer.set_status('running')
-    trader.load_model(args.model)
-    trader.evaluate(data, deterministic=True, split_name='test')
-    if trader.dashboard_writer is not None:
-        trader.dashboard_writer.set_status('completed')
+
+    if args.mode == 'eval':
+        if not args.model:
+            raise ValueError('--model required for eval mode')
+        if args.dashboard:
+            trader.dashboard_writer = RLDashboardWriter(
+                state_path=args.dashboard_state,
+                total_timesteps=0,
+                mode='eval',
+                config=config,
+                num_data_rows=len(data),
+            )
+            trader.dashboard_writer.set_status('running')
+        trader.load_model(args.model, algo=args.algo)
+        trader.evaluate(data, deterministic=True, split_name='test')
+        if trader.dashboard_writer is not None:
+            trader.dashboard_writer.set_status('completed')
 
 
 if __name__ == '__main__':
