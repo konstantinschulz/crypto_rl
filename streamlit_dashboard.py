@@ -273,6 +273,37 @@ st.session_state.finance_view = st.sidebar.selectbox(
     else 0,
 )
 
+# Minimal run launcher: start the provided `minimal_rl.py` training in background
+st.sidebar.markdown("---")
+st.sidebar.subheader("Quick Start: Minimal Train")
+min_rows = st.sidebar.number_input("Rows to load", value=10000, step=1000)
+min_steps = st.sidebar.number_input("Train timesteps", value=20000, step=1000)
+start_col, stop_col = st.sidebar.columns(2)
+import subprocess
+
+with start_col:
+    if st.button("Start Minimal Run"):
+        # Launch minimal_rl.py as a background process; it will create its own run entry
+        cmd = [
+            "python",
+            "minimal_rl.py",
+            "--dashboard",
+            "--rows",
+            str(int(min_rows)),
+            "--timesteps",
+            str(int(min_steps)),
+            "--run-dir",
+            "rl_dashboard_runs",
+        ]
+        try:
+            subprocess.Popen(cmd)
+            st.sidebar.success("Started minimal run in background. It should appear in the run list shortly.")
+        except Exception as e:
+            st.sidebar.error(f"Failed to start run: {e}")
+with stop_col:
+    if st.button("Refresh Index"):
+        st.rerun()
+
 # Track run selection changes
 if sel_run_id != st.session_state.current_run_id:
     st.session_state.current_run_id = sel_run_id

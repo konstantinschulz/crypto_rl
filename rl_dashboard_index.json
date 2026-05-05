@@ -33,14 +33,27 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260423-091809-bab3f2",
-    "state_file": "rl_dashboard_runs/run-20260423-091809-bab3f2.json",
-    "mode": "backtest_3way",
-    "status": "completed",
-    "started_at": "2026-04-23 09:18:09 UTC",
-    "finished_at": "2026-04-23 09:23:10 UTC"
+    "run_id": "run-20260505-163706-minimal",
+    "state_file": "rl_dashboard_runs/state.json",
+    "mode": "minimal",
+    "status": "initializing",
+    "started_at": "2026-05-05 16:37:06 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260505-163706-minimal",
+      "state_file": "rl_dashboard_runs/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-05-05 16:37:06 UTC"
+    },
+    {
+      "run_id": "run-20260505-163627-minimal",
+      "state_file": "rl_dashboard_runs/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-05-05 16:36:27 UTC"
+    },
     {
       "run_id": "run-20260330-133908-49600c",
       "mode": "test",
