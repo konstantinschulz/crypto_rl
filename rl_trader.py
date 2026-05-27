@@ -683,10 +683,10 @@ class RLTrader:
         self.eval_env = None
         self.dashboard_writer: Optional[RLDashboardWriter] = None
     
-    def create_envs(self, train_data: pd.DataFrame, eval_data: Optional[pd.DataFrame] = None):
+    def create_envs(self, train_data: pd.DataFrame, eval_data: Optional[pd.DataFrame] = None, run_id: str = 'default'):
         """Create training and evaluation environments"""
         def make_train_env():
-            return CryptoTradingEnv(train_data, self.config)
+            return CryptoTradingEnv(train_data, self.config, run_id=run_id)
             
         if self.num_envs > 1:
             self.train_env = SubprocVecEnv([make_train_env for _ in range(self.num_envs)])
@@ -699,7 +699,7 @@ class RLTrader:
                 randomize_episode_start=False,
                 fee_randomization_pct=0.0,
             )
-            self.eval_env = CryptoTradingEnv(eval_data, eval_config)
+            self.eval_env = CryptoTradingEnv(eval_data, eval_config, run_id=f"{run_id}_eval")
         
         train_symbols = self.train_env.get_attr('symbols')[0] if hasattr(self.train_env, 'get_attr') else getattr(self.train_env, 'symbols', [])
         print(f"Train env: {len(train_data)} rows, {len(train_symbols)} symbols, {self.num_envs} workers")
@@ -904,6 +904,7 @@ class RLTrader:
         deterministic: bool = True,
         split_name: Optional[str] = None,
         env_reuse: Optional[Any] = None,
+        run_id: Optional[str] = None,
     ) -> Dict[str, float]:
         """
         Evaluate agent on data
@@ -913,6 +914,7 @@ class RLTrader:
             deterministic: Whether to use deterministic policy
             split_name: Name of split for logging
             env_reuse: Reuse existing env instead of creating new (saves memory)
+            run_id: Optional unique identifier for logging
         
         Returns:
             Dict with metrics
@@ -931,7 +933,8 @@ class RLTrader:
                 randomize_episode_start=False,
                 fee_randomization_pct=0.0,
             )
-            env = CryptoTradingEnv(eval_data, eval_config)
+            final_run_id = run_id or f"eval_{split_name or 'unnamed'}_{int(time.time())}"
+            env = CryptoTradingEnv(eval_data, eval_config, run_id=final_run_id)
 
         model_obs_dim = int(self.model.observation_space.shape[0])
         env_obs_dim = int(env.observation_space.shape[0])
@@ -1042,6 +1045,7 @@ class RLTrader:
         
         # Clean up if we created a new env
         if env_reuse is None:
+            env.close()
             del env
             gc.collect()
         
@@ -1213,9 +1217,11 @@ class RLTrader:
         print(f"{'='*70}\n")
         
         # Create envs with val as eval set during training
-        self.create_envs(train_data, val_data)
-        
+        run_id = f"backtest3way-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        trader.create_envs(train_data, val_data, run_id=run_id)
+
         # Train with val monitoring
+
         print("PHASE 1: Training on train set with val monitoring...")
         self.train(
             timesteps=timesteps,
@@ -1861,7 +1867,8 @@ def main() -> None:
         return
 
     if args.mode == 'train':
-        trader.create_envs(data)
+        run_id = f"train-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+        trader.create_envs(data, run_id=run_id)
         if args.init_model:
             trader.load_model(args.init_model, algo=args.algo)
         trader.train(

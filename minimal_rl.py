@@ -6,10 +6,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 import argparse
 import json
+import time
 from datetime import datetime
 from pathlib import Path
-import subprocess
-import os
 
 # Try to use pyarrow for efficient, row-group-aware parquet reads so we
 # don't load the entire file into memory. Fallback to pandas.read_parquet
@@ -23,68 +22,233 @@ BUDGET_INITIAL = 100.0
 
 class MinimalCryptoEnv(gym.Env):
     """
-    The absolute simplest Crypto Trading Environment.
-    - Observation: Last 10 price changes.
-    - Action: 0 (Stay in Cash) or 1 (Invest in Crypto).
-    - Reward: The literal change in Portfolio Value ($ PnL) from the action.
+    A slightly less minimal Crypto Trading Environment with multiple assets and variable trade amounts.
+    - Observation: Last `window_size` price changes for all assets.
+    - Action: MultiDiscrete space [3, num_assets, 101]:
+        - Index 0: action_type: 0 (Hold), 1 (Buy), 2 (Sell)
+        - Index 1: asset_idx: Index of the asset to act on
+        - Index 2: amount_pct: Percentage of cash/holdings (0 to 100, mapped to 0.0-1.0)
+    - Reward: The literal change in Portfolio Value ($ PnL).
     """
-    def __init__(self, prices, window_size=10):
+    def __init__(self, prices_df: pd.DataFrame, window_size=10, run_id: str = 'default', fee_rate: float = 0.0007):
         super().__init__()
-        self.prices = prices
+        # Pivot the dataframe so columns are symbols, index is timestamp, values are 'close'
+        self.prices_df = prices_df.pivot(index='open_time', columns='symbol', values='close')
         self.window_size = window_size
+        self.run_id = run_id
+        self.fee_rate = fee_rate
+        self.fees_paid_total = 0.0
+        self.num_assets = self.prices_df.shape[1]
+        self.asset_names = self.prices_df.columns.tolist()
 
-        # Action is 0 (Cash) or 1 (Crypto)
-        self.action_space = spaces.Discrete(2)
-        # Observation is the last 10 relative price changes
+        # Action is MultiDiscrete:
+        # [action_type (3), asset_idx (num_assets), amount_pct (101)]
+        self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
+
+        # Observation is the last 'window_size' relative price changes for all assets
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(window_size,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(window_size, self.num_assets), dtype=np.float32
         )
+
+        # Internal state
+        self.current_step = self.window_size
+        self.cash = BUDGET_INITIAL
+        self.holdings = np.zeros(self.num_assets) # units of each asset
+        self.portfolio_value = BUDGET_INITIAL
+        self.episode_count = 0
+        
+        self.action_log = None
+        self.log_file_path = None
+
+    def _init_log(self, run_id: str = 'default'):
+        """Initialize per-run action log."""
+        log_dir = Path('logs')
+        log_dir.mkdir(exist_ok=True)
+        self.log_file_path = log_dir / f"actions_{run_id}_ep{self.episode_count}_{int(time.time())}.jsonl"
+        self.action_log = open(self.log_file_path, 'a', encoding='utf-8')
+
+    def log_action(self, step: int, action: np.ndarray, reward: float, portfolio: float, trade_price: float = 0.0, trade_units: float = 0.0, fee: float = 0.0):
+        """Record step details in a storage-efficient, human-readable JSONL format."""
+        if self.action_log:
+            action_type_idx = int(action[0])
+            action_types = {0: 'HOLD', 1: 'BUY', 2: 'SELL'}
+            action_type_str = action_types.get(action_type_idx, 'UNKNOWN')
+            
+            asset_idx = int(action[1])
+            asset_str = self.asset_names[asset_idx] if 0 <= asset_idx < len(self.asset_names) else 'UNKNOWN'
+            
+            entry = {
+                'step': step,
+                'action_type': action_type_str,
+                'symbol': asset_str,
+                'amount_pct': float(action[2]),
+                'reward': float(reward),
+                'portfolio': float(portfolio),
+            }
+            if trade_price > 0:
+                entry['price'] = float(trade_price)
+                entry['units'] = float(trade_units)
+            if fee > 0:
+                entry['fee'] = float(fee)
+            
+            self.action_log.write(json.dumps(entry) + '\n')
+            if step % 1000 == 0:
+                self.action_log.flush()
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        self.episode_count += 1
+        
+        # Close old log file if open to start a new file for the new episode
+        if self.action_log is not None:
+            self.action_log.close()
+            self.action_log = None
+            
+        if self.action_log is None:
+            self._init_log(run_id=self.run_id)
+            
         self.current_step = self.window_size
+        self.cash = BUDGET_INITIAL
+        self.holdings = np.zeros(self.num_assets)
         self.portfolio_value = BUDGET_INITIAL
-        return self._get_obs(), {}
+        self.fees_paid_total = 0.0
+        return self._get_obs(), {'fees_paid': 0.0}
+
+    def close(self):
+        """Cleanly close resources."""
+        if self.action_log:
+            self.action_log.close()
+            self.action_log = None
+        super().close()
 
     def _get_obs(self):
-        # Return the last 'window_size' prices as simple percentage changes
-        window = self.prices[self.current_step - self.window_size : self.current_step]
-        normalized = (window / window[-1]) - 1.0
-        return normalized.astype(np.float32)
+        # Return the last 'window_size' prices as simple percentage changes for all assets
+        window = self.prices_df.iloc[self.current_step - self.window_size : self.current_step]
+        # Normalize each asset's window by its last price in the window
+        normalized = (window / window.iloc[-1]) - 1.0
+        return normalized.values.astype(np.float32)
 
     def step(self, action):
-        current_price = self.prices[self.current_step - 1]
-        next_price = self.prices[self.current_step]
+        # action is now a list/array: [action_type, asset_idx, amount_pct_int]
+        action_type = action[0]
+        asset_idx = action[1]
+        amount_pct = float(action[2]) / 100.0
+
+        # Ensure amount_pct is within valid range [0, 1]
+        amount_pct = np.clip(amount_pct, 0.0, 1.0)
+        
+        if action_type == 0:
+            amount_pct = 0.0
+
+        # Store previous portfolio value for reward calculation
+        prev_portfolio_value = self.portfolio_value
+
+        # Get current and next prices for all assets
+        current_prices = self.prices_df.iloc[self.current_step - 1].values
+        next_prices = self.prices_df.iloc[self.current_step].values
+
+        # Execute trade based on action
+        trade_price = 0.0
+        trade_units = 0.0
+        fee_paid = 0.0
+        if action_type == 1:  # Buy
+            # Ensure we have cash and the asset index is valid
+            if self.cash > 0 and asset_idx < self.num_assets:
+                buy_amount_usd = self.cash * amount_pct
+                if buy_amount_usd > 0:
+                    trade_price = current_prices[asset_idx]
+                    fee_paid = buy_amount_usd * self.fee_rate
+                    amount_after_fee = buy_amount_usd - fee_paid
+                    trade_units = amount_after_fee / trade_price
+                    self.cash -= buy_amount_usd
+                    self.holdings[asset_idx] += trade_units
+                    self.fees_paid_total += fee_paid
+        elif action_type == 2:  # Sell
+            # Ensure we have holdings of this asset and the asset index is valid
+            if self.holdings[asset_idx] > 0 and asset_idx < self.num_assets:
+                units_to_sell = self.holdings[asset_idx] * amount_pct
+                if units_to_sell > 0:
+                    trade_price = current_prices[asset_idx]
+                    trade_units = units_to_sell
+                    gross_proceeds = units_to_sell * trade_price
+                    fee_paid = gross_proceeds * self.fee_rate
+                    proceeds = gross_proceeds - fee_paid
+                    self.cash += proceeds
+                    self.holdings[asset_idx] -= trade_units
+                    self.fees_paid_total += fee_paid
+        # else: action_type == 0 (Hold), do nothing
 
         # Advance time
         self.current_step += 1
-        done = self.current_step >= len(self.prices)
+        done = self.current_step >= len(self.prices_df)
 
         if done:
-            return self._get_obs(), 0.0, done, False, {}
+            # On done, liquidate all holdings to get final portfolio value
+            final_asset_value = np.sum(self.holdings * next_prices)
+            self.portfolio_value = self.cash + final_asset_value
+            reward = self.portfolio_value - prev_portfolio_value # Reward for the last step
+            
+            # Log the effective amount used
+            effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
+            self.log_action(self.current_step, effective_action, reward, prev_portfolio_value, trade_price, trade_units, fee_paid)
+            return self._get_obs(), float(reward), done, False, {'fees_paid': self.fees_paid_total}
 
-        # Calculate PnL based on the action
-        if action == 1:
-            # We are holding crypto: Portfolio changes based on price movement
-            price_change_pct = (next_price - current_price) / current_price
-            pnl = self.portfolio_value * price_change_pct
-        else:
-            # We are holding cash: No change
-            pnl = 0.0
+        # Update portfolio value based on new prices for held assets
+        current_asset_value = np.sum(self.holdings * next_prices)
+        self.portfolio_value = self.cash + current_asset_value
 
-        self.portfolio_value += pnl
+        # Reward is the change in portfolio value
+        reward = self.portfolio_value - prev_portfolio_value
+        
+        # Log the effective amount used
+        effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
+        self.log_action(self.current_step, effective_action, reward, prev_portfolio_value, trade_price, trade_units, fee_paid)
 
-        # Simply reward the direct PnL we just made
-        reward = pnl
-
-        return self._get_obs(), float(reward), done, False, {}
+        return self._get_obs(), float(reward), done, False, {'fees_paid': self.fees_paid_total}
 
 def main():
-    parser = argparse.ArgumentParser(description="Minimal RL training with optional dashboard reporting")
-    parser.add_argument("--rows", type=int, default=10000, help="Number of last rows to load from parquet")
-    parser.add_argument("--timesteps", type=int, default=20000, help="Total timesteps to train")
-    parser.add_argument("--dashboard", action="store_true", help="Enable dashboard state updates")
-    parser.add_argument("--run-dir", type=str, default=None, help="Directory to write run state (if dashboard enabled)")
+    parser = argparse.ArgumentParser(
+        description="Minimal RL training with optional dashboard reporting",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python minimal_rl.py --rows 10000 --timesteps 20000
+  python minimal_rl.py --dashboard --rows 15000 --timesteps 50000 --run-dir rl_dashboard_runs
+        """
+    )
+    parser.add_argument(
+        "--rows",
+        type=int,
+        default=10000,
+        help="Number of last rows to load from parquet file (default: 10000 ~7 days). "
+             "Lower values use less RAM; higher values gives more training data. "
+             "Uses pyarrow row-group-aware reading if available for memory efficiency."
+    )
+    parser.add_argument(
+        "--timesteps",
+        type=int,
+        default=20000,
+        help="Total timesteps to train PPO model (default: 20000)"
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Enable dashboard integration: creates run entry in rl_dashboard_index.json "
+             "and writes periodic state.json for live monitoring in streamlit_dashboard.py"
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="Directory where run state will be written (if --dashboard is used). "
+             "Default: rl_dashboard_runs/"
+    )
+    parser.add_argument(
+        "--fee-rate",
+        type=float,
+        default=0.001,
+        help="Trading fee rate (flat percentage of trade volume, e.g. 0.001 for 0.1%)"
+    )
     args = parser.parse_args()
 
     print("1. Loading raw data...")
@@ -92,48 +256,34 @@ def main():
     # We prefer a row-group-aware reader (pyarrow) so only required
     # row-groups are loaded. If pyarrow isn't available, fall back to
     # a pandas read of only the 'close' column and then tail().
-    def read_last_n_close(path, n=10000):
+    def read_last_n(path, n=10000):
+        # Read the full dataset with all necessary columns for grouping/pivoting
+        cols = ['symbol', 'open_time', 'close']
         if pq is None:
-            # Fallback: read only the close column (may still be large)
-            df_local = pd.read_parquet(path, columns=["close"])
-            return df_local['close'].dropna().values[-n:]
+            df_local = pd.read_parquet(path, columns=cols)
+            return df_local.dropna().tail(n)
 
-        # Use pyarrow. Parquet files are divided into row groups; find
-        # which row groups contain the last `n` rows and read only them.
         pf = pq.ParquetFile(path)
-        rg_counts = [pf.metadata.row_group(i).num_rows for i in range(pf.num_row_groups)]
-        total_rows = sum(rg_counts)
-        start_row = max(0, total_rows - n)
-
-        # Find first row_group that intersects start_row
-        cum = 0
-        first_rg = 0
-        for i, cnt in enumerate(rg_counts):
-            if cum + cnt > start_row:
-                first_rg = i
-                break
-            cum += cnt
-
-        # Read from first_rg to the last row group
-        rgs = list(range(first_rg, pf.num_row_groups))
-        table = pf.read_row_groups(rgs, columns=["close"])  # pyarrow.Table
+        # Assuming last N rows refers to last N entries in time, we might need a safer way to get the last N rows.
+        # For now, simply load the full table into memory (or a chunk) since we only need 3 columns.
+        table = pf.read(columns=cols)
         df_local = table.to_pandas()
+        return df_local.dropna().tail(n)
 
-        # It's possible we read a bit more than needed; take the tail.
-        return df_local['close'].dropna().values[-n:]
-
-    # Load last 10k minutes (~7 days) by default but keep it configurable
-    prices = read_last_n_close("binance_spot_1m_last4y_single.parquet", n=args.rows)
+    # Load data with required columns
+    prices_df = read_last_n("binance_spot_1m_last4y_single.parquet", n=args.rows)
 
     # Split 80/20 into train and test
-    split_idx = int(len(prices) * 0.8)
-    train_prices = prices[:split_idx]
-    test_prices = prices[split_idx:]
-
-    print("2. Setting up environment...")
-    train_env = MinimalCryptoEnv(train_prices)
+    split_idx = int(len(prices_df) * 0.8)
+    train_prices_df = prices_df.iloc[:split_idx]
+    test_prices_df = prices_df.iloc[split_idx:]
 
     # If dashboard integration is requested, prepare run directory and callback
+    run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S-minimal")
+    
+    print("2. Setting up environment...")
+    train_env = MinimalCryptoEnv(train_prices_df, run_id=run_id, fee_rate=args.fee_rate)
+
     run_dir = None
     state_file = None
     index_file = Path("rl_dashboard_index.json")
@@ -144,22 +294,111 @@ def main():
             self.state_path = state_path
             self.check_freq = check_freq
             self.start_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            self.last_portfolio_value = BUDGET_INITIAL
+            
+            # Series data
+            self.series = {
+                "train_reward": [],
+                "portfolio_value": [],
+                "trades": [],
+                "win_rate": [],
+                "train_loss": [],
+                "policy_loss": [],
+                "value_loss": [],
+                "approx_kl": [],
+                "clip_fraction": [],
+                "ram_mb": [],
+                "total_return_pct": [],
+                "drawdown_pct": [],
+            }
+
+            self.current_trades = 0
+            self.winning_trades = 0
+            self.peak_portfolio_value = BUDGET_INITIAL
+            
+            try:
+                import psutil
+                self.psutil = psutil
+            except ImportError:
+                self.psutil = None
 
         def _on_training_start(self) -> None:
-            # Initialize state
             self._write_state(status="initializing")
 
         def _on_step(self) -> bool:
-            # Periodically write state with current num_timesteps
+            # Periodically write state with current num_timesteps and real metrics
             if self.num_timesteps % self.check_freq == 0:
+                self._collect_metrics()
                 self._write_state(status="running")
             return True
 
         def _on_training_end(self) -> None:
+            self._collect_metrics()
             self._write_state(status="finished")
+
+        def _collect_metrics(self):
+            """Extract real portfolio value and reward from the training environment."""
+            step = int(self.num_timesteps)
+            try:
+                # Use get_attr to safely access environment attributes across potential wrappers
+                portfolio_values = self.training_env.get_attr('portfolio_value')
+                current_portfolio = float(portfolio_values[0]) if portfolio_values else BUDGET_INITIAL
+                
+                holdings_list = self.training_env.get_attr('holdings')
+                current_holdings = holdings_list[0] if holdings_list else np.zeros(1)
+
+                # Calculate reward as change in portfolio value since last checkpoint
+                current_reward = current_portfolio - self.last_portfolio_value
+                
+                # Simplified trade count: if holdings are non-zero, consider it an active "trade" state
+                if np.sum(np.abs(current_holdings)) > 1e-8:
+                    self.current_trades += 1
+
+                # Win rate placeholder: assume a "win" if reward > 0 in this interval
+                if current_reward > 0:
+                    self.winning_trades += 1
+                
+                win_rate = (self.winning_trades / max(1, self.current_trades)) * 100.0
+
+                # Return and Drawdown
+                total_return = (current_portfolio / BUDGET_INITIAL - 1.0) * 100.0
+                self.peak_portfolio_value = max(self.peak_portfolio_value, current_portfolio)
+                drawdown = (1.0 - current_portfolio / self.peak_portfolio_value) * 100.0
+
+                # Append to series
+                self.series["portfolio_value"].append({"step": step, "value": current_portfolio})
+                self.series["train_reward"].append({"step": step, "value": float(current_reward)})
+                self.series["trades"].append({"step": step, "value": int(self.current_trades)})
+                self.series["win_rate"].append({"step": step, "value": float(win_rate)})
+                self.series["total_return_pct"].append({"step": step, "value": float(total_return)})
+                self.series["drawdown_pct"].append({"step": step, "value": float(drawdown)})
+
+                # Technical metrics from SB3 logger
+                # SB3 uses '/' as separator, e.g., 'train/loss'
+                logger_map = self.model.logger.name_to_value
+                self.series["train_loss"].append({"step": step, "value": float(logger_map.get("train/loss", 0.0))})
+                self.series["policy_loss"].append({"step": step, "value": float(logger_map.get("train/policy_gradient_loss", 0.0))})
+                self.series["value_loss"].append({"step": step, "value": float(logger_map.get("train/value_loss", 0.0))})
+                self.series["approx_kl"].append({"step": step, "value": float(logger_map.get("train/approx_kl", 0.0))})
+                self.series["clip_fraction"].append({"step": step, "value": float(logger_map.get("train/clip_fraction", 0.0))})
+
+                # Memory usage
+                if self.psutil:
+                    ram = self.psutil.Process().memory_info().rss / (1024 * 1024)
+                    self.series["ram_mb"].append({"step": step, "value": float(ram)})
+
+                self.last_portfolio_value = current_portfolio
+            except Exception as e:
+                # print(f"Error collecting metrics: {e}") # Debugging
+                pass
 
         def _write_state(self, status="running"):
             try:
+                # Keep only the last 100 entries to avoid unbounded JSON growth
+                series_data = {}
+                for key, data in self.series.items():
+                    series_data[key] = data[-100:]
+
                 state = {
                     "run": {
                         "run_id": run_id if 'run_id' in globals() else "run-unknown",
@@ -170,11 +409,11 @@ def main():
                         "current_step": int(self.num_timesteps),
                         "progress_pct": int(100 * min(1.0, float(self.num_timesteps) / float(args.timesteps))),
                     },
-                    "technical": {"loss": {"train": None}},
-                    "series": {
-                        "train_reward": [{"step": int(self.num_timesteps), "value": None}],
-                        "portfolio_value": [{"step": int(self.num_timesteps), "value": None}],
+                    "technical": {
+                        "loss": {"train": self.series["train_loss"][-1]["value"] if self.series["train_loss"] else None},
+                        "num_data_rows": args.rows
                     },
+                    "series": series_data,
                     "finance": {},
                 }
                 with open(self.state_path, "w", encoding="utf-8") as f:
@@ -186,7 +425,8 @@ def main():
     if args.dashboard:
         # Create run directory
         run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S-minimal")
-        run_dir = Path(args.run_dir) if args.run_dir else Path("rl_dashboard_runs") / run_id
+        base_run_dir = Path(args.run_dir) if args.run_dir else Path("rl_dashboard_runs")
+        run_dir = base_run_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         state_file = run_dir / "state.json"
 
@@ -222,31 +462,71 @@ def main():
         model.learn(total_timesteps=args.timesteps)
 
     print("4. Testing the trained model...")
-    test_env = MinimalCryptoEnv(test_prices)
+    test_env = MinimalCryptoEnv(test_prices_df, run_id=f"{run_id}_eval", fee_rate=args.fee_rate) # Use test_prices_df
     obs, _ = test_env.reset()
     done = False
-    action_1_count = 0
-    steps = 0
+    eval_trades_count = 0
+    eval_winning_trades = 0
+    eval_steps = 0
+    eval_initial_portfolio_value = test_env.portfolio_value
 
     while not done:
         # Predict the action using our trained model
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, done, _, _ = test_env.step(action)
 
-        if action == 1:
-            action_1_count += 1
-        steps += 1
+        # Track trades for evaluation
+        # action is now a MultiDiscrete array: [action_type, asset_idx, amount_pct]
+        if action[0] == 1 or action[0] == 2: # Buy or Sell
+            eval_trades_count += 1
+            # For win rate, we'd need to track PnL per trade.
+            # For simplicity, let's assume a "winning trade" is any step where portfolio value increased.
+            # This is a very rough approximation for this minimal env.
+            if reward > 0:
+                eval_winning_trades += 1
+        eval_steps += 1
+    
+    test_env.close()
+    train_env.close()
 
     print("-" * 30)
     print("RESULTS:")
     print(f"Final Test Portfolio Value: ${test_env.portfolio_value:.2f}")
-    print(f"Time in Market (Crypto):    {action_1_count}/{steps} steps ({action_1_count/steps*100:.1f}%)")
+    print(f"Total Trades (Eval):        {eval_trades_count}")
+    print(f"Total Fees Paid (Eval):     ${test_env.fees_paid_total:.4f}")
+    eval_win_rate_pct = (eval_winning_trades / eval_trades_count * 100.0) if eval_trades_count > 0 else 0.0
+    print(f"Win Rate (Eval):            {eval_win_rate_pct:.1f}%")
 
-    # Baseline comparison (if we just bought and held)
-    buy_hold_return = (test_prices[-1] - test_prices[0]) / test_prices[0]
-    buy_hold_final = 100.0 * (1 + buy_hold_return)
-    print(f"Buy/Hold Baseline:          ${buy_hold_final:.2f}")
+    # Baseline comparison (if we just bought and held the first asset)
+    # Use the pivoted prices_df which is now indexed by time and contains floats.
+    pivoted_df = train_env.prices_df
+    first_asset = pivoted_df.columns[0]
+    buy_hold_return = (pivoted_df.iloc[-1][first_asset] - pivoted_df.iloc[0][first_asset]) / pivoted_df.iloc[0][first_asset]
+    buy_hold_final = BUDGET_INITIAL * (1 + buy_hold_return)
+    print(f"Buy/Hold Baseline ({first_asset}): ${buy_hold_final:.2f}")
+
+    # --- Dashboard Update for Evaluation Results ---
+    if args.dashboard and state_file and state_file.exists():
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+
+            state["run"]["status"] = "evaluated"
+            state["run"]["finished_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            state["finance"]["evaluation_results"] = {
+                "final_portfolio_value": float(test_env.portfolio_value),
+                "pnl": float(test_env.portfolio_value - eval_initial_portfolio_value),
+                "evaluation_steps": int(eval_steps),
+                "eval_trades": int(eval_trades_count),
+                "eval_win_rate_pct": float(eval_win_rate_pct),
+                "buy_hold_baseline": float(buy_hold_final),
+                "total_fees_paid": float(test_env.fees_paid_total),
+            }
+            with open(state_file, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+            print(f"Dashboard state updated with evaluation results in {state_file}")
+        except Exception as e:
+            print(f"Error updating dashboard state with evaluation results: {e}")
 
 if __name__ == "__main__":
     main()
-

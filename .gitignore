@@ -1,6 +1,10 @@
+.antigravitycli/
+.gemini/
 .idea/
 .vscode/
 __pycache__/
+docs/.~*
+logs/
 models/
 rl_dashboard_runs/
 tb_logs/

@@ -208,20 +208,33 @@ def _resolve_dashboard_kpis(data):
     if portfolio_value == 0.0:
         portfolio_value = _latest_series_value(series, "portfolio_value", 0.0)
 
+    # Extract evaluation results
+    eval_results = finance.get("evaluation_results", {})
+
     return {
         "step": int(_to_float(run.get("current_step", 0), 0)),
         "train_loss": _to_float(tech.get("loss", {}).get("train", 0.0), 0.0),
         "train_reward": _to_float(data.get("rewards", {}).get("train", 0.0), 0.0),
         "trades": trades,
+        "win_rate_pct": win_rate_pct, # Added for training
         "realized_pnl": realized_pnl,
         "unrealized_pnl": _to_float(finance.get("unrealized_pnl", 0.0), 0.0),
-        "win_rate_pct": win_rate_pct,
         "portfolio_value": portfolio_value,
         "total_return_pct": _to_float(finance.get("total_return_pct", 0.0), 0.0),
         "drawdown_pct": _to_float(finance.get("drawdown_pct", 0.0), 0.0),
         "train_realized_pnl": _latest_series_value(series, "realized_pnl", 0.0),
         "train_unrealized_pnl": _latest_series_value(series, "unrealized_pnl", 0.0),
         "train_portfolio_value": _latest_series_value(series, "portfolio_value", 0.0),
+        "train_trades": _latest_series_value(series, "trades", 0), # Added for training
+        "train_win_rate_pct": _latest_series_value(series, "win_rate", 0.0), # Added for training
+        # Evaluation results
+        "eval_final_portfolio_value": _to_float(eval_results.get("final_portfolio_value", 0.0), 0.0),
+        "eval_pnl": _to_float(eval_results.get("pnl", 0.0), 0.0),
+        "eval_steps": int(_to_float(eval_results.get("evaluation_steps", 0), 0)),
+        "eval_time_in_market_pct": _to_float(eval_results.get("time_in_market_pct", 0.0), 0.0),
+        "eval_buy_hold_baseline": _to_float(eval_results.get("buy_hold_baseline", 0.0), 0.0),
+        "eval_trades": int(_to_float(eval_results.get("eval_trades", 0), 0)), # Added for evaluation
+        "eval_win_rate_pct": _to_float(eval_results.get("eval_win_rate_pct", 0.0), 0.0), # Added for evaluation
     }
 
 
@@ -276,16 +289,17 @@ st.session_state.finance_view = st.sidebar.selectbox(
 # Minimal run launcher: start the provided `minimal_rl.py` training in background
 st.sidebar.markdown("---")
 st.sidebar.subheader("Quick Start: Minimal Train")
-min_rows = st.sidebar.number_input("Rows to load", value=10000, step=1000)
-min_steps = st.sidebar.number_input("Train timesteps", value=20000, step=1000)
+min_rows = st.sidebar.number_input("Rows to load", value=5000, step=1000)
+min_steps = st.sidebar.number_input("Train timesteps", value=10000, step=1000)
 start_col, stop_col = st.sidebar.columns(2)
 import subprocess
 
 with start_col:
     if st.button("Start Minimal Run"):
-        # Launch minimal_rl.py as a background process; it will create its own run entry
+        # Launch minimal_rl.py as a background process using local conda python
+        python_exe = str(Path(".conda/bin/python"))
         cmd = [
-            "python",
+            python_exe,
             "minimal_rl.py",
             "--dashboard",
             "--rows",
@@ -297,7 +311,7 @@ with start_col:
         ]
         try:
             subprocess.Popen(cmd)
-            st.sidebar.success("Started minimal run in background. It should appear in the run list shortly.")
+            st.sidebar.success(f"Started minimal run via {python_exe}. It should appear in the run list shortly.")
         except Exception as e:
             st.sidebar.error(f"Failed to start run: {e}")
 with stop_col:
@@ -327,15 +341,26 @@ st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
 st.sidebar.markdown(f"**Elapsed:** {_format_elapsed(_elapsed_seconds_for_run(run))}")
 st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
 
+st.subheader("Training Metrics")
 col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
 col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
 col2.metric("Step", f"{int(kpis['step']):,}")
 col3.metric("Train Loss", f"{kpis['train_loss']:.5f}")
 col4.metric("Train Reward", f"{kpis['train_reward']:.4f}")
-col5.metric("Train Portfolio", f"{kpis['train_portfolio_value']:.2f}")
-col6.metric("Train PnL (R/U)", f"{kpis['train_realized_pnl']:.2f} / {kpis['train_unrealized_pnl']:.2f}")
-col7.metric("Eval Portfolio", f"{kpis['portfolio_value']:.2f}")
-col8.metric("Eval PnL", f"{kpis['realized_pnl']:.2f}")
+col5.metric("Train Portfolio", f"${kpis['train_portfolio_value']:.2f}")
+col6.metric("Train PnL (R/U)", f"${kpis['train_realized_pnl']:.2f} / ${kpis['train_unrealized_pnl']:.2f}")
+col7.metric("Train Trades", f"{kpis['train_trades']:,}") # Added
+col8.metric("Train Win Rate", f"{kpis['train_win_rate_pct']:.1f}%") # Added
+
+st.subheader("Evaluation Results")
+eval_col1, eval_col2, eval_col3, eval_col4, eval_col5, eval_col6, eval_col7 = st.columns(7)
+eval_col1.metric("Final Portfolio Value", f"${kpis['eval_final_portfolio_value']:.2f}")
+eval_col2.metric("PnL", f"${kpis['eval_pnl']:.2f}")
+eval_col3.metric("Evaluation Steps", f"{kpis['eval_steps']:,}")
+eval_col4.metric("Time in Market", f"{kpis['eval_time_in_market_pct']:.1f}%")
+eval_col5.metric("Buy/Hold Baseline", f"${kpis['eval_buy_hold_baseline']:.2f}")
+eval_col6.metric("Eval Trades", f"{kpis['eval_trades']:,}") # Added
+eval_col7.metric("Eval Win Rate", f"{kpis['eval_win_rate_pct']:.1f}%") # Added
 
 st.subheader("Training Series")
 
@@ -451,6 +476,20 @@ if rd_series:
     rd_df = pd.DataFrame(rd_series).dropna(how="all")
     rd_df = rd_df.interpolate(method="index").ffill().bfill()
     st.line_chart(rd_df)
+
+st.markdown("### Trades")
+df_trades = pd.DataFrame(series.get("trades", []))
+if not df_trades.empty and "step" in df_trades.columns:
+    df_trades.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_trades.set_index("step", inplace=True)
+    st.line_chart(df_trades[["value"]].rename(columns={"value": "Total Trades"}))
+
+st.markdown("### Win Rate (%)")
+df_wr = pd.DataFrame(series.get("win_rate", []))
+if not df_wr.empty and "step" in df_wr.columns:
+    df_wr.drop_duplicates(subset=["step"], keep="last", inplace=True)
+    df_wr.set_index("step", inplace=True)
+    st.line_chart(df_wr[["value"]].rename(columns={"value": "Win Rate %"}))
 
 st.markdown("### Rewards")
 df_train_r = pd.DataFrame(series.get("train_reward", []))

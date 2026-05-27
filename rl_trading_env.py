@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,14 +128,16 @@ def _add_technical_features(part: pd.DataFrame) -> pd.DataFrame:
 class CryptoTradingEnv(Env):
     """Gym-compatible trading environment for cryptocurrency portfolios"""
     
-    def __init__(self, df: pd.DataFrame, config: Optional[TradingConfig] = None):
+    def __init__(self, df: pd.DataFrame, config: Optional[TradingConfig] = None, run_id: str = 'default'):
         """
         Args:
             df: DataFrame with columns [symbol, timestamp, open, high, low, close, volume]
             config: TradingConfig with parameters
+            run_id: Optional unique identifier for logging
         """
         super().__init__()
         self.config = config or TradingConfig()
+        self.run_id = run_id
         self.lookback_steps = max(1, int(self.config.lookback_steps))
 
         required_cols = {'symbol', 'open_time', 'close'}
@@ -225,11 +229,45 @@ class CryptoTradingEnv(Env):
         self.last_trade_step_global = -10**9
         self.episode_start_step = 0
         self.episode_end_step = self.n_steps - 1
-        self.current_buy_fee_multiplier = 1.0
-        self.current_sell_fee_multiplier = 1.0
-        self._last_executed_notional = 0.0
+        self.action_log = None
+        self.log_file_path = None
         
-        # Action space: [action_type, symbol_idx, amount_pct]
+    def _init_log(self, run_id: str = 'default'):
+        """Initialize per-run action log."""
+        log_dir = Path('logs')
+        log_dir.mkdir(exist_ok=True)
+        self.log_file_path = log_dir / f"actions_{run_id}_{int(time.time())}.jsonl"
+        self.action_log = open(self.log_file_path, 'a', encoding='utf-8')
+
+    def log_action(self, step: int, action: np.ndarray, reward: float, info: Dict):
+        """Record step details in a storage-efficient, human-readable JSONL format."""
+        if self.action_log:
+            action_type_idx = int(action[0])
+            action_types = {0: 'HOLD', 1: 'BUY', 2: 'SELL'}
+            action_type_str = action_types.get(action_type_idx, 'UNKNOWN')
+            
+            symbol_idx = int(action[1])
+            symbol_str = self.symbols[symbol_idx] if 0 <= symbol_idx < len(self.symbols) else 'UNKNOWN'
+            
+            entry = {
+                'step': step,
+                'action_type': action_type_str,
+                'symbol': symbol_str,
+                'amount': float(action[2]),
+                'reward': float(reward),
+                'portfolio': float(info.get('portfolio_value', 0.0)),
+                'trades': int(info.get('trades', 0)),
+            }
+            self.action_log.write(json.dumps(entry) + '\n')
+            if step % 1000 == 0:
+                self.action_log.flush()
+
+    def close(self):
+        """Cleanly close resources."""
+        if self.action_log:
+            self.action_log.close()
+            self.action_log = None
+        super().close()
         # action_type: 0=hold all, 1=buy, 2=sell
         # symbol_idx: which symbol (0-70)
         # amount_pct: % of available cash (0-1)
@@ -250,6 +288,9 @@ class CryptoTradingEnv(Env):
     
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         """Reset environment to initial state"""
+        if self.action_log is None:
+            self._init_log(run_id=self.run_id)
+
         super().reset(seed=seed)
         self.current_step = 0
         self.positions = {}
@@ -592,8 +633,6 @@ class CryptoTradingEnv(Env):
                 self.history = self.history[-self.config.max_history_rows:]
         
         done = self.current_step >= self.episode_end_step
-        
-        # At the end of the episode, forcefully close all positions to realize final PnL
         if done:
             for sym in list(self.positions.keys()):
                 sym_idx = self.symbol_to_idx[sym]
@@ -601,7 +640,7 @@ class CryptoTradingEnv(Env):
                 self._close_position(sym, final_price, reason='end_of_episode')
             portfolio_value = self._get_portfolio_value(prices)
             
-        return self._get_observation(), step_reward, done, False, {
+        info = {
             'portfolio_value': portfolio_value,
             'trades': self.total_trades,
             'win_rate': (self.winning_trades / self.total_trades) if self.total_trades > 0 else 0.0,
@@ -617,6 +656,8 @@ class CryptoTradingEnv(Env):
             if len(self.recent_trade_actions) > 0
             else 0.0,
         }
+        self.log_action(self.current_step, action, step_reward, info)
+        return self._get_observation(), step_reward, done, False, info
     
     def _execute_buy(self, symbol: str, price: float, pct: float) -> float:
         """Execute buy order with explicit constraints"""

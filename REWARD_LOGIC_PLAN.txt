@@ -1,0 +1,51 @@
+The current reward logic (reward = current_portfolio_value - prev_portfolio_value) is essentially a
+  Mark-to-Market (MtM) PnL approach. 
+
+  Analysis of the Current Logic
+   * The "Short-Termist" Trap: Because the agent is rewarded based on the realized (cash) and unrealized (holdings)
+     change in value from step t to $t+1$, it becomes "myopic." If the agent sells at t, it realizes the current
+     gain. If it holds, it incurs the risk of price fluctuation until $t+1$. In the agent's eyes, the "safest" way
+     to secure a positive reward is to sell while the asset is above its purchase price.
+   * Why it works for some models: It is mathematically simple and ensures that if the portfolio grows, the agent
+     is rewarded. It effectively trains the agent to seek out assets that appreciate.
+   * The Problem: Your observation is correct: selling at t to lock in a small gain when the asset continues to
+     rise at $t+1$ means the agent "missed out." However, the agent doesn't "know" the future price. The current
+     reward function treats a "Sell and hold cash" decision identically to a "Hold asset" decision if they result
+     in the same MtM value.
+
+  Proposed Improvement: Risk-Adjusted / Alpha-Seeking Reward
+  To discourage "premature" selling, you can modify the reward to incorporate an Opportunity Cost or a Holding
+  Premium.
+
+  1. The "Excess Return" Approach
+  Instead of rewarding the raw PnL, reward the agent for beating a passive baseline (like holding the asset).
+
+   1 # Instead of: reward = portfolio_value - prev_portfolio_value
+   2 # Use:
+   3 market_return = (next_price - current_price) / current_price
+   4 # Reward = (Portfolio_Change_Pct - Market_Return_Pct)
+  This forces the agent to demonstrate that its decision (to hold, buy, or sell) outperformed the asset's natural
+  movement.
+
+  2. The "Holding Incentive" (Decay)
+  If you want to reduce the frequency of churn, you can add a small "holding cost" or "liquidity penalty":
+
+   1 # Penalty for being in cash vs invested
+   2 if action_type == 0 and len(self.positions) > 0:
+   3     reward += holding_bonus  # Small incentive to keep the asset if it's trending
+
+  3. The "PnL Smoothing" (Holding)
+  Reward the agent for the total return over the entire duration of the hold, rather than individual step-by-step
+  PnL. This is much harder to train (as it requires delayed rewards) but often yields "smarter" agents.
+
+  Recommendation
+  If your goal is to prevent premature selling:
+   1. Introduce a "Holding Alpha" reward: If the agent sells and the asset price subsequently increases, the agent
+      receives a negative "opportunity cost" reward.
+   2. Add a Trade Fee/Commission: If not already present, adding a small transaction cost (reward -= fee) is the
+      most effective way to kill "quick-win" churning. It forces the agent to only sell when it believes the profit
+      significantly outweighs the cost of the trade.
+
+  Do you want to implement a transaction fee or an excess-return reward mechanism? I can help you refactor the step
+  function to include these adjustments if you decide to move forward with a more sophisticated reward structure.
+  
