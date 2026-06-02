@@ -361,7 +361,7 @@ eval_col4.metric("Time in Market", f"{kpis['eval_time_in_market_pct']:.1f}%")
 eval_col5.metric("Buy/Hold Baseline", f"${kpis['eval_buy_hold_baseline']:.2f}")
 eval_col6.metric("Eval Trades", f"{kpis['eval_trades']:,}") # Added
 eval_col7.metric("Eval Win Rate", f"{kpis['eval_win_rate_pct']:.1f}%") # Added
-
+# Evaluation Metrics Chart\nif st.session_state.get('finance_view') == "Eval":\n    eval_metrics = {\n        "Final Portfolio": kpis["eval_final_portfolio_value"],\n        "Eval PnL": kpis["eval_pnl"],\n        "Buy/Hold Baseline": kpis["eval_buy_hold_baseline"],\n        "Trades": kpis["eval_trades"],\n        "Win Rate %": kpis["eval_win_rate_pct"],\n    }\n    df_eval = pd.DataFrame(list(eval_metrics.items()), columns=["Metric", "Value"])\n    chart = alt.Chart(df_eval).mark_bar().encode(\n        x=alt.X("Metric:N", sort=None),\n        y=alt.Y("Value:Q")\n    )\n    st.altair_chart(chart, use_container_width=True)\n
 st.subheader("Training Series")
 
 # Portfolio Value
@@ -386,39 +386,43 @@ if not df_port_test.empty and "step" in df_port_test.columns:
 
 if portfolio_series:
     portfolio_df = pd.DataFrame(portfolio_series).dropna(how="all")
-    # Interpolate using index and fill edges so sparse Eval points draw as constant lines
     portfolio_df = portfolio_df.interpolate(method="index").ffill().bfill()
-    
     view = st.session_state.finance_view
     if view == "Train":
-        keep_cols = [c for c in portfolio_df.columns if c == "Train"]
-        portfolio_df = portfolio_df[keep_cols] if keep_cols else pd.DataFrame()
+        # Episode-level metrics
+        # Mean Episode Reward
+        if "train_reward" in series:
+            df_reward = pd.DataFrame(series.get("train_reward", []))
+            if not df_reward.empty and "step" in df_reward.columns:
+                df_reward = df_reward.drop_duplicates(subset=["step"], keep="last").set_index("step")
+                reward_chart = alt.Chart(df_reward.reset_index()).mark_line(color="orange").encode(
+                    x=alt.X("step:Q", title="Step"),
+                    y=alt.Y("value:Q", title="Mean Episode Reward")
+                )
+                st.altair_chart(reward_chart, use_container_width=True)
+        # Total Return %
+        if "total_return_pct" in series:
+            df_ret = pd.DataFrame(series.get("total_return_pct", []))
+            if not df_ret.empty and "step" in df_ret.columns:
+                df_ret = df_ret.drop_duplicates(subset=["step"], keep="last").set_index("step")
+                ret_chart = alt.Chart(df_ret.reset_index()).mark_line(color="green").encode(
+                    x=alt.X("step:Q", title="Step"),
+                    y=alt.Y("value:Q", title="Total Return %")
+                )
+                st.altair_chart(ret_chart, use_container_width=True)
     elif view == "Eval":
+        # Plot raw portfolio series for Dev and Test
         keep_cols = [c for c in portfolio_df.columns if c in {"Dev", "Test"}]
-        portfolio_df = portfolio_df[keep_cols] if keep_cols else pd.DataFrame()
-
-    if not portfolio_df.empty:
-        y_domain = _empirical_y_domain(portfolio_df)
-        portfolio_long = portfolio_df.reset_index().melt(
-            id_vars=["step"],
-            var_name="Series",
-            value_name="value",
-        )
-        chart = (
-            alt.Chart(portfolio_long)
-            .mark_line()
-            .encode(
+        plot_df = portfolio_df[keep_cols] if keep_cols else pd.DataFrame()
+        if not plot_df.empty:
+            y_domain = _empirical_y_domain(plot_df)
+            portfolio_long = plot_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
+            chart = alt.Chart(portfolio_long).mark_line().encode(
                 x=alt.X("step:Q", title="Step"),
-                y=alt.Y(
-                    "value:Q",
-                    title="Portfolio Value",
-                    scale=alt.Scale(domain=y_domain, zero=False, nice=False),
-                ),
-                color=alt.Color("Series:N", title="Series"),
+                y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain, zero=False, nice=False)),
+                color=alt.Color("Series:N", title="Series")
             )
-        )
-        st.altair_chart(chart, use_container_width=True)
-
+            st.altair_chart(chart, use_container_width=True)
 # Realized PnL
 st.markdown("### Realized PnL")
 pnl_series = {}

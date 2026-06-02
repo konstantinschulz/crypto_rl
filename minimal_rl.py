@@ -340,22 +340,25 @@ Examples:
             """Extract real portfolio value and reward from the training environment."""
             step = int(self.num_timesteps)
             try:
-                # Use get_attr to safely access environment attributes across potential wrappers
-                portfolio_values = self.training_env.get_attr('portfolio_value')
-                current_portfolio = float(portfolio_values[0]) if portfolio_values else BUDGET_INITIAL
-                
+                # Use ep_info_buffer for smooth finalized episode metrics
+                mean_ep_rew = 0.0
+                if len(self.model.ep_info_buffer) > 0:
+                    mean_ep_rew = float(np.mean([ep['r'] for ep in self.model.ep_info_buffer]))
+                    current_portfolio = BUDGET_INITIAL + mean_ep_rew
+                else:
+                    # Fallback to current step if no episode finished yet
+                    portfolio_values = self.training_env.get_attr('portfolio_value')
+                    current_portfolio = float(portfolio_values[0]) if portfolio_values else BUDGET_INITIAL
+
                 holdings_list = self.training_env.get_attr('holdings')
                 current_holdings = holdings_list[0] if holdings_list else np.zeros(1)
 
-                # Calculate reward as change in portfolio value since last checkpoint
-                current_reward = current_portfolio - self.last_portfolio_value
-                
-                # Simplified trade count: if holdings are non-zero, consider it an active "trade" state
+                # Simplified trade count
                 if np.sum(np.abs(current_holdings)) > 1e-8:
                     self.current_trades += 1
 
-                # Win rate placeholder: assume a "win" if reward > 0 in this interval
-                if current_reward > 0:
+                # Win rate placeholder: assume a "win" if mean_ep_rew > 0
+                if mean_ep_rew > 0:
                     self.winning_trades += 1
                 
                 win_rate = (self.winning_trades / max(1, self.current_trades)) * 100.0
@@ -367,7 +370,7 @@ Examples:
 
                 # Append to series
                 self.series["portfolio_value"].append({"step": step, "value": current_portfolio})
-                self.series["train_reward"].append({"step": step, "value": float(current_reward)})
+                self.series["train_reward"].append({"step": step, "value": mean_ep_rew})
                 self.series["trades"].append({"step": step, "value": int(self.current_trades)})
                 self.series["win_rate"].append({"step": step, "value": float(win_rate)})
                 self.series["total_return_pct"].append({"step": step, "value": float(total_return)})
@@ -470,6 +473,9 @@ Examples:
     eval_steps = 0
     eval_initial_portfolio_value = test_env.portfolio_value
 
+    eval_portfolio_values = [{"step": 0, "value": float(test_env.portfolio_value)}]
+    eval_realized_pnl = [{"step": 0, "value": 0.0}]
+
     while not done:
         # Predict the action using our trained model
         action, _ = model.predict(obs, deterministic=True)
@@ -485,6 +491,9 @@ Examples:
             if reward > 0:
                 eval_winning_trades += 1
         eval_steps += 1
+
+        eval_portfolio_values.append({"step": eval_steps, "value": float(test_env.portfolio_value)})
+        eval_realized_pnl.append({"step": eval_steps, "value": float(test_env.portfolio_value - eval_initial_portfolio_value)})
     
     test_env.close()
     train_env.close()
@@ -522,6 +531,11 @@ Examples:
                 "buy_hold_baseline": float(buy_hold_final),
                 "total_fees_paid": float(test_env.fees_paid_total),
             }
+            if "series" not in state:
+                state["series"] = {}
+            state["series"]["test_portfolio_value"] = eval_portfolio_values
+            state["series"]["test_realized_pnl"] = eval_realized_pnl
+
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
             print(f"Dashboard state updated with evaluation results in {state_file}")
