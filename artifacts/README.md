@@ -8,6 +8,7 @@ Generated experiment outputs are stored here to keep repository root clean.
 
 Current live dashboard runtime files remain in repository root:
 - `rl_dashboard_index.json`
-- `rl_dashboard_state.json`
 - `rl_dashboard_runs/`
 
+Legacy dashboard server/runtime snapshots were archived under:
+- `archive/2026-06-02_legacy_dashboard_server/`
