@@ -3,12 +3,14 @@ This repository was reset to focus on a new reward-tuning workflow.
 
 ## Kept in root
 - Training/runtime core: `rl_trader.py`, `rl_trading_env.py`, `minimal_rl.py`
-- Dashboard: `streamlit_dashboard.py`, `rl_dashboard_server.py`, `rl_dashboard_runs/`, `rl_dashboard_index.json`
+- Dashboard: `streamlit_dashboard.py`, `rl_dashboard_runs/`, `rl_dashboard_index.json`
 - Config/deps: `.env`, `.streamlit/`, `.gitignore`, `requirements.txt`
 
 ## Archived material
 Historical experiment scripts, logs, Markdown documentation, and helper scripts were moved to:
 - `archive/2026-04-27_fresh_start/`
+Legacy dashboard server files were moved to:
+- `archive/2026-06-02_legacy_dashboard_server/`
 Use this archive for reference while designing new experiments.
 
 ---
@@ -118,5 +120,4 @@ A simplified trading environment for reward-tuning experiments:
 - **Live metrics:** Training reward and portfolio value are emitted to the dashboard in real-time
 - **Stopping runs:** If you started a run in the background, find its PID with `ps aux | grep minimal_rl.py` and `kill <PID>` to stop it
 - **Large datasets:** For low-memory machines, reduce `--rows` to avoid OOM errors. Test with `--rows 1000` first
-
 
