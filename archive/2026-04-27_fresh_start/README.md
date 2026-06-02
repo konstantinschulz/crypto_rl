@@ -9,6 +9,6 @@ This folder contains pre-reset experiment material moved out of the repository r
 - `helpers/`: archived non-essential helper scripts (`demo.py`, `dump_all.py`, `dump_logs.py`, `test_env.py`)
 Intentionally kept in root for the new reward-tuning phase:
 - Dashboard infrastructure: `streamlit_dashboard.py`, `rl_dashboard_server.py`, `rl_dashboard_index.json`, `rl_dashboard_runs/`
-- Runtime core: `rl_trader.py`, `rl_trading_env.py`
+- Runtime core: `rl_trader.py`, `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
 - Config/environment files: `.env`, `.streamlit/`, `.gitignore`
 - Dependency manifest: `requirements.txt`

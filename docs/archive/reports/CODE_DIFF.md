@@ -153,7 +153,7 @@ The file has been verified for:
 ## Files Involved
 
 - **Modified**: `streamlit_dashboard.py` (307 lines total)
-- **Not Modified**: `rl_trader.py`, `rl_trading_env.py`, other files
+- **Not Modified**: `rl_trader.py`, `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`, other files
 
 ## Testing Commands
 

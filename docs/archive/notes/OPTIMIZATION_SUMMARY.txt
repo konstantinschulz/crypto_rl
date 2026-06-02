@@ -36,7 +36,7 @@ QUICK START COMMANDS
   python rl_trader.py --days 3 --max-symbols 1
 FILES MODIFIED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  rl_trading_env.py
+  archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py
     • TradingConfig: Reduced defaults
     • load_training_data: float32, close-only, better filtering
   rl_trader.py

@@ -14,7 +14,7 @@ The model learned a locally optimal policy of **doing nothing** because:
 
 ## ✅ Solution Implemented: Experiment 4
 
-### Key Changes to `rl_trading_env.py`
+### Key Changes to `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
 
 #### 1. Extreme Inactivity Penalty (Lines 15-35)
 ```python
@@ -66,16 +66,13 @@ elif action_type == 2 and len(self.positions) == 0:
 
 ### Test 1: Verify Code
 ```bash
-python -m py_compile rl_trading_env.py
+python -m py_compile archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py
 # Should exit with code 0 (no syntax errors)
 ```
 
 ### Test 2: Verify Config
 ```bash
-python -c "from rl_trading_env import TradingConfig; \
-c = TradingConfig(); \
-print(f'inactivity_penalty: {c.inactivity_penalty}'); \
-print(f'trade_action_bonus: {c.trade_action_bonus}')"
+PYTHONPATH=archive/2026-06-02_legacy_dashboard_server python -c "from rl_trading_env import TradingConfig; c = TradingConfig(); print(f'inactivity_penalty: {c.inactivity_penalty}'); print(f'trade_action_bonus: {c.trade_action_bonus}')"
 # Should print:
 # inactivity_penalty: -5.0
 # trade_action_bonus: 15.0

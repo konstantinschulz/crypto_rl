@@ -8,7 +8,7 @@
   - Only load CLOSE prices (not OHLCV)
   - Use float32 instead of float64
   - Cache processed data
-  - Location: `rl_trading_env.py` lines 401, 431
+  - Location: `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` lines 401, 431
 
 - [x] **PPO Model** - Reduced from 150MB to 50MB
   - Network: [64,64] → [32,16]
@@ -22,7 +22,7 @@
   - Max positions: 5 → 3
   - Per-trade limit: $2,000 → $20
   - Never keep history
-  - Location: `rl_trading_env.py` lines 8-23
+  - Location: `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` lines 8-23
 
 - [x] **Garbage Collection** - Faster cleanup
   - Frequency: every 1000 steps → every 500 steps
@@ -133,7 +133,7 @@ python rl_trader.py --days 14 --max-symbols 10 --train-steps 100000 --mode backt
 
 ## Files Modified
 
-1. `rl_trading_env.py`
+1. `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
    - TradingConfig defaults (10 lines)
    - load_training_data function (30 lines)
 
@@ -174,8 +174,7 @@ python rl_trader.py --days 14 --max-symbols 10 --train-steps 100000 --mode backt
 
 ### 1. Check Optimization Applied
 ```bash
-python -c "from rl_trading_env import TradingConfig; c=TradingConfig(); \
-print(f'Cash: \${c.initial_cash}'); print(f'Positions: {c.max_positions}')"
+PYTHONPATH=archive/2026-06-02_legacy_dashboard_server python -c "from rl_trading_env import TradingConfig; c=TradingConfig(); print(f'Cash: \${c.initial_cash}'); print(f'Positions: {c.max_positions}')"
 ```
 Expected: Cash: $100.0, Positions: 3
 

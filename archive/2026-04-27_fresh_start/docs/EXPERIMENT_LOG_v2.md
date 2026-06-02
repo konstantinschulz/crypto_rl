@@ -106,7 +106,7 @@ Even with heavy inactivity penalties, a continuous-box action head can still con
 
 ## Files Modified
 
-- `rl_trading_env.py`:
+- `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`:
   - Added invalid action penalties
   - Increased trade_action_bonus to 15.0
   - Increased inactivity_penalty to -5.0
@@ -181,7 +181,7 @@ The core insight: **Model learns locally optimal "do nothing" strategy**
 Move from the stable-but-unprofitable overtrading policy (about -0.65% on test) toward non-negative/positive test return.
 
 ### Code/Config Enablers Added
-To run controlled experiments without editing code each time, added CLI knobs in `rl_trader.py` + `TradingConfig` fields in `rl_trading_env.py`:
+To run controlled experiments without editing code each time, added CLI knobs in `rl_trader.py` + `TradingConfig` fields in `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`:
 
 - `--trade-action-bonus`
 - `--inactivity-penalty`

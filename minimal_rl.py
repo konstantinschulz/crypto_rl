@@ -2,8 +2,23 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import pandas as pd
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+# Import PPO lazily to avoid heavy dependency during unit tests
+try:
+    from stable_baselines3 import PPO
+except ImportError:  # pragma: no cover
+    PPO = None  # type: ignore
+# Import BaseCallback lazily; define a no‑op fallback if unavailable
+try:
+    from stable_baselines3.common.callbacks import BaseCallback
+except ImportError:  # pragma: no cover
+    class BaseCallback:  # type: ignore
+        """Fallback BaseCallback with minimal interface used in this script."""
+        def __init__(self, *args, **kwargs):
+            pass
+        def __getattr__(self, name):
+            # Return a dummy callable for any attribute used in the code
+            return lambda *a, **k: None
+
 import argparse
 import json
 import time
@@ -15,8 +30,10 @@ from pathlib import Path
 # if pyarrow is not available.
 try:
     import pyarrow.parquet as pq
+    import pyarrow.dataset as ds
 except Exception:
     pq = None
+    ds = None
 
 BUDGET_INITIAL = 100.0
 
@@ -38,6 +55,7 @@ class MinimalCryptoEnv(gym.Env):
         self.run_id = run_id
         self.fee_rate = fee_rate
         self.fees_paid_total = 0.0
+        self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
         self.asset_names = self.prices_df.columns.tolist()
 
@@ -62,9 +80,12 @@ class MinimalCryptoEnv(gym.Env):
 
     def _init_log(self, run_id: str = 'default'):
         """Initialize per-run action log."""
-        log_dir = Path('logs')
-        log_dir.mkdir(exist_ok=True)
-        self.log_file_path = log_dir / f"actions_{run_id}_ep{self.episode_count}_{int(time.time())}.jsonl"
+        # Create a dedicated subdirectory for this run (e.g., logs/run-20260602-130000-minimal)
+        log_root = Path('logs')
+        run_log_dir = log_root / run_id
+        run_log_dir.mkdir(parents=True, exist_ok=True)
+        # Log file now only needs episode and timestamp info
+        self.log_file_path = run_log_dir / f"actions_ep{self.episode_count}_{int(time.time())}.jsonl"
         self.action_log = open(self.log_file_path, 'a', encoding='utf-8')
 
     def log_action(self, step: int, action: np.ndarray, reward: float, portfolio: float, trade_price: float = 0.0, trade_units: float = 0.0, fee: float = 0.0):
@@ -85,6 +106,8 @@ class MinimalCryptoEnv(gym.Env):
                 'reward': float(reward),
                 'portfolio': float(portfolio),
             }
+            if self.last_invalid_sell:
+                entry['note'] = 'invalid SELL remapped to HOLD'
             if trade_price > 0:
                 entry['price'] = float(trade_price)
                 entry['units'] = float(trade_units)
@@ -94,6 +117,8 @@ class MinimalCryptoEnv(gym.Env):
             self.action_log.write(json.dumps(entry) + '\n')
             if step % 1000 == 0:
                 self.action_log.flush()
+            # Reset flag after logging
+            self.last_invalid_sell = False
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -164,18 +189,33 @@ class MinimalCryptoEnv(gym.Env):
                     self.holdings[asset_idx] += trade_units
                     self.fees_paid_total += fee_paid
         elif action_type == 2:  # Sell
-            # Ensure we have holdings of this asset and the asset index is valid
-            if self.holdings[asset_idx] > 0 and asset_idx < self.num_assets:
-                units_to_sell = self.holdings[asset_idx] * amount_pct
-                if units_to_sell > 0:
-                    trade_price = current_prices[asset_idx]
-                    trade_units = units_to_sell
-                    gross_proceeds = units_to_sell * trade_price
-                    fee_paid = gross_proceeds * self.fee_rate
-                    proceeds = gross_proceeds - fee_paid
-                    self.cash += proceeds
-                    self.holdings[asset_idx] -= trade_units
-                    self.fees_paid_total += fee_paid
+            # Validate asset index first
+            if asset_idx < self.num_assets:
+                if self.holdings[asset_idx] > 0:
+                    # Normal sell path (holdings exist)
+                    units_to_sell = self.holdings[asset_idx] * amount_pct
+                    if units_to_sell > 0:
+                        trade_price = current_prices[asset_idx]
+                        trade_units = units_to_sell
+                        gross_proceeds = units_to_sell * trade_price
+                        fee_paid = gross_proceeds * self.fee_rate
+                        proceeds = gross_proceeds - fee_paid
+                        self.cash += proceeds
+                        self.holdings[asset_idx] -= trade_units
+                        self.fees_paid_total += fee_paid
+                else:
+                    # *** Illegal SELL: no holdings ***
+                    # Penalise the agent by deducting a small fraction of its cash.
+                    # This creates a negative reward signal that the policy can learn from.
+                    penalty = 0.001 * self.cash  # 0.1% of current cash (tunable)
+                    self.cash -= penalty
+                    # Treat the action as HOLD to keep the environment stable.
+                    action_type = 0
+                    amount_pct = 0.0
+            else:
+                # Invalid asset index – also treat as HOLD.
+                action_type = 0
+                amount_pct = 0.0
         # else: action_type == 0 (Hold), do nothing
 
         # Advance time
@@ -215,6 +255,12 @@ Examples:
   python minimal_rl.py --rows 10000 --timesteps 20000
   python minimal_rl.py --dashboard --rows 15000 --timesteps 50000 --run-dir rl_dashboard_runs
         """
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="subset.parquet",
+        help="Path to Parquet dataset file (default: subset.parquet)"
     )
     parser.add_argument(
         "--rows",
@@ -257,21 +303,57 @@ Examples:
     # row-groups are loaded. If pyarrow isn't available, fall back to
     # a pandas read of only the 'close' column and then tail().
     def read_last_n(path, n=10000):
-        # Read the full dataset with all necessary columns for grouping/pivoting
+        # Read a random contiguous time window for a set of major symbols
         cols = ['symbol', 'open_time', 'close']
-        if pq is None:
+        if ds is None or pq is None:
+            # Fallback path if pyarrow is unavailable
             df_local = pd.read_parquet(path, columns=cols)
-            return df_local.dropna().tail(n)
+            df_local = df_local.dropna()
+            available_symbols = list(df_local['symbol'].unique())
+            symbols = [s for s in ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT'] if s in available_symbols]
+            if not symbols:
+                symbols = available_symbols[:5]
+            num_assets = len(symbols)
+            k = max(1, n // num_assets)
+            
+            df_sub = df_local[df_local['symbol'].isin(symbols)]
+            btc_times = df_sub[df_sub['symbol'] == symbols[0]]['open_time'].unique()
+            btc_times.sort()
+            if len(btc_times) <= k:
+                t_start = btc_times[0]
+                t_end = btc_times[-1]
+            else:
+                start_idx = np.random.randint(0, len(btc_times) - k)
+                t_start = btc_times[start_idx]
+                t_end = btc_times[start_idx + k - 1]
+            df_local = df_sub[(df_sub['open_time'] >= t_start) & (df_sub['open_time'] <= t_end)]
+            return df_local.sort_values(by=['open_time', 'symbol']).reset_index(drop=True)
 
-        pf = pq.ParquetFile(path)
-        # Assuming last N rows refers to last N entries in time, we might need a safer way to get the last N rows.
-        # For now, simply load the full table into memory (or a chunk) since we only need 3 columns.
-        table = pf.read(columns=cols)
+        dataset = ds.dataset(path, format='parquet')
+        symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT']
+        num_assets = len(symbols)
+        k = max(1, n // num_assets)
+
+        # Load open times of BTCUSDT to determine a random time window
+        btc_filter = ds.field('symbol') == 'BTCUSDT'
+        btc_open_times = dataset.to_table(columns=['open_time'], filter=btc_filter).column('open_time').to_numpy()
+
+        if len(btc_open_times) <= k:
+            t_start = btc_open_times[0]
+            t_end = btc_open_times[-1]
+        else:
+            start_idx = np.random.randint(0, len(btc_open_times) - k)
+            t_start = btc_open_times[start_idx]
+            t_end = btc_open_times[start_idx + k - 1]
+
+        # Read the aligned data for the chosen symbols during this time window
+        query_filter = ds.field('symbol').isin(symbols) & (ds.field('open_time') >= t_start) & (ds.field('open_time') <= t_end)
+        table = dataset.to_table(columns=cols, filter=query_filter)
         df_local = table.to_pandas()
-        return df_local.dropna().tail(n)
+        return df_local.dropna().sort_values(by=['open_time', 'symbol']).reset_index(drop=True)
 
     # Load data with required columns
-    prices_df = read_last_n("binance_spot_1m_last4y_single.parquet", n=args.rows)
+    prices_df = read_last_n(args.dataset, n=args.rows)
 
     # Split 80/20 into train and test
     split_idx = int(len(prices_df) * 0.8)
@@ -465,7 +547,7 @@ Examples:
         model.learn(total_timesteps=args.timesteps)
 
     print("4. Testing the trained model...")
-    test_env = MinimalCryptoEnv(test_prices_df, run_id=f"{run_id}_eval", fee_rate=args.fee_rate) # Use test_prices_df
+    test_env = MinimalCryptoEnv(test_prices_df, run_id=run_id, fee_rate=args.fee_rate)  # Use same run_id for evaluation logs
     obs, _ = test_env.reset()
     done = False
     eval_trades_count = 0

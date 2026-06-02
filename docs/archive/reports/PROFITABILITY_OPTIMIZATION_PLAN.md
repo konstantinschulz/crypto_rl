@@ -54,7 +54,7 @@ Hypothesis: the policy can now detect momentum, exhaustion, and liquidity change
 
 The first implementation pass should cover:
 
-- `rl_trading_env.py`
+ - `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
   - timeframe-aware loader
   - feature engineering
   - rolling observation window

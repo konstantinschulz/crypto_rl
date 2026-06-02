@@ -423,6 +423,27 @@ if portfolio_series:
                 color=alt.Color("Series:N", title="Series")
             )
             st.altair_chart(chart, use_container_width=True)
+
+    # Combined Portfolio Value (Train & Evaluation)
+    st.markdown("### Portfolio Value (Train & Evaluation)")
+    # Build a dict of available series for combined view
+    combined_series = {"Train": portfolio_series["Train"]} if "Train" in portfolio_series else {}
+    if "Dev" in portfolio_series:
+        combined_series["Eval"] = portfolio_series["Dev"]
+    elif "Test" in portfolio_series:
+        combined_series["Eval"] = portfolio_series["Test"]
+    # Render chart if any series are present (train alone or with eval)
+    if combined_series:
+        combined_df = pd.DataFrame(combined_series)
+        combined_df = combined_df.interpolate(method="index").ffill().bfill()
+        combined_long = combined_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
+        y_domain = _empirical_y_domain(combined_df)
+        combined_chart = alt.Chart(combined_long).mark_line().encode(
+            x=alt.X("step:Q", title="Step"),
+            y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain, zero=False, nice=False)),
+            color=alt.Color("Series:N", title="Series")
+        )
+        st.altair_chart(combined_chart, use_container_width=True)
 # Realized PnL
 st.markdown("### Realized PnL")
 pnl_series = {}
@@ -617,54 +638,6 @@ if memory_series:
         )
         st.altair_chart(memory_chart, use_container_width=True)
 
-# Auto-refresh mechanism: check for file updates and rerun if needed
-st.sidebar.divider()
-st.sidebar.subheader("💾 Auto-Refresh")
-col1, col2 = st.sidebar.columns([3, 1])
-with col1:
-    st.session_state.auto_refresh_enabled = st.checkbox(
-        "Enable auto-refresh",
-        value=st.session_state.auto_refresh_enabled,
-        help="Automatically update dashboard every 2 seconds when enabled"
-    )
-with col2:
-    if st.button("↻", help="Refresh now", use_container_width=True):
-        st.rerun()
-
 if st.session_state.auto_refresh_enabled:
-    # Use an empty placeholder so we can show updates in the sidebar
-    status_msg = st.sidebar.empty()
-    status_msg.caption("🔄 Monitoring for changes...")
-    
-    # Enter polling loop at the very end of the file.
-    # At this point, Streamlit has already sent the UI to the browser.
-    # We sleep for exactly 2 seconds then check disk.
-    # The user can still interact - any interaction drops this thread and restarts.
-    index_file = Path("rl_dashboard_index.json")
-    run_file = Path(state_file)
-    
-    while True:
-        time.sleep(2)  # Wait 2 seconds before checking
-        
-        changed = False
-        
-        # Check if index file was modified
-        if index_file.exists():
-            try:
-                if index_file.stat().st_mtime > st.session_state.last_index_mtime:
-                    changed = True
-            except Exception:
-                pass
-                
-        # Check if run data file was modified
-        if not changed and run_file.exists():
-            try:
-                if run_file.stat().st_mtime > st.session_state.last_run_mtime:
-                    changed = True
-            except Exception:
-                pass
-                
-        # Trigger rerun if files changed!
-        if changed:
-            status_msg.success("🔄 Updating data...", icon="📊")
-            st.rerun()
+    # Automatically rerun the script every 2 seconds when auto-refresh is enabled.
+    st.experimental_autorefresh(interval=2000, limit=None, key="dashboard_autorefresh")

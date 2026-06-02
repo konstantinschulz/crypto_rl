@@ -1610,6 +1610,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description='RL Cryptocurrency Trading Agent')
     parser.add_argument('--days', type=int, default=7, help='Recent days to load (default: 7)')
+    parser.add_argument('--dataset', type=str, default='subset.parquet', help='Path to Parquet dataset file (default: subset.parquet)')
     parser.add_argument('--symbols', type=str, default='', help='Comma separated symbols, e.g. BTCUSDT,ETHUSDT')
     parser.add_argument('--max-symbols', type=int, default=3, help='Max symbols when --symbols not set (default: 3 for memory efficiency)')
     parser.add_argument('--timeframe-minutes', type=int, default=15, help='Aggregate 1m candles into this timeframe before training')
@@ -1683,7 +1684,7 @@ def main() -> None:
     parser.add_argument('--randomize-episode-start', action='store_true', help='Sample random episode windows during training')
     parser.add_argument('--min-episode-steps', type=int, default=0, help='Minimum randomized episode length when randomization is enabled')
     parser.add_argument('--max-episode-steps', type=int, default=0, help='Maximum randomized episode length when randomization is enabled')
-    parser.add_argument('--fee-randomization-pct', type=float, default=0.0, help='Episode fee jitter ratio (0.10 = +/-10%)')
+    parser.add_argument('--fee-randomization-pct', type=float, default=0.0, help='Episode fee jitter ratio (0.10 = +/-10%%)')
     parser.add_argument('--reward-mode', choices=['equity_delta', 'shaped'], default='equity_delta', help='Reward formulation used in the environment')
 
     args = parser.parse_args()
@@ -1691,7 +1692,7 @@ def main() -> None:
     selected_symbols = _parse_symbols(args.symbols)
     print(f"Loading {args.days} days of data...")
     data = load_training_data(
-        'binance_spot_1m_last4y_single.parquet',
+        args.dataset,
         num_days=args.days,
         symbols=selected_symbols,
         max_symbols=args.max_symbols,

@@ -24,7 +24,7 @@ Implemented 6 major memory optimizations reducing memory usage by **70-80%** wit
 ### 1. **Data Loading** (40% reduction)
 - **Before:** Load OHLCV (5 columns) in float64
 - **After:** Load only CLOSE price in float32
-- **File:** `rl_trading_env.py` lines 401, 431
+- **File:** `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` lines 401, 431
 - **Impact:** Each row uses 80% less memory
 
 ### 2. **PPO Model** (60% reduction)
@@ -34,11 +34,12 @@ Implemented 6 major memory optimizations reducing memory usage by **70-80%** wit
 - **Impact:** Model + buffer uses 60% less memory
 
 ### 3. **Environment Config** (50% reduction)
-- **Before:** $10,000 portfolio, 5 positions, keep_history=True
-- **After:** $100 portfolio, 3 positions, keep_history=False
-- **File:** `rl_trading_env.py` lines 8-23
-- **Impact:** Simpler state space, no memory bloat
-
+**File:** `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` lines 401, 431
+**File:** `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` lines 8-23
+1. **archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py** (2 sections)
+PYTHONPATH=archive/2026-06-02_legacy_dashboard_server python -c "from rl_trading_env import TradingConfig; c=TradingConfig(); print(f'Initial cash: \${c.initial_cash}')"
+# Check optimization
+PYTHONPATH=archive/2026-06-02_legacy_dashboard_server python -c "from rl_trading_env import TradingConfig; c=TradingConfig(); print(f'Initial cash: \${c.initial_cash}')"
 ### 4. **Garbage Collection** (30% improvement)
 - **Before:** Run gc.collect() every 1000 steps
 - **After:** Run gc.collect() every 500 steps
@@ -61,7 +62,7 @@ Implemented 6 major memory optimizations reducing memory usage by **70-80%** wit
 
 ## 📁 Files Modified
 
-1. **rl_trading_env.py** (2 sections)
+1. **archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py** (2 sections)
    - TradingConfig: Reduced defaults
    - load_training_data: Only close prices, float32
 
@@ -146,7 +147,7 @@ python rl_trader.py --days 3 --max-symbols 1 --train-steps 10000
 
 ```bash
 # Check optimization
-python -c "from rl_trading_env import TradingConfig; c=TradingConfig(); print(f'Initial cash: \${c.initial_cash}')"
+PYTHONPATH=archive/2026-06-02_legacy_dashboard_server python -c "from rl_trading_env import TradingConfig; c=TradingConfig(); print(f'Initial cash: \${c.initial_cash}')"
 
 # Monitor during training
 python rl_trader.py --days 3 --max-symbols 1 --train-steps 1000
@@ -257,7 +258,7 @@ Refer to:
 - **Quick Start:** `MEMORY_EFFICIENT_QUICKSTART.md`
 - **Detailed Guide:** `MEMORY_OPTIMIZATION_GUIDE.md`  
 - **Technical Details:** `MEMORY_OPTIMIZATION_SUMMARY.md`
-- **Code Comments:** Inline in `rl_trader.py` and `rl_trading_env.py`
+- **Code Comments:** Inline in `rl_trader.py` and `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
 
 ---
 

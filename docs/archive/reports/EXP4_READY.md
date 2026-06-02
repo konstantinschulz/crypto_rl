@@ -9,7 +9,7 @@ All documentation, code changes, and validation scripts are in place.
 ## 📋 Deliverables Checklist
 
 ### ✅ Code Changes
-- [x] Modified `rl_trading_env.py`:
+- [x] Modified `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`:
   - [x] TradingConfig: inactivity_penalty = -5.0 (50x stronger)
   - [x] TradingConfig: trade_action_bonus = 15.0 (3x stronger)
   - [x] step(): Invalid action penalties (-3.0 for fake sells, -2.0 for impossible sells)
@@ -78,7 +78,7 @@ python rl_trader.py --days 14 --max-symbols 3 --train-steps 50000 --mode backtes
 
 | File | What It Is | Why Important |
 |------|-----------|---------------|
-| rl_trading_env.py | Core environment | Contains all reward/penalty logic |
+| archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py | Core environment | Contains all reward/penalty logic |
 | test_env.py | Validation script | Quick check before full run |
 | FINAL_SUMMARY.md | Overview | Read this first (5 min) |
 | EXP4_PLAN.md | Detailed plan | Mathematical justification |

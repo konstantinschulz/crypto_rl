@@ -234,9 +234,12 @@ class CryptoTradingEnv(Env):
         
     def _init_log(self, run_id: str = 'default'):
         """Initialize per-run action log."""
-        log_dir = Path('logs')
-        log_dir.mkdir(exist_ok=True)
-        self.log_file_path = log_dir / f"actions_{run_id}_{int(time.time())}.jsonl"
+        # Create a dedicated subdirectory for this run (e.g., logs/run-20260602-130000-minimal)
+        log_root = Path('logs')
+        run_log_dir = log_root / run_id
+        run_log_dir.mkdir(parents=True, exist_ok=True)
+        # Log file now only needs timestamp info
+        self.log_file_path = run_log_dir / f"actions_{int(time.time())}.jsonl"
         self.action_log = open(self.log_file_path, 'a', encoding='utf-8')
 
     def log_action(self, step: int, action: np.ndarray, reward: float, info: Dict):
@@ -483,7 +486,7 @@ class CryptoTradingEnv(Env):
             if intent < -deadzone and action_type == 1:
                 self.semantic_bootstrap_buys += 1
                 step_reward -= float(self.config.semantic_bootstrap_penalty)
-        
+
         # IMPORTANT: If model is trying to trade (action_type > 0), force a minimum amount
         # This prevents model from "intending" to trade but using 0 amount
         if action_type > 0 and amount_pct < 0.05:
@@ -571,24 +574,27 @@ class CryptoTradingEnv(Env):
             if recent_rate > target_rate:
                 step_reward -= float(self.config.trade_rate_penalty) * (recent_rate - target_rate)
         
-        # Process ongoing positions
-        for sym in list(self.positions.keys()):
-            pos = self.positions[sym]
-            sym_idx = self.symbol_to_idx[sym]
-            current_price = float(prices[sym_idx])
-            
-            # Emergency exit: stop loss
-            pnl_pct = (current_price - pos['entry_price']) / pos['entry_price']
-            if pnl_pct < -self.config.stop_loss_pct:
-                self._close_position(sym, current_price, reason='stop_loss')
-                step_reward -= self.config.drawdown_penalty
-            
-            # Maximum hold time check
-            elif self.current_step - pos['entry_step'] > self.config.position_duration_limit:
-                self._close_position(sym, current_price, reason='time_limit')
-        
-        portfolio_value = self._get_portfolio_value(prices)
+         # Process ongoing positions
+         for sym in list(self.positions.keys()):
+             pos = self.positions[sym]
+             sym_idx = self.symbol_to_idx[sym]
+             current_price = float(prices[sym_idx])
 
+             # Emergency exit: stop loss
+             pnl_pct = (current_price - pos['entry_price']) / pos['entry_price']
+             if pnl_pct < -self.config.stop_loss_pct:
+                 self._close_position(sym, current_price, reason='stop_loss')
+                 step_reward -= self.config.drawdown_penalty
+             # Maximum hold time check
+             elif self.current_step - pos['entry_step'] > self.config.position_duration_limit:
+                 self._close_position(sym, current_price, reason='time_limit')
+
+         # Bonus for staying in a profitable position
+         for sym, pos in self.positions.items():
+             held_steps = self.current_step - pos['entry_step']
+             if held_steps > 0:
+                 step_reward += 0.001 * held_steps  # tune the coefficient
+          portfolio_value = self._get_portfolio_value(prices)
         if use_equity_delta_reward:
             delta_ratio = (portfolio_value - prev_portfolio_value) / max(1e-6, float(self.config.initial_cash))
             step_reward += float(self.config.reward_equity_delta_scale) * float(delta_ratio)

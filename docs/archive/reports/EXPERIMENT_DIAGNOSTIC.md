@@ -118,7 +118,7 @@ These help model understand WHEN to trade, not just THAT it should trade
 
 ## Files to Modify
 
-- `rl_trading_env.py`: Add invalid action penalties, enhance observation space
+- `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`: Add invalid action penalties, enhance observation space
 - `rl_trader.py`: Optional - add training debug logging
 
 

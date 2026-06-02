@@ -131,7 +131,7 @@ grep -A 5 "BACKTEST SUMMARY" exp4_results.log
 
 | File | Purpose |
 |------|---------|
-| `rl_trading_env.py` | RL environment with reward shaping |
+| `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` | RL environment with reward shaping |
 | `rl_trader.py` | Training & evaluation pipeline |
 | `test_env.py` | Quick validation script (NEW) |
 | `EXPERIMENT_DIAGNOSTIC.md` | Root cause analysis (NEW) |
@@ -178,7 +178,7 @@ grep -A 5 "BACKTEST SUMMARY" exp4_results.log
 ## 📚 References
 
 - **Root Cause Analysis**: See `EXPERIMENT_DIAGNOSTIC.md`
-- **Implementation Details**: See `rl_trading_env.py` lines 140-210
+- **Implementation Details**: See `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` lines 140-210
 - **Full Backtest Protocol**: See `rl_trader.py` backtest_3way() method
 - **Previous Experiments**: See `EXPERIMENT_LOG_v2.md`
 

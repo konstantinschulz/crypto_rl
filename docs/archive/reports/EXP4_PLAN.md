@@ -115,7 +115,7 @@ tail -f exp4_results.log | grep -E "BACKTEST|Trades|Win Rate"
 ## Diagnostic Checklist
 
 Before running Exp 4, verify:
-- [ ] `rl_trading_env.py` loads without syntax errors
+ - [ ] `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` loads without syntax errors
 - [ ] TradingConfig has all fields defined
 - [ ] _execute_buy() includes `self.total_trades += 1`
 - [ ] Invalid action penalties in step() function
@@ -125,10 +125,10 @@ Before running Exp 4, verify:
 
 ## Files Modified
 
-1. **rl_trading_env.py**
-   - TradingConfig: inactivity_penalty = -5.0, trade_action_bonus = 15.0
-   - step(): Added invalid action penalties and checks
-   - _execute_buy(): Increments self.total_trades
+1. **archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py**
+  - TradingConfig: inactivity_penalty = -5.0, trade_action_bonus = 15.0
+  - step(): Added invalid action penalties and checks
+  - _execute_buy(): Increments self.total_trades
 
 2. **EXPERIMENT_LOG_v2.md** - Updated with findings
 

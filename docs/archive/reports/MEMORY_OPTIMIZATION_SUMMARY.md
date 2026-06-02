@@ -21,7 +21,7 @@ Your RL trading system was using **3-5 GB of RAM** during training, causing the 
 
 ## Changes Made to Your Code
 
-### 1. rl_trading_env.py
+### 1. archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py
 
 **Line 8-23: TradingConfig Defaults**
 ```python
@@ -267,7 +267,7 @@ python rl_trader.py --days 14 --max-symbols 10 --train-steps 100000 --mode backt
 
 ## Files Changed
 
-1. **rl_trading_env.py**
+1. **archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py**
    - TradingConfig: Reduced defaults
    - load_training_data: Only close prices, float32, default max_symbols=3
 
@@ -367,7 +367,7 @@ python rl_trader.py --days 14 --max-symbols 10 --train-steps 100000 --mode backt
 Refer to:
 - `MEMORY_OPTIMIZATION_GUIDE.md` - Detailed explanation
 - `MEMORY_EFFICIENT_QUICKSTART.md` - Quick commands
-- Inline code comments in `rl_trader.py` and `rl_trading_env.py`
+- Inline code comments in `rl_trader.py` and `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
 
 ---
 

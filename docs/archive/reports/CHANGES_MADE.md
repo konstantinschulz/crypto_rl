@@ -2,7 +2,7 @@
 
 ## Modified Files
 
-### 1. `rl_trading_env.py`
+### 1. `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`
 
 #### Change 1: TradingConfig - Extreme Penalties
 **Lines 15-35**
@@ -59,13 +59,13 @@ else:
 
 ### 1. Check Syntax
 ```bash
-python -m py_compile rl_trading_env.py
+python -m py_compile archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py
 echo $?  # Should print 0
 ```
 
 ### 2. Check Config Values
 ```python
-python -c "from rl_trading_env import TradingConfig; c = TradingConfig(); \
+python -c "import sys; sys.path.insert(0, 'archive/2026-06-02_legacy_dashboard_server'); from rl_trading_env import TradingConfig; c = TradingConfig(); \
 print(f'inactivity_penalty: {c.inactivity_penalty}'); \
 print(f'trade_action_bonus: {c.trade_action_bonus}')"
 ```

@@ -21,7 +21,7 @@ The RL trading system has been heavily optimized to run on resource-constrained 
 - Auto-cache processed data for reuse
 - ~300 MB for 10 symbols, 14 days
 
-**Location:** `rl_trading_env.py` - `load_training_data()` function
+**Location:** `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` - `load_training_data()` function
 
 **How it works:**
 ```python
@@ -98,7 +98,7 @@ self.model = PPO(
 - Max budget per trade: `$20`
 - Never keep history: `keep_history=False`
 
-**Location:** `rl_trading_env.py` - `TradingConfig` dataclass
+**Location:** `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py` - `TradingConfig` dataclass
 
 **Why smaller portfolio?**
 - The agent learns the same trading logic whether starting with $100 or $10,000
