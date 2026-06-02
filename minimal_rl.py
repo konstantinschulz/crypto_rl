@@ -47,13 +47,17 @@ class MinimalCryptoEnv(gym.Env):
         - Index 2: amount_pct: Percentage of cash/holdings (0 to 100, mapped to 0.0-1.0)
     - Reward: The literal change in Portfolio Value ($ PnL).
     """
-    def __init__(self, prices_df: pd.DataFrame, window_size=10, run_id: str = 'default', fee_rate: float = 0.0007):
+    def __init__(self, prices_df: pd.DataFrame, window_size=10, run_id: str = 'default', fee_rate: float = 0.0007, holding_reward_factor: float = 0.5):
         super().__init__()
         # Pivot the dataframe so columns are symbols, index is timestamp, values are 'close'
         self.prices_df = prices_df.pivot(index='open_time', columns='symbol', values='close')
         self.window_size = window_size
         self.run_id = run_id
         self.fee_rate = fee_rate
+        # Extra reward multiplier for holding assets that increase in price between steps.
+        # This is applied in addition to the raw portfolio-value PnL to encourage holding
+        # winning positions and counterbalance inactivity penalties elsewhere.
+        self.holding_reward_factor = float(holding_reward_factor)
         self.fees_paid_total = 0.0
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
@@ -227,6 +231,11 @@ class MinimalCryptoEnv(gym.Env):
             final_asset_value = np.sum(self.holdings * next_prices)
             self.portfolio_value = self.cash + final_asset_value
             reward = self.portfolio_value - prev_portfolio_value # Reward for the last step
+            # Apply holding reward on final step as well
+            positive_price_diff = np.maximum(next_prices - current_prices, 0.0)
+            holding_gain = float(np.sum(self.holdings * positive_price_diff))
+            if self.holding_reward_factor != 0.0 and holding_gain > 0.0:
+                reward += holding_gain * self.holding_reward_factor
             
             # Log the effective amount used
             effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
@@ -239,6 +248,13 @@ class MinimalCryptoEnv(gym.Env):
 
         # Reward is the change in portfolio value
         reward = self.portfolio_value - prev_portfolio_value
+        # Extra holding reward: reward positive price moves for currently held assets
+        # (only count price increases, not losses) and scale by the configured factor.
+        positive_price_diff = np.maximum(next_prices - current_prices, 0.0)
+        holding_gain = float(np.sum(self.holdings * positive_price_diff))
+        if self.holding_reward_factor != 0.0 and holding_gain > 0.0:
+            extra = holding_gain * self.holding_reward_factor
+            reward += extra
         
         # Log the effective amount used
         effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])

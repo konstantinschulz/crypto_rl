@@ -33,13 +33,20 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260602-115459-minimal",
-    "state_file": "rl_dashboard_runs/run-20260602-115459-minimal/state.json",
+    "run_id": "run-20260602-130253-minimal",
+    "state_file": "rl_dashboard_runs/run-20260602-130253-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-06-02 11:54:59 UTC"
+    "started_at": "2026-06-02 13:02:53 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260602-130253-minimal",
+      "state_file": "rl_dashboard_runs/run-20260602-130253-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-02 13:02:53 UTC"
+    },
     {
       "run_id": "run-20260602-115459-minimal",
       "state_file": "rl_dashboard_runs/run-20260602-115459-minimal/state.json",

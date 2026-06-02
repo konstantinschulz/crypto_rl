@@ -424,26 +424,54 @@ if portfolio_series:
             )
             st.altair_chart(chart, use_container_width=True)
 
-    # Combined Portfolio Value (Train & Evaluation)
-    st.markdown("### Portfolio Value (Train & Evaluation)")
-    # Build a dict of available series for combined view
-    combined_series = {"Train": portfolio_series["Train"]} if "Train" in portfolio_series else {}
-    if "Dev" in portfolio_series:
-        combined_series["Eval"] = portfolio_series["Dev"]
-    elif "Test" in portfolio_series:
-        combined_series["Eval"] = portfolio_series["Test"]
-    # Render chart if any series are present (train alone or with eval)
-    if combined_series:
-        combined_df = pd.DataFrame(combined_series)
-        combined_df = combined_df.interpolate(method="index").ffill().bfill()
-        combined_long = combined_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
-        y_domain = _empirical_y_domain(combined_df)
-        combined_chart = alt.Chart(combined_long).mark_line().encode(
+    # Split Portfolio Value into separate Train and Evaluation charts
+    # This avoids plotting eval (much fewer timesteps) on the same axis as training.
+    train_present = "Train" in portfolio_series
+    eval_present = "Dev" in portfolio_series or "Test" in portfolio_series
+
+    if train_present and eval_present:
+        col_train, col_eval = st.columns(2)
+    else:
+        col_train = st
+        col_eval = st
+
+    # Train chart
+    if train_present:
+        st.markdown("### Portfolio Value (Train)") if col_train is st else None
+        train_df = pd.DataFrame({"Train": portfolio_series["Train"]})
+        train_df = train_df.interpolate(method="index").ffill().bfill()
+        train_long = train_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
+        y_domain_train = _empirical_y_domain(train_df)
+        train_chart = alt.Chart(train_long).mark_line().encode(
             x=alt.X("step:Q", title="Step"),
-            y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain, zero=False, nice=False)),
+            y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
             color=alt.Color("Series:N", title="Series")
         )
-        st.altair_chart(combined_chart, use_container_width=True)
+        if col_train is st:
+            st.altair_chart(train_chart, use_container_width=True)
+        else:
+            col_train.altair_chart(train_chart, use_container_width=True)
+
+    # Eval chart (Dev/Test)
+    if eval_present:
+        eval_key = "Dev" if "Dev" in portfolio_series else "Test"
+        if col_eval is not st:
+            col_eval.markdown("### Portfolio Value (Evaluation)")
+        else:
+            st.markdown("### Portfolio Value (Evaluation)")
+        eval_df = pd.DataFrame({eval_key: portfolio_series[eval_key]})
+        eval_df = eval_df.interpolate(method="index").ffill().bfill()
+        eval_long = eval_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
+        y_domain_eval = _empirical_y_domain(eval_df)
+        eval_chart = alt.Chart(eval_long).mark_line().encode(
+            x=alt.X("step:Q", title="Step"),
+            y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_eval, zero=False, nice=False)),
+            color=alt.Color("Series:N", title="Series")
+        )
+        if col_eval is st:
+            st.altair_chart(eval_chart, use_container_width=True)
+        else:
+            col_eval.altair_chart(eval_chart, use_container_width=True)
 # Realized PnL
 st.markdown("### Realized PnL")
 pnl_series = {}
@@ -640,4 +668,28 @@ if memory_series:
 
 if st.session_state.auto_refresh_enabled:
     # Automatically rerun the script every 2 seconds when auto-refresh is enabled.
-    st.experimental_autorefresh(interval=2000, limit=None, key="dashboard_autorefresh")
+    # Use the built-in API when available; otherwise fall back to a small
+    # client-side reload script so older/newer Streamlit versions still work.
+    try:
+        st.experimental_autorefresh(interval=2000, limit=None, key="dashboard_autorefresh")
+    except Exception:
+        # Fallback: inject a tiny JS snippet to reload the page after the interval.
+        # This avoids crashing when `experimental_autorefresh` is missing.
+        try:
+            import streamlit.components.v1 as components
+
+            components.html(
+                """
+                <script>
+                // Only trigger reload once per page load.
+                if (!window._rl_dashboard_autorefresh_installed) {
+                    window._rl_dashboard_autorefresh_installed = true;
+                    setTimeout(function(){ window.location.reload(); }, 2000);
+                }
+                </script>
+                """,
+                height=0,
+            )
+        except Exception:
+            # If even components fail, silently skip auto-refresh to avoid breaking the dashboard.
+            pass
