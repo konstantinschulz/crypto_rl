@@ -1,7 +1,7 @@
 import json
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import altair as alt
@@ -80,7 +80,11 @@ def _parse_dashboard_ts(ts_value):
     if not ts_value or not isinstance(ts_value, str):
         return None
     try:
-        return datetime.strptime(ts_value, "%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.strptime(ts_value, "%Y-%m-%d %H:%M:%S UTC")
+        # Ensure timestamp is aware. If it is currently naive, localize it to UTC:
+        if timestamp is not None and timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        return timestamp
     except ValueError:
         return None
 
@@ -106,12 +110,11 @@ def _elapsed_seconds_for_run(run_meta, now_dt=None):
     if not isinstance(run_meta, dict):
         return None
 
-    now_dt = now_dt or datetime.utcnow()
+    now_dt = now_dt or datetime.now(UTC)
     status = run_meta.get("status")
 
     started = _parse_dashboard_ts(run_meta.get("started_at"))
     finished = _parse_dashboard_ts(run_meta.get("finished_at"))
-
     if _is_running_status(status) and started is not None:
         return max(0, int((now_dt - started).total_seconds()))
 

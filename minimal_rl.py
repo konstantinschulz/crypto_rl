@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover
 import argparse
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Try to use pyarrow for efficient, row-group-aware parquet reads so we
@@ -111,8 +111,8 @@ class MinimalCryptoEnv(gym.Env):
                 'reward': float(reward),
                 'portfolio': float(portfolio),
             }
-            if self.last_invalid_sell:
-                entry['note'] = 'invalid SELL remapped to HOLD'
+            if self.last_remap_note:
+                entry['note'] = self.last_remap_note
             if trade_price > 0:
                 entry['price'] = float(trade_price)
                 entry['units'] = float(trade_units)
@@ -124,6 +124,7 @@ class MinimalCryptoEnv(gym.Env):
                 self.action_log.flush()
             # Reset flag after logging
             self.last_invalid_sell = False
+            self.last_remap_note = None
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -142,6 +143,7 @@ class MinimalCryptoEnv(gym.Env):
         self.holdings = np.zeros(self.num_assets)
         self.portfolio_value = BUDGET_INITIAL
         self.fees_paid_total = 0.0
+        self.trades_count = 0
         return self._get_obs(), {'fees_paid': 0.0}
 
     def close(self):
@@ -201,6 +203,7 @@ class MinimalCryptoEnv(gym.Env):
         trade_price = 0.0
         trade_units = 0.0
         fee_paid = 0.0
+        self.last_remap_note = None  # Reset any previous note for this step
         if action_type == 1:  # Buy
             if amount_pct == 0.0:
                 # *** Empty BUY: 0% amount ***
@@ -208,6 +211,7 @@ class MinimalCryptoEnv(gym.Env):
                 penalty = 0.001 * self.cash
                 self.cash -= penalty
                 action_type = 0
+                self.last_remap_note = "empty BUY remapped to HOLD"
             # Ensure we have cash and the asset index is valid
             elif self.cash > 0 and asset_idx < self.num_assets:
                 buy_amount_usd = self.cash * amount_pct
@@ -219,6 +223,7 @@ class MinimalCryptoEnv(gym.Env):
                     self.cash -= buy_amount_usd
                     self.holdings[asset_idx] += trade_units
                     self.fees_paid_total += fee_paid
+                    self.trades_count += 1
         elif action_type == 2:  # Sell
             if amount_pct == 0.0:
                 # *** Empty SELL: 0% amount ***
@@ -226,6 +231,7 @@ class MinimalCryptoEnv(gym.Env):
                 penalty = 0.001 * self.cash
                 self.cash -= penalty
                 action_type = 0
+                self.last_remap_note = "empty SELL remapped to HOLD"
             # Validate asset index first
             elif asset_idx < self.num_assets:
                 if self.holdings[asset_idx] > 0:
@@ -240,19 +246,19 @@ class MinimalCryptoEnv(gym.Env):
                         self.cash += proceeds
                         self.holdings[asset_idx] -= trade_units
                         self.fees_paid_total += fee_paid
+                        self.trades_count += 1
                 else:
                     # *** Illegal SELL: no holdings ***
-                    # Penalise the agent by deducting a small fraction of its cash.
-                    # This creates a negative reward signal that the policy can learn from.
-                    penalty = 0.001 * self.cash  # 0.1% of current cash (tunable)
+                    penalty = 0.005 * self.cash  # use high penalty for quick learning
                     self.cash -= penalty
-                    # Treat the action as HOLD to keep the environment stable.
                     action_type = 0
+                    self.last_remap_note = f"illegal action (SELL, {self.asset_names[asset_idx]}, {amount_pct*100:.0f}%) remapped to HOLD"
                     amount_pct = 0.0
             else:
                 # Invalid asset index – also treat as HOLD.
                 action_type = 0
                 amount_pct = 0.0
+                self.last_remap_note = "invalid asset index remapped to HOLD"
         # else: action_type == 0 (Hold), do nothing
 
         # Advance time
@@ -276,7 +282,7 @@ class MinimalCryptoEnv(gym.Env):
             # Log the effective amount used
             effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
             self.log_action(self.current_step, effective_action, reward, prev_portfolio_value, trade_price, trade_units, fee_paid)
-            return self._get_obs(), float(reward), done, False, {'fees_paid': self.fees_paid_total}
+            return self._get_obs(), float(reward), done, False, {'fees_paid': self.fees_paid_total, 'trades': self.trades_count}
 
         # Update portfolio value based on new prices for held assets
         current_asset_value = np.sum(self.holdings * next_prices)
@@ -295,7 +301,7 @@ class MinimalCryptoEnv(gym.Env):
         effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
         self.log_action(self.current_step, effective_action, reward, prev_portfolio_value, trade_price, trade_units, fee_paid)
 
-        return self._get_obs(), float(reward), done, False, {'fees_paid': self.fees_paid_total}
+        return self._get_obs(), float(reward), done, False, {'fees_paid': self.fees_paid_total, 'trades': self.trades_count}
 
 def main():
     parser = argparse.ArgumentParser(
@@ -434,7 +440,7 @@ Examples:
     test_prices_df = prices_df.iloc[split_idx:]
 
     # If dashboard integration is requested, prepare run directory and callback
-    run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S-minimal")
+    run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
     
     print("2. Setting up environment...")
     train_env = MinimalCryptoEnv(train_prices_df, window_size=args.window_size, run_id=run_id, fee_rate=args.fee_rate, reward_type=args.reward_type)
@@ -450,7 +456,7 @@ Examples:
             self.window_size = window_size
             self.reward_type = reward_type
             self.check_freq = check_freq
-            self.start_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
             self.last_portfolio_value = BUDGET_INITIAL
             
             # Series data
@@ -565,7 +571,7 @@ Examples:
                         "mode": "minimal",
                         "status": status,
                         "started_at": self.start_ts,
-                        "finished_at": None if status != "finished" else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                        "finished_at": None if status != "finished" else datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
                         "current_step": int(self.num_timesteps),
                         "progress_pct": int(100 * min(1.0, float(self.num_timesteps) / float(args.timesteps))),
                     },
@@ -586,7 +592,7 @@ Examples:
     callback = None
     if args.dashboard:
         # Create run directory
-        run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S-minimal")
+        run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
         base_run_dir = Path(args.run_dir) if args.run_dir else Path("rl_dashboard_runs")
         run_dir = base_run_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -603,7 +609,7 @@ Examples:
                 "state_file": str(state_file),
                 "mode": "minimal",
                 "status": "initializing",
-                "started_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "started_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
             }
             runs = index.get("runs", [])
             runs.insert(0, run_entry)
@@ -638,21 +644,18 @@ Examples:
     while not done:
         # Predict the action using our trained model
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, _, _ = test_env.step(action)
+        obs, reward, done, _, info = test_env.step(action)
 
         # Track trades for evaluation
-        # action is now a MultiDiscrete array: [action_type, asset_idx, amount_pct]
-        if action[0] == 1 or action[0] == 2: # Buy or Sell
-            eval_trades_count += 1
-            # For win rate, we'd need to track PnL per trade.
-            # For simplicity, let's assume a "winning trade" is any step where portfolio value increased.
-            # This is a very rough approximation for this minimal env.
-            if reward > 0:
-                eval_winning_trades += 1
+        # Track winning steps (rough approximation of win rate)
+        if reward > 0 and (action[0] == 1 or action[0] == 2):
+            eval_winning_trades += 1
         eval_steps += 1
 
         eval_portfolio_values.append({"step": eval_steps, "value": float(test_env.portfolio_value)})
         eval_realized_pnl.append({"step": eval_steps, "value": float(test_env.portfolio_value - eval_initial_portfolio_value)})
+        
+    eval_trades_count = test_env.trades_count
     
     test_env.close()
     train_env.close()
@@ -680,7 +683,7 @@ Examples:
                 state = json.load(f)
 
             state["run"]["status"] = "evaluated"
-            state["run"]["finished_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            state["run"]["finished_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
             state["finance"]["evaluation_results"] = {
                 "final_portfolio_value": float(test_env.portfolio_value),
                 "pnl": float(test_env.portfolio_value - eval_initial_portfolio_value),
