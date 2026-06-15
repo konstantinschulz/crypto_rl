@@ -285,12 +285,14 @@ st.session_state.finance_view = st.sidebar.selectbox(
     if st.session_state.finance_view in {"Both", "Train", "Eval"}
     else 0,
 )
+st.session_state.auto_refresh_enabled = st.sidebar.checkbox("Auto-Refresh (2s)", value=st.session_state.auto_refresh_enabled)
 
 # Minimal run launcher: start the provided `minimal_rl.py` training in background
 st.sidebar.markdown("---")
 st.sidebar.subheader("Quick Start: Minimal Train")
 min_rows = st.sidebar.number_input("Rows to load", value=5000, step=1000)
 min_steps = st.sidebar.number_input("Train timesteps", value=10000, step=1000)
+min_window = st.sidebar.number_input("Window size", value=10, step=5)
 start_col, stop_col = st.sidebar.columns(2)
 import subprocess
 
@@ -306,6 +308,8 @@ with start_col:
             str(int(min_rows)),
             "--timesteps",
             str(int(min_steps)),
+            "--window-size",
+            str(int(min_window)),
             "--run-dir",
             "rl_dashboard_runs",
         ]
@@ -337,20 +341,23 @@ kpis = _resolve_dashboard_kpis(data)
 
 st.sidebar.markdown(f"**Mode:** {run.get('mode', '-')}")
 st.sidebar.markdown(f"**Status:** {run.get('status', '-')}")
+st.sidebar.markdown(f"**Window Size:** {tech.get('window_size', '-')}")
+st.sidebar.markdown(f"**Reward Type:** {tech.get('reward_type', '-')}")
 st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
 st.sidebar.markdown(f"**Elapsed:** {_format_elapsed(_elapsed_seconds_for_run(run))}")
 st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
 
 st.subheader("Training Metrics")
-col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)
 col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
-col2.metric("Step", f"{int(kpis['step']):,}")
-col3.metric("Train Loss", f"{kpis['train_loss']:.5f}")
-col4.metric("Train Reward", f"{kpis['train_reward']:.4f}")
-col5.metric("Train Portfolio", f"${kpis['train_portfolio_value']:.2f}")
-col6.metric("Train PnL (R/U)", f"${kpis['train_realized_pnl']:.2f} / ${kpis['train_unrealized_pnl']:.2f}")
-col7.metric("Train Trades", f"{kpis['train_trades']:,}") # Added
-col8.metric("Train Win Rate", f"{kpis['train_win_rate_pct']:.1f}%") # Added
+col2.metric("Window Size", f"{int(_to_float(tech.get('window_size', 10), 10)):,}")
+col3.metric("Step", f"{int(kpis['step']):,}")
+col4.metric("Train Loss", f"{kpis['train_loss']:.5f}")
+col5.metric("Train Reward", f"{kpis['train_reward']:.4f}")
+col6.metric("Train Portfolio", f"${kpis['train_portfolio_value']:.2f}")
+col7.metric("Train PnL (R/U)", f"${kpis['train_realized_pnl']:.2f} / ${kpis['train_unrealized_pnl']:.2f}")
+col8.metric("Train Trades", f"{kpis['train_trades']:,}") # Added
+col9.metric("Train Win Rate", f"{kpis['train_win_rate_pct']:.1f}%") # Added
 
 st.subheader("Evaluation Results")
 eval_col1, eval_col2, eval_col3, eval_col4, eval_col5, eval_col6, eval_col7 = st.columns(7)
@@ -361,7 +368,21 @@ eval_col4.metric("Time in Market", f"{kpis['eval_time_in_market_pct']:.1f}%")
 eval_col5.metric("Buy/Hold Baseline", f"${kpis['eval_buy_hold_baseline']:.2f}")
 eval_col6.metric("Eval Trades", f"{kpis['eval_trades']:,}") # Added
 eval_col7.metric("Eval Win Rate", f"{kpis['eval_win_rate_pct']:.1f}%") # Added
-# Evaluation Metrics Chart\nif st.session_state.get('finance_view') == "Eval":\n    eval_metrics = {\n        "Final Portfolio": kpis["eval_final_portfolio_value"],\n        "Eval PnL": kpis["eval_pnl"],\n        "Buy/Hold Baseline": kpis["eval_buy_hold_baseline"],\n        "Trades": kpis["eval_trades"],\n        "Win Rate %": kpis["eval_win_rate_pct"],\n    }\n    df_eval = pd.DataFrame(list(eval_metrics.items()), columns=["Metric", "Value"])\n    chart = alt.Chart(df_eval).mark_bar().encode(\n        x=alt.X("Metric:N", sort=None),\n        y=alt.Y("Value:Q")\n    )\n    st.altair_chart(chart, use_container_width=True)\n
+# Evaluation Metrics Chart
+if st.session_state.get('finance_view') == "Eval":
+    eval_metrics = {
+        "Final Portfolio": kpis["eval_final_portfolio_value"],
+        "Eval PnL": kpis["eval_pnl"],
+        "Buy/Hold Baseline": kpis["eval_buy_hold_baseline"],
+        "Trades": kpis["eval_trades"],
+        "Win Rate %": kpis["eval_win_rate_pct"],
+    }
+    df_eval = pd.DataFrame(list(eval_metrics.items()), columns=["Metric", "Value"])
+    chart = alt.Chart(df_eval).mark_bar().encode(
+        x=alt.X("Metric:N", sort=None),
+        y=alt.Y("Value:Q")
+    )
+    st.altair_chart(chart, use_container_width=True)
 st.subheader("Training Series")
 
 # Portfolio Value
@@ -437,7 +458,10 @@ if portfolio_series:
 
     # Train chart
     if train_present:
-        st.markdown("### Portfolio Value (Train)") if col_train is st else None
+        if col_train is st:
+            st.markdown("### Portfolio Value (Train)")
+        else:
+            col_train.markdown("### Portfolio Value (Train)")
         train_df = pd.DataFrame({"Train": portfolio_series["Train"]})
         train_df = train_df.interpolate(method="index").ffill().bfill()
         train_long = train_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
@@ -455,10 +479,10 @@ if portfolio_series:
     # Eval chart (Dev/Test)
     if eval_present:
         eval_key = "Dev" if "Dev" in portfolio_series else "Test"
-        if col_eval is not st:
-            col_eval.markdown("### Portfolio Value (Evaluation)")
-        else:
+        if col_eval is st:
             st.markdown("### Portfolio Value (Evaluation)")
+        else:
+            col_eval.markdown("### Portfolio Value (Evaluation)")
         eval_df = pd.DataFrame({eval_key: portfolio_series[eval_key]})
         eval_df = eval_df.interpolate(method="index").ffill().bfill()
         eval_long = eval_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
@@ -666,30 +690,6 @@ if memory_series:
         )
         st.altair_chart(memory_chart, use_container_width=True)
 
-if st.session_state.auto_refresh_enabled:
-    # Automatically rerun the script every 2 seconds when auto-refresh is enabled.
-    # Use the built-in API when available; otherwise fall back to a small
-    # client-side reload script so older/newer Streamlit versions still work.
-    try:
-        st.experimental_autorefresh(interval=2000, limit=None, key="dashboard_autorefresh")
-    except Exception:
-        # Fallback: inject a tiny JS snippet to reload the page after the interval.
-        # This avoids crashing when `experimental_autorefresh` is missing.
-        try:
-            import streamlit.components.v1 as components
-
-            components.html(
-                """
-                <script>
-                // Only trigger reload once per page load.
-                if (!window._rl_dashboard_autorefresh_installed) {
-                    window._rl_dashboard_autorefresh_installed = true;
-                    setTimeout(function(){ window.location.reload(); }, 2000);
-                }
-                </script>
-                """,
-                height=0,
-            )
-        except Exception:
-            # If even components fail, silently skip auto-refresh to avoid breaking the dashboard.
-            pass
+if st.session_state.get("auto_refresh_enabled"):
+    time.sleep(2)
+    st.rerun()

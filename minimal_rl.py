@@ -47,17 +47,15 @@ class MinimalCryptoEnv(gym.Env):
         - Index 2: amount_pct: Percentage of cash/holdings (0 to 100, mapped to 0.0-1.0)
     - Reward: The literal change in Portfolio Value ($ PnL).
     """
-    def __init__(self, prices_df: pd.DataFrame, window_size=10, run_id: str = 'default', fee_rate: float = 0.0007, holding_reward_factor: float = 0.5):
+    def __init__(self, prices_df: pd.DataFrame, window_size=10, run_id: str = 'default', fee_rate: float = 0.0007, reward_type: str = 'excess_return', is_eval: bool = False):
         super().__init__()
         # Pivot the dataframe so columns are symbols, index is timestamp, values are 'close'
         self.prices_df = prices_df.pivot(index='open_time', columns='symbol', values='close')
         self.window_size = window_size
         self.run_id = run_id
         self.fee_rate = fee_rate
-        # Extra reward multiplier for holding assets that increase in price between steps.
-        # This is applied in addition to the raw portfolio-value PnL to encourage holding
-        # winning positions and counterbalance inactivity penalties elsewhere.
-        self.holding_reward_factor = float(holding_reward_factor)
+        self.is_eval = is_eval
+        self.reward_type = reward_type
         self.fees_paid_total = 0.0
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
@@ -67,9 +65,11 @@ class MinimalCryptoEnv(gym.Env):
         # [action_type (3), asset_idx (num_assets), amount_pct (101)]
         self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
 
-        # Observation is the last 'window_size' relative price changes for all assets
+        # Observation is the last 'window_size' relative price changes for all assets,
+        # plus the cash percentage, plus the holdings percentage for all assets.
+        obs_dim = (window_size * self.num_assets) + 1 + self.num_assets
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(window_size, self.num_assets), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
         # Internal state
@@ -89,7 +89,8 @@ class MinimalCryptoEnv(gym.Env):
         run_log_dir = log_root / run_id
         run_log_dir.mkdir(parents=True, exist_ok=True)
         # Log file now only needs episode and timestamp info
-        self.log_file_path = run_log_dir / f"actions_ep{self.episode_count}_{int(time.time())}.jsonl"
+        prefix = "actions_eval" if self.is_eval else "actions"
+        self.log_file_path = run_log_dir / f"{prefix}_ep{self.episode_count}_{int(time.time())}.jsonl"
         self.action_log = open(self.log_file_path, 'a', encoding='utf-8')
 
     def log_action(self, step: int, action: np.ndarray, reward: float, portfolio: float, trade_price: float = 0.0, trade_units: float = 0.0, fee: float = 0.0):
@@ -155,7 +156,27 @@ class MinimalCryptoEnv(gym.Env):
         window = self.prices_df.iloc[self.current_step - self.window_size : self.current_step]
         # Normalize each asset's window by its last price in the window
         normalized = (window / window.iloc[-1]) - 1.0
-        return normalized.values.astype(np.float32)
+        prices_flat = normalized.values.astype(np.float32).flatten()
+        
+        # Calculate current asset values and portfolio value
+        current_prices = self.prices_df.iloc[self.current_step - 1].values
+        asset_value = np.sum(self.holdings * current_prices)
+        total_val = self.cash + asset_value
+        
+        if total_val > 0:
+            cash_pct = self.cash / total_val
+            holdings_pct = (self.holdings * current_prices) / total_val
+        else:
+            cash_pct = 0.0
+            holdings_pct = np.zeros(self.num_assets)
+            
+        # Concatenate prices and allocation
+        obs = np.concatenate([
+            prices_flat,
+            np.array([cash_pct], dtype=np.float32),
+            holdings_pct.astype(np.float32)
+        ])
+        return obs
 
     def step(self, action):
         # action is now a list/array: [action_type, asset_idx, amount_pct_int]
@@ -181,8 +202,14 @@ class MinimalCryptoEnv(gym.Env):
         trade_units = 0.0
         fee_paid = 0.0
         if action_type == 1:  # Buy
+            if amount_pct == 0.0:
+                # *** Empty BUY: 0% amount ***
+                # Penalise the agent by deducting a small fraction of its cash.
+                penalty = 0.001 * self.cash
+                self.cash -= penalty
+                action_type = 0
             # Ensure we have cash and the asset index is valid
-            if self.cash > 0 and asset_idx < self.num_assets:
+            elif self.cash > 0 and asset_idx < self.num_assets:
                 buy_amount_usd = self.cash * amount_pct
                 if buy_amount_usd > 0:
                     trade_price = current_prices[asset_idx]
@@ -193,8 +220,14 @@ class MinimalCryptoEnv(gym.Env):
                     self.holdings[asset_idx] += trade_units
                     self.fees_paid_total += fee_paid
         elif action_type == 2:  # Sell
+            if amount_pct == 0.0:
+                # *** Empty SELL: 0% amount ***
+                # Penalise the agent by deducting a small fraction of its cash.
+                penalty = 0.001 * self.cash
+                self.cash -= penalty
+                action_type = 0
             # Validate asset index first
-            if asset_idx < self.num_assets:
+            elif asset_idx < self.num_assets:
                 if self.holdings[asset_idx] > 0:
                     # Normal sell path (holdings exist)
                     units_to_sell = self.holdings[asset_idx] * amount_pct
@@ -231,11 +264,14 @@ class MinimalCryptoEnv(gym.Env):
             final_asset_value = np.sum(self.holdings * next_prices)
             self.portfolio_value = self.cash + final_asset_value
             reward = self.portfolio_value - prev_portfolio_value # Reward for the last step
-            # Apply holding reward on final step as well
-            positive_price_diff = np.maximum(next_prices - current_prices, 0.0)
-            holding_gain = float(np.sum(self.holdings * positive_price_diff))
-            if self.holding_reward_factor != 0.0 and holding_gain > 0.0:
-                reward += holding_gain * self.holding_reward_factor
+            # Reward calculation for done step
+            if self.reward_type == 'excess_return':
+                portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0.0
+                asset_returns = (next_prices - current_prices) / current_prices
+                market_return = np.mean(asset_returns)
+                reward = (portfolio_return - market_return) * 100.0
+            else:
+                reward = self.portfolio_value - prev_portfolio_value
             
             # Log the effective amount used
             effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
@@ -246,15 +282,14 @@ class MinimalCryptoEnv(gym.Env):
         current_asset_value = np.sum(self.holdings * next_prices)
         self.portfolio_value = self.cash + current_asset_value
 
-        # Reward is the change in portfolio value
-        reward = self.portfolio_value - prev_portfolio_value
-        # Extra holding reward: reward positive price moves for currently held assets
-        # (only count price increases, not losses) and scale by the configured factor.
-        positive_price_diff = np.maximum(next_prices - current_prices, 0.0)
-        holding_gain = float(np.sum(self.holdings * positive_price_diff))
-        if self.holding_reward_factor != 0.0 and holding_gain > 0.0:
-            extra = holding_gain * self.holding_reward_factor
-            reward += extra
+        # Reward calculation for normal step
+        if self.reward_type == 'excess_return':
+            portfolio_return = (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value if prev_portfolio_value > 0 else 0.0
+            asset_returns = (next_prices - current_prices) / current_prices
+            market_return = np.mean(asset_returns)
+            reward = (portfolio_return - market_return) * 100.0
+        else:
+            reward = self.portfolio_value - prev_portfolio_value
         
         # Log the effective amount used
         effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
@@ -311,7 +346,29 @@ Examples:
         default=0.001,
         help="Trading fee rate (flat percentage of trade volume, e.g. 0.001 for 0.1%)"
     )
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=10,
+        help="Observation window size in minutes (default: 10)"
+    )
+    parser.add_argument(
+        "--data-seed",
+        type=int,
+        default=42,
+        help="Seed for data subset selection (default: 42)"
+    )
+    parser.add_argument(
+        "--reward-type",
+        type=str,
+        default="excess_return",
+        choices=["pnl", "excess_return"],
+        help="Reward function type to use for training (default: excess_return)"
+    )
     args = parser.parse_args()
+
+    # Apply data seed for reproducible dataset selection
+    np.random.seed(args.data_seed)
 
     print("1. Loading raw data...")
     # Load only the last N minutes of price data to avoid OOM.
@@ -380,16 +437,18 @@ Examples:
     run_id = datetime.utcnow().strftime("run-%Y%m%d-%H%M%S-minimal")
     
     print("2. Setting up environment...")
-    train_env = MinimalCryptoEnv(train_prices_df, run_id=run_id, fee_rate=args.fee_rate)
+    train_env = MinimalCryptoEnv(train_prices_df, window_size=args.window_size, run_id=run_id, fee_rate=args.fee_rate, reward_type=args.reward_type)
 
     run_dir = None
     state_file = None
     index_file = Path("rl_dashboard_index.json")
 
     class DashboardCallback(BaseCallback):
-        def __init__(self, state_path: Path, check_freq: int = 500):
+        def __init__(self, state_path: Path, window_size: int, reward_type: str, check_freq: int = 500):
             super().__init__()
             self.state_path = state_path
+            self.window_size = window_size
+            self.reward_type = reward_type
             self.check_freq = check_freq
             self.start_ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             self.last_portfolio_value = BUDGET_INITIAL
@@ -512,7 +571,9 @@ Examples:
                     },
                     "technical": {
                         "loss": {"train": self.series["train_loss"][-1]["value"] if self.series["train_loss"] else None},
-                        "num_data_rows": args.rows
+                        "num_data_rows": args.rows,
+                        "window_size": self.window_size,
+                        "reward_type": self.reward_type
                     },
                     "series": series_data,
                     "finance": {},
@@ -553,7 +614,7 @@ Examples:
         except Exception:
             pass
 
-        callback = DashboardCallback(state_file, check_freq=max(1, args.timesteps // 100 if args.timesteps >= 100 else 1))
+        callback = DashboardCallback(state_file, window_size=args.window_size, reward_type=args.reward_type, check_freq=max(1, args.timesteps // 100 if args.timesteps >= 100 else 1))
 
     print("3. Training simplest PPO model...")
     model = PPO("MlpPolicy", train_env, verbose=1, seed=42)
@@ -563,7 +624,7 @@ Examples:
         model.learn(total_timesteps=args.timesteps)
 
     print("4. Testing the trained model...")
-    test_env = MinimalCryptoEnv(test_prices_df, run_id=run_id, fee_rate=args.fee_rate)  # Use same run_id for evaluation logs
+    test_env = MinimalCryptoEnv(test_prices_df, window_size=args.window_size, run_id=run_id, fee_rate=args.fee_rate, reward_type=args.reward_type, is_eval=True)  # Use same run_id for evaluation logs
     obs, _ = test_env.reset()
     done = False
     eval_trades_count = 0
