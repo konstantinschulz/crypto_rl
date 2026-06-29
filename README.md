@@ -1,17 +1,18 @@
-# crypto_rl (Fresh Start)
-This repository was reset to focus on a new reward-tuning workflow.
+# crypto_rl (Refactored Setup)
+This repository focuses on a reward-tuning workflow for reinforcement learning trading agents.
 
-## Kept in root
-- Training/runtime core: `archive/2026-06-02_legacy_dashboard_server/rl_trading_env.py`, `minimal_rl.py`
-- Dashboard: `streamlit_dashboard.py`, `rl_dashboard_runs/`, `rl_dashboard_index.json`
-- Config/deps: `.env`, `.streamlit/`, `.gitignore`, `requirements.txt`
+## Repository Structure
+- **Training Entrypoint:** `main.py`
+- **Source Code Subfolder:** `crypto_rl/`
+  - `crypto_rl/env.py`: Gym trading environment `MinimalCryptoEnv`
+  - `crypto_rl/cli.py`: CLI parser definitions
+  - `crypto_rl/callbacks.py`: Dashboard logging callbacks
+  - `crypto_rl/data.py`: Parquet data ingestion helpers
+- **Dashboard:** `streamlit_dashboard.py`, `rl_dashboard_index.json`
+- **Config/deps:** `.env`, `.streamlit/`, `.gitignore`, `requirements.txt`
 
-## Archived material
-Historical experiment scripts, logs, Markdown documentation, and helper scripts were moved to:
-- `archive/2026-04-27_fresh_start/`
-Legacy dashboard server files and `rl_trader.py` were moved to:
-- `archive/2026-06-02_legacy_dashboard_server/`
-Use this archive for reference while designing new experiments.
+## Archived Material
+Historical experiment scripts, logs, Markdown documentation, and legacy/minimal scripts are archived in `docs/archive/` and other subfolders under `docs/`. Use these only for reference.
 
 ---
 
@@ -39,7 +40,7 @@ The dashboard will open at `http://localhost:8501` and auto-refresh every 2 seco
 
 **From shell:**
 ```bash
-python minimal_rl.py --dashboard --rows 10000 --timesteps 20000
+python main.py --dashboard --rows 10000 --timesteps 20000
 ```
 
 **From dashboard:**
@@ -50,7 +51,7 @@ python minimal_rl.py --dashboard --rows 10000 --timesteps 20000
 
 ### Dashboard Run State Files
 - Index: `rl_dashboard_index.json` (lists all runs)
-- Run data: `rl_dashboard_runs/run-YYYYMMDD-HHMMSS-minimal/state.json`
+- Run data: `logs/run-YYYYMMDD-HHMMSS-minimal/state.json` (stored in the same directory as the `*.jsonl` log files)
 
 To stop a run: `Ctrl+C` in the terminal where it started, or kill the process.
 
@@ -62,7 +63,7 @@ To stop a run: `Ctrl+C` in the terminal where it started, or kill the process.
 The `--rows` argument controls how much historical price data is loaded from `binance_spot_1m_last4y_single.parquet`:
 
 ```bash
-python minimal_rl.py --rows 10000 --timesteps 20000
+python main.py --rows 10000 --timesteps 20000
 ```
 
 **Why?** The parquet file is large (~1.3M rows, ~4 years of 1-minute OHLCV data). Loading all of it can cause out-of-memory errors.
@@ -84,21 +85,21 @@ python minimal_rl.py --rows 10000 --timesteps 20000
 **Examples:**
 ```bash
 # Minimal test (fast, low memory)
-python minimal_rl.py --rows 1000 --timesteps 5000
+python main.py --rows 1000 --timesteps 5000
 
 # Standard run (7 days of data)
-python minimal_rl.py --dashboard --rows 10000 --timesteps 20000 --run-dir rl_dashboard_runs
+python main.py --dashboard --rows 10000 --timesteps 20000 --run-dir logs
 
 # Extended training (35 days of data, longer convergence time)
-python minimal_rl.py --dashboard --rows 50000 --timesteps 100000 --run-dir rl_dashboard_runs
+python main.py --dashboard --rows 50000 --timesteps 100000 --run-dir logs
 ```
 
 ---
 
-## Minimal RL Environment (`minimal_rl.py`)
+## RL Environment (`crypto_rl/env.py`)
 
-A simplified trading environment for reward-tuning experiments:
-- **State:** Last 10 relative price changes
+A trading environment for reward-tuning experiments:
+- **State:** Last N relative price changes
 - **Action:** 0 = Hold cash, 1 = Hold crypto
 - **Reward:** Direct portfolio PnL per timestep ($ change)
 - **Training:** 80/20 train/test split; evaluate on test set after training
@@ -108,7 +109,7 @@ A simplified trading environment for reward-tuning experiments:
 --rows N           Number of last rows from parquet (default: 10000)
 --timesteps N      Total PPO training steps (default: 20000)
 --dashboard        Enable run-state JSON output for streamlit dashboard
---run-dir PATH     Directory to write run state (default: rl_dashboard_runs)
+--run-dir PATH     Directory to write run state (default: logs)
 ```
 
 ---
@@ -118,6 +119,5 @@ A simplified trading environment for reward-tuning experiments:
 - **Python interpreter:** Conda environment at `./.conda/bin/python`
 - **Auto-refresh:** The dashboard polls `rl_dashboard_index.json` and run `state.json` every 2 seconds
 - **Live metrics:** Training reward and portfolio value are emitted to the dashboard in real-time
-- **Stopping runs:** If you started a run in the background, find its PID with `ps aux | grep minimal_rl.py` and `kill <PID>` to stop it
+- **Stopping runs:** If you started a run in the background, find its PID with `ps aux | grep main.py` and `kill <PID>` to stop it
 - **Large datasets:** For low-memory machines, reduce `--rows` to avoid OOM errors. Test with `--rows 1000` first
-

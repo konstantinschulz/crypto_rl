@@ -4,4 +4,4 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-python "${REPO_ROOT}/minimal_rl.py" --rows 5000 --timesteps 10000 --dashboard
+python "${REPO_ROOT}/main.py" --rows 5000 --timesteps 10000 --dashboard

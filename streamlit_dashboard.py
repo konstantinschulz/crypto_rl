@@ -290,7 +290,7 @@ st.session_state.finance_view = st.sidebar.selectbox(
 )
 st.session_state.auto_refresh_enabled = st.sidebar.checkbox("Auto-Refresh (2s)", value=st.session_state.auto_refresh_enabled)
 
-# Minimal run launcher: start the provided `minimal_rl.py` training in background
+# Minimal run launcher: start the provided `main.py` training in background
 st.sidebar.markdown("---")
 st.sidebar.subheader("Quick Start: Minimal Train")
 min_rows = st.sidebar.number_input("Rows to load", value=5000, step=1000)
@@ -301,11 +301,11 @@ import subprocess
 
 with start_col:
     if st.button("Start Minimal Run"):
-        # Launch minimal_rl.py as a background process using local conda python
+        # Launch main.py as a background process using local conda python
         python_exe = str(Path(".conda/bin/python"))
         cmd = [
             python_exe,
-            "minimal_rl.py",
+            "main.py",
             "--dashboard",
             "--rows",
             str(int(min_rows)),
@@ -314,7 +314,7 @@ with start_col:
             "--window-size",
             str(int(min_window)),
             "--run-dir",
-            "rl_dashboard_runs",
+            "logs",
         ]
         try:
             subprocess.Popen(cmd)
@@ -461,23 +461,41 @@ if portfolio_series:
 
     # Train chart
     if train_present:
-        if col_train is st:
-            st.markdown("### Portfolio Value (Train)")
-        else:
-            col_train.markdown("### Portfolio Value (Train)")
-        train_df = pd.DataFrame({"Train": portfolio_series["Train"]})
-        train_df = train_df.interpolate(method="index").ffill().bfill()
-        train_long = train_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
-        y_domain_train = _empirical_y_domain(train_df)
-        train_chart = alt.Chart(train_long).mark_line().encode(
-            x=alt.X("step:Q", title="Step"),
-            y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
-            color=alt.Color("Series:N", title="Series")
-        )
-        if col_train is st:
-            st.altair_chart(train_chart, use_container_width=True)
-        else:
-            col_train.altair_chart(train_chart, use_container_width=True)
+        container = st if col_train is st else col_train
+        container.markdown("### Portfolio Value (Train)")
+        
+        # Load the raw series
+        raw_train_df = pd.DataFrame(series.get("portfolio_value", []))
+        
+        if not raw_train_df.empty and "step" in raw_train_df.columns:
+            
+            # If the log is old and doesn't have our new "episode" key, fallback to the math chunk
+            if "episode" not in raw_train_df.columns:
+                ep_length = 800 
+                raw_train_df["episode"] = ((raw_train_df["step"] - 1) // ep_length) + 1
+
+            # Ensure episodes are integers for ordinal scaling
+            raw_train_df["episode"] = raw_train_df["episode"].astype(int)
+            
+            # Calculate an intra-episode step to align episodes for the overlay view
+            raw_train_df["episode_step"] = raw_train_df.groupby("episode").cumcount()
+            
+            overlay_episodes = container.checkbox("Overlay Episodes", value=True, key="overlay_train_eps")
+            
+            x_col = "episode_step" if overlay_episodes else "step"
+            x_title = "Step (Within Episode)" if overlay_episodes else "Global Step"
+            
+            y_domain_train = _empirical_y_domain(raw_train_df[["value"]])
+            
+            train_chart = alt.Chart(raw_train_df).mark_line(opacity=0.8, strokeWidth=1.5).encode(
+                x=alt.X(f"{x_col}:Q", title=x_title),
+                y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
+                color=alt.Color("episode:O", title="Episode", scale=alt.Scale(scheme="viridis")),
+                detail="episode:O",
+                tooltip=["episode:O", "step:Q", "value:Q"]
+            ).interactive()
+            
+            container.altair_chart(train_chart, use_container_width=True)
 
     # Eval chart (Dev/Test)
     if eval_present:

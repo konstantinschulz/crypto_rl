@@ -1,3 +1,16 @@
+## TL;DR – What to try next (concise checklist)
+
+  1. Boost illegal‑sell penalty ( --illegal-sell-penalty ≥ 0.015 ).
+  2. Increase empty‑action penalties ( --empty-buy-penalty ,  --empty-sell-penalty  to 0.
+  005).
+  3. Raise hold‑cost a bit ( --hold-cost 0.0002 ).
+  4. Add a trade‑frequency bonus for profitable trades (tiny positive term).
+  5. Enlarge policy network (e.g.  net_arch=[dict(pi=[128,128], vf=[128,128])] ).
+  6. Raise entropy coefficient ( --ent-coef 0.025 ).
+  7. Optionally add volatility & momentum to observations (few lines).
+  8. Run with the example CLI above, monitor  actions_*.jsonl  for the new  note  fields,
+  and re‑evaluate PnL.
+
 The current reward logic (reward = current_portfolio_value - prev_portfolio_value) is essentially a
   Mark-to-Market (MtM) PnL approach. 
 

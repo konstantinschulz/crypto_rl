@@ -33,13 +33,132 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260615-140344-minimal",
-    "state_file": "rl_dashboard_runs/run-20260615-140344-minimal/state.json",
+    "run_id": "run-20260629-071652-minimal",
+    "state_file": "logs/run-20260629-071652-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-06-15 14:03:44 UTC"
+    "started_at": "2026-06-29 07:16:52 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260629-071652-minimal",
+      "state_file": "logs/run-20260629-071652-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-29 07:16:52 UTC"
+    },
+    {
+      "run_id": "run-20260629-071632-minimal",
+      "state_file": "logs/run-20260629-071632-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-29 07:16:32 UTC"
+    },
+    {
+      "run_id": "run-20260628-173854-minimal",
+      "state_file": "logs/run-20260628-173854-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-28 17:38:54 UTC"
+    },
+    {
+      "run_id": "run-20260628-173537-minimal",
+      "state_file": "rl_dashboard_runs/run-20260628-173537-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-28 17:35:37 UTC"
+    },
+    {
+      "run_id": "run-20260628-111218-minimal",
+      "state_file": "rl_dashboard_runs/run-20260628-111218-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-28 11:12:18 UTC"
+    },
+    {
+      "run_id": "run-20260628-105317-minimal",
+      "state_file": "rl_dashboard_runs/run-20260628-105317-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-28 10:53:17 UTC"
+    },
+    {
+      "run_id": "run-20260616-112913-minimal",
+      "state_file": "rl_dashboard_runs/run-20260616-112913-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-16 11:29:13 UTC"
+    },
+    {
+      "run_id": "run-20260616-111450-minimal",
+      "state_file": "rl_dashboard_runs/run-20260616-111450-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-16 11:14:50 UTC"
+    },
+    {
+      "run_id": "run-20260616-105614-minimal",
+      "state_file": "rl_dashboard_runs/run-20260616-105614-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-16 10:56:14 UTC"
+    },
+    {
+      "run_id": "run-20260616-104434-minimal",
+      "state_file": "rl_dashboard_runs/run-20260616-104434-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-16 10:44:34 UTC"
+    },
+    {
+      "run_id": "run-20260616-064356-minimal",
+      "state_file": "rl_dashboard_runs/run-20260616-064356-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-16 06:43:56 UTC"
+    },
+    {
+      "run_id": "run-20260615-153556-minimal",
+      "state_file": "rl_dashboard_runs/run-20260615-153556-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-15 15:35:56 UTC"
+    },
+    {
+      "run_id": "run-20260615-152804-minimal",
+      "state_file": "rl_dashboard_runs/run-20260615-152804-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-15 15:28:04 UTC"
+    },
+    {
+      "run_id": "run-20260615-152513-minimal",
+      "state_file": "rl_dashboard_runs/run-20260615-152513-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-15 15:25:13 UTC"
+    },
+    {
+      "run_id": "run-20260615-152250-minimal",
+      "state_file": "rl_dashboard_runs/run-20260615-152250-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-15 15:22:50 UTC"
+    },
+    {
+      "run_id": "run-20260615-151502-minimal",
+      "state_file": "rl_dashboard_runs/run-20260615-151502-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-15 15:15:02 UTC"
+    },
+    {
+      "run_id": "run-20260615-145923-minimal",
+      "state_file": "rl_dashboard_runs/run-20260615-145923-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-06-15 14:59:23 UTC"
+    },
     {
       "run_id": "run-20260615-140344-minimal",
       "state_file": "rl_dashboard_runs/run-20260615-140344-minimal/state.json",
