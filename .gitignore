@@ -12,3 +12,4 @@ tb_logs/
 *.parquet
 !subset.parquet
 artifacts/
+.aider*
