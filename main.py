@@ -38,7 +38,9 @@ def main():
         empty_buy_penalty=args.empty_buy_penalty,
         empty_sell_penalty=args.empty_sell_penalty,
         illegal_sell_penalty=args.illegal_sell_penalty,
-        illegal_buy_penalty=args.illegal_buy_penalty
+        illegal_buy_penalty=args.illegal_buy_penalty,
+        trade_freq_incentive=args.trade_freq_incentive,
+        profit_bonus=args.profit_bonus
     )
 
     run_dir = None
@@ -108,6 +110,7 @@ def main():
         run_id=run_id,
         fee_rate=args.fee_rate,
         reward_type=args.reward_type,
+        trade_freq_incentive=args.trade_freq_incentive,
         is_eval=True,
     )  # Use same run_id for evaluation logs
     obs, _ = test_env.reset()

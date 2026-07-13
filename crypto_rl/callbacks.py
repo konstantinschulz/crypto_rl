@@ -136,13 +136,11 @@ class DashboardCallback(BaseCallback):
                 mean_ep_rew = float(
                     np.mean([ep["r"] for ep in self.model.ep_info_buffer])
                 )
-                current_portfolio = BUDGET_INITIAL + mean_ep_rew
-            else:
-                # Fallback to current step if no episode finished yet
-                portfolio_values = self.training_env.get_attr("portfolio_value")
-                current_portfolio = (
-                    float(portfolio_values[0]) if portfolio_values else BUDGET_INITIAL
-                )
+            # Always get the real current portfolio value from the environment
+            portfolio_values = self.training_env.get_attr("portfolio_value")
+            current_portfolio = (
+                float(portfolio_values[0]) if portfolio_values else BUDGET_INITIAL
+            )
             episode_counts = self.training_env.get_attr("episode_count")
             current_episode = int(episode_counts[0]) if episode_counts else 1
             holdings_list = self.training_env.get_attr("holdings")

@@ -466,9 +466,11 @@ if portfolio_series:
         
         # Load the raw series
         raw_train_df = pd.DataFrame(series.get("portfolio_value", []))
+        # Ensure portfolio values are numeric
+        if not raw_train_df.empty:
+            raw_train_df["value"] = pd.to_numeric(raw_train_df["value"], errors="coerce")
         
         if not raw_train_df.empty and "step" in raw_train_df.columns:
-            
             # If the log is old and doesn't have our new "episode" key, fallback to the math chunk
             if "episode" not in raw_train_df.columns:
                 ep_length = 800 
@@ -476,6 +478,9 @@ if portfolio_series:
 
             # Ensure episodes are integers for ordinal scaling
             raw_train_df["episode"] = raw_train_df["episode"].astype(int)
+            
+            # Normalize each episode to start at 100
+            raw_train_df["value_norm"] = raw_train_df.groupby("episode")["value"].transform(lambda x: (x - x.iloc[0]) + 100.0)
             
             # Calculate an intra-episode step to align episodes for the overlay view
             raw_train_df["episode_step"] = raw_train_df.groupby("episode").cumcount()
@@ -485,11 +490,11 @@ if portfolio_series:
             x_col = "episode_step" if overlay_episodes else "step"
             x_title = "Step (Within Episode)" if overlay_episodes else "Global Step"
             
-            y_domain_train = _empirical_y_domain(raw_train_df[["value"]])
+            y_domain_train = _empirical_y_domain(raw_train_df[["value_norm"]])
             
             train_chart = alt.Chart(raw_train_df).mark_line(opacity=0.8, strokeWidth=1.5).encode(
                 x=alt.X(f"{x_col}:Q", title=x_title),
-                y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
+                y=alt.Y("value_norm:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
                 color=alt.Color("episode:O", title="Episode", scale=alt.Scale(scheme="viridis")),
                 detail="episode:O",
                 tooltip=["episode:O", "step:Q", "value:Q"]

@@ -116,22 +116,35 @@ Examples:
         help="Penalty multiplier for empty SELL actions (default 0.001)",
     )
     parser.add_argument(
+        "--illegal-buy-penalty",
+        type=float,
+        default=0.005,
+        help="Penalty multiplier for illegal BUY actions (default 0.005)",
+    )
+    parser.add_argument(
         "--illegal-sell-penalty",
         type=float,
         default=0.005,
         help="Penalty multiplier for illegal SELL actions (default 0.005)",
     )
     parser.add_argument(
-        "--illegal-buy-penalty",
+        "--profit-bonus",
         type=float,
-        default=0.005,
-        help="Penalty multiplier for illegal BUY actions (default 0.005)",
+        default=0.15,
+        help="Bonus reward for profitable trades (default 0.15). Encourages the agent to maximize the absolute amount of profit (realized PnL) for each trade.",
+    )
+    parser.add_argument(
+        "--trade-freq-incentive",
+        type=float,
+        default=0.01,
+        help="Bonus per profitable trade for frequency incentive (default 0.01). This encourages the agent to trade more frequently.",
     )
 
     # ------------------------------------------------------------------ dashboard
     parser.add_argument(
         "--dashboard",
         action="store_true",
+        default=True,
         help=(
             "Enable dashboard integration: creates run entry in rl_dashboard_index.json "
             "and writes periodic state.json for live monitoring in streamlit_dashboard.py"

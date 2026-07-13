@@ -62,6 +62,8 @@ class MinimalCryptoEnv(gym.Env):
         empty_sell_penalty: float = 0.001,
         illegal_sell_penalty: float = 0.005,
         illegal_buy_penalty: float = 0.005,
+        trade_freq_incentive: float = 0.01,
+        profit_bonus: float = 0.15,
     ):
         super().__init__()
         # Pivot the dataframe so columns are symbols, index is timestamp, values are 'close'
@@ -78,6 +80,8 @@ class MinimalCryptoEnv(gym.Env):
         self.empty_sell_penalty = empty_sell_penalty
         self.illegal_sell_penalty = illegal_sell_penalty
         self.illegal_buy_penalty = illegal_buy_penalty
+        self.trade_freq_incentive = trade_freq_incentive
+        self.profit_bonus = profit_bonus
         self.fees_paid_total = 0.0
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
@@ -375,7 +379,11 @@ class MinimalCryptoEnv(gym.Env):
         # Apply bonus for profitable sells exactly on the step it happens
         # ---------------------------------------------------------
         if realised_pnl > 0:
-            reward += realised_pnl * 0.1  # percentage bonus for profitable sells
+            reward += realised_pnl * self.profit_bonus  # configurable profit bonus for profitable sells
+            # Add trade‑frequency incentive only during training (not eval)
+            if not self.is_eval:
+                # Scale incentive by the proportion of capital used in the trade
+                reward += self.trade_freq_incentive * amount_pct
         # Subtract the accumulated logic penalties directly from the reward
         reward -= step_penalty
         # Log the effective amount used
@@ -396,7 +404,7 @@ class MinimalCryptoEnv(gym.Env):
             False,
             {
                 "fees_paid": self.fees_paid_total,
-                "trades": self.trades_count,
+                "trades_count": self.trades_count,
                 "realised_pnl": realised_pnl,
                 "is_valid_sell": is_valid_sell,
                 "episode_count": self.episode_count,
