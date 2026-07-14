@@ -1,12 +1,16 @@
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+from typing import Any
 
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 from crypto_rl import MinimalCryptoEnv, read_last_n
 from crypto_rl.callbacks import DashboardCallback
 from crypto_rl.cli import build_parser
 import numpy as np
+import torch
+
+from crypto_rl.data import read_train_test
 
 
 def main():
@@ -18,12 +22,12 @@ def main():
     # Apply data seed for reproducible dataset selection
     np.random.seed(args.data_seed)
     print("1. Loading raw data...")
-    # Load data with required columns
-    prices_df = read_last_n(args.dataset, n=args.rows)
     # Split 80/20 into train and test
-    split_idx = int(len(prices_df) * 0.8)
-    train_prices_df = prices_df.iloc[:split_idx]
-    test_prices_df = prices_df.iloc[split_idx:]
+    n_test = round(args.rows * 0.8)
+    n_train = args.rows - n_test
+    train_prices_df, test_prices_df = read_train_test(
+        args.parquet_path, n_train, n_test
+    )
     # If dashboard integration is requested, prepare run directory and callback
     run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
 
@@ -40,7 +44,10 @@ def main():
         illegal_sell_penalty=args.illegal_sell_penalty,
         illegal_buy_penalty=args.illegal_buy_penalty,
         trade_freq_incentive=args.trade_freq_incentive,
-        profit_bonus=args.profit_bonus
+        profit_bonus=args.profit_bonus,
+        parquet_path=args.parquet_path,
+        n_rows=args.rows,
+        action_space_type=args.action_space_type,
     )
 
     run_dir = None
@@ -83,21 +90,52 @@ def main():
             check_freq=max(1, args.timesteps // 100 if args.timesteps >= 100 else 1),
             run_id=run_id,
             total_timesteps=args.timesteps,
-            num_data_rows=args.rows
+            num_data_rows=args.rows,
         )
-
-    print("3. Training simplest PPO model...")
-    model = PPO(
-        "MlpPolicy",
-        train_env,
-        device="cpu",
-        verbose=1,
-        seed=42,
-        ent_coef=args.ent_coef,  # encourage action diversity
-        n_steps=2048,  # larger rollout buffer for better gradient estimation
-        batch_size=args.batch_size,  # smaller batch size for more frequent updates
-        gamma=args.gamma,
-    )
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    verbose: int = 1
+    seed: int = args.data_seed
+    ent_coef: float = args.ent_coef
+    batch_size: int = args.batch_size
+    gamma: float = args.gamma
+    learning_rate: float = args.learning_rate
+    policy_kwargs: dict[str, Any] = {
+        "net_arch": dict(pi=[128, 128], qf=[128, 128]),
+        "activation_fn": torch.nn.ReLU,
+    }
+    n_steps: int = args.n_steps
+    if args.algorithm == "SAC":
+        print("3. Training simplest SAC model...")
+        model = SAC(
+            "MlpPolicy",
+            train_env,
+            device=device,
+            verbose=verbose,
+            seed=seed,
+            # For SAC, ent_coef default can be "auto" or a float
+            ent_coef=ent_coef if ent_coef != 0.01 else "auto",
+            n_steps=n_steps,
+            batch_size=batch_size,
+            gamma=gamma,
+            learning_rate=learning_rate,
+            policy_kwargs=policy_kwargs,
+        )
+    else:
+        print("3. Training simplest PPO model...")
+        model = PPO(
+            "MlpPolicy",
+            train_env,
+            device=device,
+            verbose=verbose,
+            seed=seed,
+            ent_coef=ent_coef,  # encourage action diversity
+            n_steps=n_steps,  # larger rollout buffer for better gradient estimation
+            batch_size=batch_size,  # smaller batch size for more frequent updates
+            gamma=gamma,
+            learning_rate=learning_rate,
+            clip_range=args.clip_range,
+            policy_kwargs=(policy_kwargs | dict(ortho_init=True)),
+        )
     if callback is not None:
         model.learn(total_timesteps=args.timesteps, callback=callback)
     else:
@@ -112,6 +150,7 @@ def main():
         reward_type=args.reward_type,
         trade_freq_incentive=args.trade_freq_incentive,
         is_eval=True,
+        action_space_type=args.action_space_type,
     )  # Use same run_id for evaluation logs
     obs, _ = test_env.reset()
     done = False
@@ -171,6 +210,47 @@ def main():
     ) / pivoted_df.iloc[0][first_asset]
     buy_hold_final = BUDGET_INITIAL * (1 + buy_hold_return)
     print(f"Buy/Hold Baseline ({first_asset}): ${buy_hold_final:.2f}")
+
+    # -----------------------------------------------------------------
+    # Multi-seed evaluation (Tier 5)
+    # Run the same trained policy on 5 independently-sampled price windows
+    # from the same held-out time range.  This gives mean ± std terminal
+    # portfolio value, which is a far more trustworthy signal than a single
+    # run when the test window is itself randomly drawn.
+    # -----------------------------------------------------------------
+    print("\n5-seed multi-window evaluation:")
+    multi_seed_pv = []
+    # Seed 0 is already captured by the main eval run above.
+    for mseed in range(5):
+        np.random.seed(mseed + 100)  # offset to avoid overlapping with the main seed
+        try:
+            ms_prices = read_last_n(args.parquet_path, n=args.rows)
+            ms_split = int(len(ms_prices) * 0.8)
+            ms_test = ms_prices.iloc[ms_split:]
+            ms_env = MinimalCryptoEnv(
+                ms_test,
+                window_size=args.window_size,
+                run_id=run_id,
+                fee_rate=args.fee_rate,
+                reward_type=args.reward_type,
+                is_eval=True,
+                action_space_type=args.action_space_type,
+            )
+            ms_obs, _ = ms_env.reset()
+            ms_done = False
+            while not ms_done:
+                ms_action, _ = model.predict(ms_obs, deterministic=True)
+                ms_obs, _, ms_done, _, _ = ms_env.step(ms_action)
+            multi_seed_pv.append(ms_env.portfolio_value)
+            ms_env.close()
+        except Exception as exc:
+            print(f"  seed {mseed} failed: {exc}")
+    if multi_seed_pv:
+        arr = np.array(multi_seed_pv)
+        print(
+            f"  n={len(arr)}  mean=${arr.mean():.2f}  std=${arr.std():.2f}  "
+            f"min=${arr.min():.2f}  max=${arr.max():.2f}"
+        )
 
     # --- Dashboard Update for Evaluation Results ---
     if args.dashboard and state_file and state_file.exists():

@@ -23,7 +23,7 @@ Examples:
 
     # ------------------------------------------------------------------ data
     parser.add_argument(
-        "--dataset",
+        "--parquet-path",
         type=str,
         default="subset.parquet",
         help="Path to Parquet dataset file (default: subset.parquet)",
@@ -47,16 +47,36 @@ Examples:
 
     # ------------------------------------------------------------------ training
     parser.add_argument(
+        "--action-space-type",
+        type=str,
+        default="continuous",
+        choices=["continuous", "multidiscrete"],
+        help="Action space representation: continuous (Box) or multidiscrete (MultiDiscrete) (default: continuous)",
+    )
+    parser.add_argument(
+        "--algorithm",
+        type=str,
+        default="SAC",
+        choices=["PPO", "SAC"],
+        help="RL algorithm to use for training: PPO or SAC (default: SAC)",
+    )
+    parser.add_argument(
         "--timesteps",
         type=int,
         default=20000,
-        help="Total timesteps to train PPO model (default: 20000)",
+        help="Total timesteps to train the model (default: 20000)",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=256,
         help="Minibatch size for PPO model",
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        default=0.0003,
+        help="Learning rate for the PPO model",
     )
     parser.add_argument(
         "--gamma",
@@ -69,6 +89,18 @@ Examples:
         type=float,
         default=0.01,
         help="Entropy coefficient for the loss calculation of the PPO model",
+    )
+    parser.add_argument(
+        "--clip-range",
+        type=float,
+        default=0.2,
+        help="Clipping parameter for the PPO model, it can be a function of the current progress remaining (from 1 to 0).",
+    )
+    parser.add_argument(
+        "--n-steps",
+        type=int,
+        default=2048,
+        help="The number of steps to run for each PPO model environment per update (i.e. rollout buffer size is n_steps * n_envs where n_envs is number of environment copies running in parallel)",
     )
 
     # ------------------------------------------------------------------ environment
@@ -87,8 +119,13 @@ Examples:
     parser.add_argument(
         "--hold-cost-rate",
         type=float,
-        default=0.0001,
-        help="Hold cost rate per step as a fraction of asset value (default 0.0001 = 0.01%)",
+        default=0.000001,
+        help=(
+            "Hold cost rate per step as a fraction of asset value. "
+            "Default 1e-6 ≈ 0.05%% per day at 1-min bars. "
+            "The old default (0.0001) was ~6%%/hr — catastrophically high, "
+            "causing the agent to never hold any position."
+        ),
     )
     parser.add_argument(
         "--window-size",
@@ -143,7 +180,8 @@ Examples:
     # ------------------------------------------------------------------ dashboard
     parser.add_argument(
         "--dashboard",
-        action="store_true",
+        #action="store_true",
+        type=bool,
         default=True,
         help=(
             "Enable dashboard integration: creates run entry in rl_dashboard_index.json "

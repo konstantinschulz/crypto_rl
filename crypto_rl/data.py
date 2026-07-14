@@ -86,11 +86,7 @@ def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
     t_start, t_end = _random_window(anchor_times, k)
 
     mask = (df_sub["open_time"] >= t_start) & (df_sub["open_time"] <= t_end)
-    return (
-        df_sub[mask]
-        .sort_values(by=["open_time", "symbol"])
-        .reset_index(drop=True)
-    )
+    return df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
 
 
 def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
@@ -115,8 +111,14 @@ def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
         & (ds.field("open_time") <= t_end)
     )
     df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
-    return (
-        df.dropna()
-        .sort_values(by=["open_time", "symbol"])
-        .reset_index(drop=True)
-    )
+    return df.dropna().sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+
+
+def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return (train_df, test_df) with non-overlapping time windows."""
+    df = read_last_n(path, n=n_train + n_test)
+    # Use last n_test rows as held-out set, always
+    split = len(df["open_time"].unique()) - n_test // len(DEFAULT_SYMBOLS)
+    times = sorted(df["open_time"].unique())
+    cut = times[split]
+    return df[df["open_time"] < cut], df[df["open_time"] >= cut]
