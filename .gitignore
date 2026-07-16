@@ -6,6 +6,8 @@ __pycache__/
 docs/.~*
 logs/
 models/
+optuna.db
+profile.stats
 rl_dashboard_runs/
 tb_logs/
 .env

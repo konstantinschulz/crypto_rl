@@ -11,12 +11,14 @@ import argparse
 
 
 def objective(trial):
-    lr = trial.suggest_float("lr", 1e-4, 5e-3, log=True)
-    ent = trial.suggest_float("ent", 1e-3, 0.05, log=True)
-    gamma = trial.suggest_float("gamma", 0.90, 0.999)
-    n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048])
-    clip = trial.suggest_float("clip", 0.1, 0.4)
-    pb = trial.suggest_float("profit_bonus", 0.05, 0.5)
+    lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
+    ent = trial.suggest_float("ent", 1e-4, 0.1, log=True)
+    gamma = trial.suggest_float("gamma", 0.90, 0.999999)
+    # n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048])
+    # clip = trial.suggest_float("clip", 0.1, 0.4)
+    pb = trial.suggest_float("profit_bonus", 0.15, 1.5)
+    bs = trial.suggest_categorical("batch_size", [64, 128, 256])  # 128, 256, 512
+    hcr = trial.suggest_float("hold_cost_rate", 0.00001, 0.0000001)
 
     cmd = [
         sys.executable,
@@ -31,14 +33,18 @@ def objective(trial):
         str(ent),
         "--gamma",
         str(gamma),
-        "--n-steps",
-        str(n_steps),
-        "--clip-range",
-        str(clip),
+        #"--n-steps",
+        #str(n_steps),
+        # "--clip-range",
+        # str(clip),
         "--profit-bonus",
         str(pb),
         "--dashboard",
-        "False"
+        "False",
+        "--batch-size",
+        str(bs),
+        "--hold-cost-rate",
+        str(hcr)
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     for line in result.stdout.splitlines():

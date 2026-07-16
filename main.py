@@ -9,7 +9,6 @@ from crypto_rl.callbacks import DashboardCallback
 from crypto_rl.cli import build_parser
 import numpy as np
 import torch
-
 from crypto_rl.data import read_train_test
 
 

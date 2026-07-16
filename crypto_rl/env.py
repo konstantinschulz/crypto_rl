@@ -89,7 +89,7 @@ class MinimalCryptoEnv(gym.Env):
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
         self.asset_names = self.prices_df.columns.tolist()
-
+        
         # Action space setup
         self.action_space_type = action_space_type
         if self.action_space_type == "continuous":

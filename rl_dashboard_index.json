@@ -33,13 +33,181 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260714-074629-minimal",
-    "state_file": "logs/run-20260714-074629-minimal/state.json",
+    "run_id": "run-20260716-191741-minimal",
+    "state_file": "logs/run-20260716-191741-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-07-14 07:46:29 UTC"
+    "started_at": "2026-07-16 19:17:41 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260716-191741-minimal",
+      "state_file": "logs/run-20260716-191741-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-16 19:17:41 UTC"
+    },
+    {
+      "run_id": "run-20260716-184040-minimal",
+      "state_file": "logs/run-20260716-184040-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-16 18:40:40 UTC"
+    },
+    {
+      "run_id": "run-20260714-111937-minimal",
+      "state_file": "logs/run-20260714-111937-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 11:19:37 UTC"
+    },
+    {
+      "run_id": "run-20260714-110107-minimal",
+      "state_file": "logs/run-20260714-110107-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 11:01:07 UTC"
+    },
+    {
+      "run_id": "run-20260714-104719-minimal",
+      "state_file": "logs/run-20260714-104719-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:47:19 UTC"
+    },
+    {
+      "run_id": "run-20260714-104115-minimal",
+      "state_file": "logs/run-20260714-104115-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:41:15 UTC"
+    },
+    {
+      "run_id": "run-20260714-103509-minimal",
+      "state_file": "logs/run-20260714-103509-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:35:09 UTC"
+    },
+    {
+      "run_id": "run-20260714-102533-minimal",
+      "state_file": "logs/run-20260714-102533-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:25:33 UTC"
+    },
+    {
+      "run_id": "run-20260714-102050-minimal",
+      "state_file": "logs/run-20260714-102050-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:20:50 UTC"
+    },
+    {
+      "run_id": "run-20260714-101412-minimal",
+      "state_file": "logs/run-20260714-101412-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:14:12 UTC"
+    },
+    {
+      "run_id": "run-20260714-100737-minimal",
+      "state_file": "logs/run-20260714-100737-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:07:37 UTC"
+    },
+    {
+      "run_id": "run-20260714-100116-minimal",
+      "state_file": "logs/run-20260714-100116-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 10:01:16 UTC"
+    },
+    {
+      "run_id": "run-20260714-095427-minimal",
+      "state_file": "logs/run-20260714-095427-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:54:27 UTC"
+    },
+    {
+      "run_id": "run-20260714-095036-minimal",
+      "state_file": "logs/run-20260714-095036-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:50:36 UTC"
+    },
+    {
+      "run_id": "run-20260714-094112-minimal",
+      "state_file": "logs/run-20260714-094112-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:41:12 UTC"
+    },
+    {
+      "run_id": "run-20260714-093435-minimal",
+      "state_file": "logs/run-20260714-093435-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:34:35 UTC"
+    },
+    {
+      "run_id": "run-20260714-092450-minimal",
+      "state_file": "logs/run-20260714-092450-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:24:50 UTC"
+    },
+    {
+      "run_id": "run-20260714-091809-minimal",
+      "state_file": "logs/run-20260714-091809-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:18:09 UTC"
+    },
+    {
+      "run_id": "run-20260714-091259-minimal",
+      "state_file": "logs/run-20260714-091259-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:12:59 UTC"
+    },
+    {
+      "run_id": "run-20260714-090626-minimal",
+      "state_file": "logs/run-20260714-090626-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 09:06:26 UTC"
+    },
+    {
+      "run_id": "run-20260714-085229-minimal",
+      "state_file": "logs/run-20260714-085229-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 08:52:29 UTC"
+    },
+    {
+      "run_id": "run-20260714-084304-minimal",
+      "state_file": "logs/run-20260714-084304-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 08:43:04 UTC"
+    },
+    {
+      "run_id": "run-20260714-082819-minimal",
+      "state_file": "logs/run-20260714-082819-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 08:28:19 UTC"
+    },
+    {
+      "run_id": "run-20260714-082545-minimal",
+      "state_file": "logs/run-20260714-082545-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-14 08:25:45 UTC"
+    },
     {
       "run_id": "run-20260714-074629-minimal",
       "state_file": "logs/run-20260714-074629-minimal/state.json",
