@@ -33,13 +33,48 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260726-193323-minimal",
-    "state_file": "logs/run-20260726-193323-minimal/state.json",
+    "run_id": "run-20260727-095109-minimal",
+    "state_file": "logs/run-20260727-095109-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-07-26 19:33:23 UTC"
+    "started_at": "2026-07-27 09:51:09 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260727-095109-minimal",
+      "state_file": "logs/run-20260727-095109-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-27 09:51:09 UTC"
+    },
+    {
+      "run_id": "run-20260727-092822-minimal",
+      "state_file": "logs/run-20260727-092822-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-27 09:28:22 UTC"
+    },
+    {
+      "run_id": "run-20260727-091133-minimal",
+      "state_file": "logs/run-20260727-091133-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-27 09:11:33 UTC"
+    },
+    {
+      "run_id": "run-20260727-074232-minimal",
+      "state_file": "logs/run-20260727-074232-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-27 07:42:32 UTC"
+    },
+    {
+      "run_id": "run-20260727-072627-minimal",
+      "state_file": "logs/run-20260727-072627-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-07-27 07:26:27 UTC"
+    },
     {
       "run_id": "run-20260726-193323-minimal",
       "state_file": "logs/run-20260726-193323-minimal/state.json",

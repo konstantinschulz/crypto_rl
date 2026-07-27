@@ -5,6 +5,7 @@ Gymnasium trading environment for multiple crypto assets.
 """
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -71,9 +72,7 @@ class MinimalCryptoEnv(gym.Env):
         disable_logging: bool = False,  # <-- Set True during Optuna HPO!
     ):
         super().__init__()
-        self.prices_df = prices_df.pivot(
-            index="open_time", columns="symbol", values="close"
-        )
+        self.prices_df = self._pivot_dataframe(prices_df)
         self.window_size = window_size
         self.run_id = run_id
         self.fee_rate = fee_rate
@@ -92,7 +91,7 @@ class MinimalCryptoEnv(gym.Env):
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
         self.asset_names = self.prices_df.columns.tolist()
-        
+
         self.action_space_type = action_space_type
         if self.action_space_type == "continuous":
             self.action_space = spaces.Box(
@@ -104,7 +103,9 @@ class MinimalCryptoEnv(gym.Env):
         # Dimension breakdown:
         # Static: prices_flat (W*N) + vol (N) + mom (N) + rsi (N) + macd (N) = (W + 4)*N
         # Dynamic: cash_pct (1) + holdings_pct (N) + unrealised_pnl_pct (N) + has_position (N) = 1 + 3*N
-        self.static_dim = (window_size + 4) * self.num_assets
+        self.static_per_asset_dim = window_size + 5
+        self.macro_dim = 2
+        self.static_dim = (self.static_per_asset_dim * self.num_assets) + self.macro_dim
         self.has_position_dim = self.num_assets
         obs_dim = self.static_dim + 1 + (3 * self.num_assets)
         self.observation_space = spaces.Box(
@@ -132,63 +133,95 @@ class MinimalCryptoEnv(gym.Env):
 
         self._precalculate_indicators()
 
+    def _pivot_dataframe(self, prices_df) -> pd.DataFrame:
+        # Forward-fill and backward-fill to prevent missing altcoin bars from injecting NaNs into the observation pipeline.
+        return (
+            prices_df.pivot(index="open_time", columns="symbol", values="close")
+            .ffill()
+            .bfill()
+        )
+
     def _precalculate_indicators(self) -> None:
-        """Pre-calculates and packs all static features into a single master matrix."""
+        """Pre-calculates and packs scale-invariant features and BTC macro signals."""
         self.prices_arr = self.prices_df.values.astype(np.float32)
         T = self.prices_df.shape[0]
         N = self.num_assets
         W = self.window_size
 
-        # 1. Vectorized Volatility
+        # 1. Base Returns & Rolling Volatility per coin
         returns_df = self.prices_df.pct_change()
-        vol_df = returns_df.rolling(window=W - 1, min_periods=W - 1).std()
-        
-        # 2. Vectorized Momentum
+        vol_df = returns_df.rolling(window=W, min_periods=W).std()
+
+        # 2. Rolling Momentum per coin
         momentum_df = (self.prices_df / self.prices_df.shift(W)) - 1.0
 
-        # 3. Vectorized RSI
+        # 3. RSI [-1, 1]
         delta = self.prices_df.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
         rs_df = avg_gain / (avg_loss + 1e-8)
         rsi_df = (rs_df / (1 + rs_df)) * 2.0 - 1.0
 
-        # 4. Vectorized MACD
+        # 4. Normalized MACD
         rolling_window = self.prices_df.rolling(window=W, min_periods=W)
         mean_all = rolling_window.mean()
         std_all = rolling_window.std()
         mean_3 = self.prices_df.rolling(window=3, min_periods=3).mean()
         macd_df = (mean_3 - mean_all) / (std_all + 1e-8)
 
-        vol_raw = vol_df.fillna(0.0).values.astype(np.float32)
-        mom_raw = momentum_df.fillna(0.0).values.astype(np.float32)
-        rsi_raw = rsi_df.fillna(0.0).values.astype(np.float32)
+        # 5. NEW: BTC Macro Features & Relative Strength
+        btc_symbol = (
+            "BTCUSDT"
+            if "BTCUSDT" in self.prices_df.columns
+            else self.prices_df.columns[0]
+        )
+        btc_mom = momentum_df[btc_symbol]
+        btc_vol = vol_df[btc_symbol]
+
+        # Relative Strength: (Altcoin Return) - (BTC Return) over window W
+        rel_mom_df = momentum_df.sub(btc_mom, axis=0)
+
+        # -------------------------------------------------------------
+        # Time-Series Normalization (Rolling 100-bar Z-Score)
+        # Replaces broken cross-sectional (axis=1) normalization!
+        # -------------------------------------------------------------
+        def rolling_zscore(df: pd.DataFrame, window: int = 100) -> pd.DataFrame:
+            r = df.rolling(window=window, min_periods=10)
+            return (df - r.mean()) / (r.std() + 1e-8)
+
+        vol_norm = rolling_zscore(vol_df).fillna(0.0).values.astype(np.float32)
+        mom_norm = rolling_zscore(momentum_df).fillna(0.0).values.astype(np.float32)
+        rel_mom_norm = rolling_zscore(rel_mom_df).fillna(0.0).values.astype(np.float32)
         macd_raw = macd_df.fillna(0.0).values.astype(np.float32)
+        rsi_raw = rsi_df.fillna(0.0).values.astype(np.float32)
 
-        # Normalization
-        vol_row_means = np.mean(vol_raw, axis=1, keepdims=True)
-        vol_row_stds = np.std(vol_raw, axis=1, keepdims=True)
-        vol_norm = (vol_raw - vol_row_means) / (vol_row_stds + 1e-8)
+        btc_mom_norm = (
+            rolling_zscore(btc_mom.to_frame())[btc_symbol]
+            .fillna(0.0)
+            .values.astype(np.float32)
+        )
+        btc_vol_norm = (
+            rolling_zscore(btc_vol.to_frame())[btc_symbol]
+            .fillna(0.0)
+            .values.astype(np.float32)
+        )
 
-        mom_row_means = np.mean(mom_raw, axis=1, keepdims=True)
-        mom_row_stds = np.std(mom_raw, axis=1, keepdims=True)
-        mom_norm = (mom_raw - mom_row_means) / (mom_row_stds + 1e-8)
-
-        # PACK ALL STATIC FEATURES INTO ONE MASTER MATRIX (T+1, static_dim)
-        # Layout per row: [prices_flat (W*N) | vol (N) | mom (N) | rsi (N) | macd (N)]
+        # PACK ALL STATIC FEATURES INTO MASTER MATRIX (T+1, static_dim)
         self.precalc_static_obs = np.zeros((T + 1, self.static_dim), dtype=np.float32)
-        
+
         for t in range(W, T):
             window = self.prices_arr[t - W : t]
             last_price = self.prices_arr[t - 1]
             norm_win = ((window / last_price) - 1.0).ravel()
-            
-            # Pack contiguously into the master matrix
+
             idx = 0
-            self.precalc_static_obs[t, idx : idx + W*N] = norm_win
-            idx += W*N
+            # Pack window relative prices
+            self.precalc_static_obs[t, idx : idx + W * N] = norm_win
+            idx += W * N
+
+            # Pack per-asset normalized indicators
             self.precalc_static_obs[t, idx : idx + N] = vol_norm[t]
             idx += N
             self.precalc_static_obs[t, idx : idx + N] = mom_norm[t]
@@ -196,8 +229,15 @@ class MinimalCryptoEnv(gym.Env):
             self.precalc_static_obs[t, idx : idx + N] = rsi_raw[t]
             idx += N
             self.precalc_static_obs[t, idx : idx + N] = macd_raw[t]
+            idx += N
+            self.precalc_static_obs[t, idx : idx + N] = rel_mom_norm[t]  # NEW
+            idx += N
 
-        # Handle terminal step boundary safely
+            # Pack global BTC macro features
+            self.precalc_static_obs[t, idx] = btc_mom_norm[t]  # NEW
+            self.precalc_static_obs[t, idx + 1] = btc_vol_norm[t]  # NEW
+
+        # Handle terminal boundary
         self.precalc_static_obs[T] = self.precalc_static_obs[T - 1]
 
     # ------------------------------------------------------------------
@@ -222,7 +262,9 @@ class MinimalCryptoEnv(gym.Env):
                 df_log = pd.DataFrame(self.log_buffer)
                 df_log.to_parquet(self.log_file_path, index=False)
             except Exception as e:
-                print(f"Warning: Failed to write action log to {self.log_file_path}: {e}")
+                print(
+                    f"Warning: Failed to write action log to {self.log_file_path}: {e}"
+                )
             self.log_buffer = []
 
     def log_action(
@@ -282,9 +324,12 @@ class MinimalCryptoEnv(gym.Env):
         # Tier 3A: resample a fresh random time window each episode when enabled.
         if self.parquet_path is not None:
             from crypto_rl.data import read_last_n
+
             new_df = read_last_n(self.parquet_path, n=self.n_rows)
-            self.prices_df = new_df.pivot(
-                index="open_time", columns="symbol", values="close"
+            self.prices_df = self._pivot_dataframe(new_df)
+            assert self.prices_df.shape[1] == self.num_assets, (
+                f"Asset count mismatch! Expected {self.num_assets} coins, "
+                f"but sampled window only contained {self.prices_df.shape[1]}."
             )
             # Re-run precalculation on the newly selected price distribution
             self._precalculate_indicators()
@@ -310,7 +355,7 @@ class MinimalCryptoEnv(gym.Env):
 
     def _get_obs(self) -> np.ndarray:
         # 1. Zero-copy write of all static features (prices_flat, vol, mom, rsi, macd)
-        self.obs_buf[:self.static_dim] = self.precalc_static_obs[self.current_step]
+        self.obs_buf[: self.static_dim] = self.precalc_static_obs[self.current_step]
 
         # 2. Fast scalar calculations
         current_prices = self.prices_arr[self.current_step - 1]
@@ -322,12 +367,14 @@ class MinimalCryptoEnv(gym.Env):
             self.obs_buf[idx] = self.cash / total_val
             idx += 1
             # Write holdings_pct directly into the buffer slice
-            self.obs_buf[idx : idx + self.num_assets] = (self.holdings * current_prices) / total_val
+            self.obs_buf[idx : idx + self.num_assets] = (
+                self.holdings * current_prices
+            ) / total_val
         else:
             self.obs_buf[idx] = 0.0
             idx += 1
             self.obs_buf[idx : idx + self.num_assets] = 0.0
-            
+
         idx += self.num_assets
 
         # 3. Fast boolean masking for unrealised PnL (Bypasses slow np.divide ufunc)
@@ -337,7 +384,7 @@ class MinimalCryptoEnv(gym.Env):
             self.unrealised_pnl_buf[mask] = (
                 current_prices[mask] - self.avg_entry_price[mask]
             ) / self.avg_entry_price[mask]
-            
+
         self.obs_buf[idx : idx + self.num_assets] = self.unrealised_pnl_buf
         idx += self.num_assets
 
@@ -349,15 +396,15 @@ class MinimalCryptoEnv(gym.Env):
 
     def step(self, action):
         prev_portfolio_value = self.portfolio_value
-        
+
         # Pull step pricing boundaries from high-speed pre-allocated Numpy slices
         current_prices = self.prices_arr[self.current_step - 1]
         next_prices = self.prices_arr[self.current_step]
-        
+
         trade_price = 0.0
         trade_units = 0.0
         fee_paid = 0.0
-        self.last_remap_note = None  
+        self.last_remap_note = None
         realised_pnl = 0.0
         step_penalty = 0.0
         is_valid_sell = False
@@ -365,7 +412,7 @@ class MinimalCryptoEnv(gym.Env):
 
         if self.action_space_type == "continuous":
             threshold = 0.05
-            
+
             # Sells: action[i] < -threshold
             sells = []
             for i in range(self.num_assets):
@@ -374,11 +421,11 @@ class MinimalCryptoEnv(gym.Env):
                     amount_pct = np.clip(abs(act_val), 0.0, 1.0)
                     buy_fraction = min(amount_pct, self.max_single_step_allocation)
                     sells.append((i, amount_pct))
-            
+
             trade_prices = np.zeros(self.num_assets, dtype=np.float32)
             trade_units_dict = np.zeros(self.num_assets, dtype=np.float32)
             fees_paid_dict = np.zeros(self.num_assets, dtype=np.float32)
-            
+
             # Execute sells
             for asset_idx, amount_pct in sells:
                 if self.holdings[asset_idx] > 0:
@@ -395,20 +442,24 @@ class MinimalCryptoEnv(gym.Env):
                         self.fees_paid_total += fee_paid_asset
                         fee_paid += fee_paid_asset
                         self.trades_count += 1
-                        
+
                         trade_prices[asset_idx] = t_price
                         trade_units_dict[asset_idx] = t_units
                         fees_paid_dict[asset_idx] = fee_paid_asset
-                        
+
                         if self.holdings[asset_idx] <= 1e-9:
                             self.avg_entry_price[asset_idx] = 0.0
                             self.total_cost_basis[asset_idx] = 0.0
                         else:
-                            self.total_cost_basis[asset_idx] *= self.holdings[asset_idx] / (self.holdings[asset_idx] + units_to_sell)
-                        
-                        asset_realised_pnl = proceeds - (t_units * self.avg_entry_price[asset_idx])
+                            self.total_cost_basis[asset_idx] *= self.holdings[
+                                asset_idx
+                            ] / (self.holdings[asset_idx] + units_to_sell)
+
+                        asset_realised_pnl = proceeds - (
+                            t_units * self.avg_entry_price[asset_idx]
+                        )
                         realised_pnl += asset_realised_pnl
-                        
+
                         # Profit bonus hurdle
                         if asset_realised_pnl > 0:
                             hurdle = t_units * t_price * 0.002
@@ -418,7 +469,7 @@ class MinimalCryptoEnv(gym.Env):
                     # Illegal SELL: no holdings
                     # step_penalty += self.illegal_sell_penalty * self.portfolio_value
                     pass
-            
+
             # Buys: action[i] > threshold
             buys = []
             for i in range(self.num_assets):
@@ -426,21 +477,21 @@ class MinimalCryptoEnv(gym.Env):
                 if act_val > threshold:
                     amount_pct = np.clip(act_val, 0.0, 1.0)
                     buys.append((i, amount_pct))
-                    
+
             sum_buys = sum(amount_pct for _, amount_pct in buys)
             cash_available = self.cash
-            
+
             for asset_idx, amount_pct in buys:
                 if cash_available <= 1e-9:
                     # step_penalty += self.illegal_buy_penalty * self.portfolio_value
                     continue
-                
+
                 # Normalize buy amount if sum of buy fractions > 1.0
                 if sum_buys > 1.0:
                     buy_fraction = amount_pct / sum_buys
                 else:
                     buy_fraction = amount_pct
-                
+
                 buy_amount_usd = cash_available * buy_fraction
                 if buy_amount_usd > 0:
                     t_price = current_prices[asset_idx]
@@ -458,7 +509,7 @@ class MinimalCryptoEnv(gym.Env):
                         if self.holdings[asset_idx] > 0
                         else 0.0
                     )
-                    
+
                     trade_prices[asset_idx] = t_price
                     trade_units_dict[asset_idx] = t_units
                     fees_paid_dict[asset_idx] = fee_paid_asset
@@ -470,7 +521,7 @@ class MinimalCryptoEnv(gym.Env):
             amount_pct = np.clip(amount_pct, 0.0, 1.0)
             if action_type == 0:
                 amount_pct = 0.0
-            
+
             if action_type == 1:  # Buy
                 if amount_pct == 0.0:
                     step_penalty += self.empty_buy_penalty * self.portfolio_value
@@ -495,7 +546,8 @@ class MinimalCryptoEnv(gym.Env):
                             self.trades_count += 1
                             self.total_cost_basis[asset_idx] += amount_after_fee
                             self.avg_entry_price[asset_idx] = (
-                                self.total_cost_basis[asset_idx] / self.holdings[asset_idx]
+                                self.total_cost_basis[asset_idx]
+                                / self.holdings[asset_idx]
                                 if self.holdings[asset_idx] > 0
                                 else 0.0
                             )
@@ -522,8 +574,12 @@ class MinimalCryptoEnv(gym.Env):
                                 self.avg_entry_price[asset_idx] = 0.0
                                 self.total_cost_basis[asset_idx] = 0.0
                             else:
-                                self.total_cost_basis[asset_idx] *= self.holdings[asset_idx] / (self.holdings[asset_idx] + units_to_sell)
-                            realised_pnl = proceeds - (trade_units * self.avg_entry_price[asset_idx])
+                                self.total_cost_basis[asset_idx] *= self.holdings[
+                                    asset_idx
+                                ] / (self.holdings[asset_idx] + units_to_sell)
+                            realised_pnl = proceeds - (
+                                trade_units * self.avg_entry_price[asset_idx]
+                            )
                     else:
                         step_penalty += self.illegal_sell_penalty * self.portfolio_value
                         action_type = 0
@@ -579,6 +635,9 @@ class MinimalCryptoEnv(gym.Env):
             terminal_return = (self.portfolio_value - BUDGET_INITIAL) / BUDGET_INITIAL
             reward += terminal_return * 5.0  # 10.0
 
+        if step_penalty >= 0.1:
+            logging.debug(f"High step penalty value (>= 0.1): {step_penalty}")
+
         # Subtract the accumulated logic penalties directly from the reward
         reward -= step_penalty
 
@@ -612,7 +671,7 @@ class MinimalCryptoEnv(gym.Env):
                             fee=fees_paid_dict[i],
                         )
                         logged_any = True
-                
+
                 if not logged_any:
                     eff_action = np.array([0, 0, 0.0])
                     self.log_action(
@@ -622,7 +681,9 @@ class MinimalCryptoEnv(gym.Env):
                         prev_portfolio_value,
                     )
             else:
-                effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
+                effective_action = np.array(
+                    [action_type, asset_idx, amount_pct * 100.0]
+                )
                 self.log_action(
                     self.current_step,
                     effective_action,

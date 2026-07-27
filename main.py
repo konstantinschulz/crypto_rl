@@ -13,6 +13,8 @@ from crypto_rl import MinimalCryptoEnv, read_last_n
 from crypto_rl.callbacks import DashboardCallback, TrialEvalCallback
 from crypto_rl.cli import build_parser
 from crypto_rl.data import read_train_test
+from scripts.eval_log_action_counter import eval_log_action_counter
+from scripts.eval_report import eval_report
 
 # Global budget variable required by other parts of the package
 global BUDGET_INITIAL
@@ -304,6 +306,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         except Exception as e:
             print(f"Error updating dashboard state: {e}")
 
+    eval_log_action_counter()
+    eval_report()
     # Return mean of multi‑seed portfolio values (or single test if none)
     if multi_seed_pv:
         return float(np.mean(multi_seed_pv))

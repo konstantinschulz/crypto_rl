@@ -24,9 +24,17 @@ except Exception:
     pq = None  # type: ignore
     ds = None  # type: ignore
 
-#TODO: add more coins once the training setup is somewhat stable
-# The canonical list of symbols to trade, in priority order.
-DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+DEFAULT_SYMBOLS = [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "LINKUSDT",
+    "NEARUSDT",
+    "UNIUSDT",
+]
 
 
 def read_last_n(path: str, n: int = 10000) -> pd.DataFrame:
@@ -60,6 +68,28 @@ def read_last_n(path: str, n: int = 10000) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
+def _get_symbol_start_times(dataset: ds.Dataset, symbols: list[str]) -> dict[str, int]:
+    """Fast metadata scan to find the minimum (earliest) timestamp for each symbol,
+    bypassing Arrow dictionary unification errors by using pandas per-symbol extraction.
+    """
+    start_times = {}
+
+    # Scanning symbol by symbol avoids cross-chunk dictionary type mismatches
+    for symbol in symbols:
+        try:
+            symbol_filter = ds.field("symbol") == symbol
+            # Pull only open_time for this specific symbol
+            t = dataset.to_table(columns=["open_time"], filter=symbol_filter)
+            if t.num_rows > 0:
+                # Use numpy min on the chunked array directly (very fast, zero-copy conversion)
+                min_time = np.min(t.column("open_time").to_numpy())
+                start_times[symbol] = int(min_time)
+        except Exception as e:
+            print(f"[Warning] Could not retrieve start time for {symbol}: {e}")
+
+    return start_times
+
+
 def _pick_symbols(available: list[str]) -> list[str]:
     """Return the preferred symbols that are present in *available*."""
     symbols = [s for s in DEFAULT_SYMBOLS if s in available]
@@ -91,20 +121,39 @@ def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
 
 
 def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
-    """Memory-efficient path using PyArrow row-group-aware reads."""
+    """Memory-efficient path with dynamic, metadata-driven time anchoring."""
     dataset = ds.dataset(path, format="parquet")
-    symbols = DEFAULT_SYMBOLS
+
+    # 1. Inspect file metadata to see which symbols from our desired list exist on disk
+    available_in_file = set(
+        dataset.to_table(columns=["symbol"]).column("symbol").unique().to_pylist()
+    )
+    symbols = [s for s in DEFAULT_SYMBOLS if s in available_in_file]
+
+    if not symbols:
+        raise ValueError(f"None of {DEFAULT_SYMBOLS} were found in {path}.")
+
     k = max(1, n // len(symbols))
 
-    # Load open times of BTCUSDT to determine a random time window
-    btc_filter = ds.field("symbol") == "BTCUSDT"
-    btc_open_times = (
-        dataset.to_table(columns=["open_time"], filter=btc_filter)
+    # 2. DYNAMIC DETECTION: Get exact start timestamps for all available coins
+    start_times_map = _get_symbol_start_times(dataset, symbols)
+
+    # 3. The youngest coin is the one with the maximum start timestamp
+    anchor_symbol = max(symbols, key=lambda s: start_times_map.get(s, 0))
+
+    # 4. Extract all valid timestamps for our automatically selected anchor
+    anchor_filter = ds.field("symbol") == anchor_symbol
+    valid_open_times = (
+        dataset.to_table(columns=["open_time"], filter=anchor_filter)
         .column("open_time")
         .to_numpy()
     )
 
-    t_start, t_end = _random_window(btc_open_times, k)
+    if len(valid_open_times) == 0:
+        raise ValueError(f"Anchor symbol '{anchor_symbol}' returned 0 timestamps!")
+
+    # 5. Sample a random window that is guaranteed to contain all symbols
+    t_start, t_end = _random_window(valid_open_times, k)
 
     query_filter = (
         ds.field("symbol").isin(symbols)
