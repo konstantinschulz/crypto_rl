@@ -12,21 +12,21 @@ import argparse
 
 def objective(trial):
     lr = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
-    ent = trial.suggest_float("ent", 1e-4, 0.1, log=True)
-    gamma = trial.suggest_float("gamma", 0.90, 0.999999)
+    ent = trial.suggest_float("ent", 1e-6, 1e-3, log=True)
+    gamma = trial.suggest_float("gamma", 0.99, 0.999999)
     # n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048])
     # clip = trial.suggest_float("clip", 0.1, 0.4)
-    pb = trial.suggest_float("profit_bonus", 0.15, 1.5)
-    bs = trial.suggest_categorical("batch_size", [64, 128, 256])  # 128, 256, 512
-    hcr = trial.suggest_float("hold_cost_rate", 0.00001, 0.0000001)
+    pb = trial.suggest_float("profit_bonus", 0.65, 4.0)
+    bs = trial.suggest_categorical("batch_size", [128, 256, 512])  # 128, 256, 512
+    hcr = trial.suggest_float("hold_cost_rate", 1e-7, 1e-4)
 
     cmd = [
         sys.executable,
         "main.py",
         "--rows",
-        "10000",
+        "10000",  # 10000
         "--timesteps",
-        "30000",
+        "30000",  # 30000
         "--learning-rate",
         str(lr),
         "--ent-coef",
@@ -62,6 +62,7 @@ if __name__ == "__main__":
         storage="sqlite:///optuna.db",
         study_name="crypto_rl_v1",
         load_if_exists=True,
+        pruner=optuna.pruners.MedianPruner(),
     )
     study.optimize(objective, n_trials=args.n_trials, n_jobs=1)
     print("Best params:", study.best_params)

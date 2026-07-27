@@ -18,7 +18,7 @@ BUDGET_INITIAL = 100.0
 
 class MinimalCryptoEnv(gym.Env):
     """
-    A slightly less minimal Crypto Trading Environment with multiple assets and variable trade amounts.
+    A highly optimized Crypto Trading Environment with multiple assets and variable trade amounts.
 
     Observation space
     -----------------
@@ -67,9 +67,10 @@ class MinimalCryptoEnv(gym.Env):
         parquet_path: str | None = None,
         n_rows: int = 0,
         action_space_type: str = "continuous",
+        max_single_step_allocation: float = 0.5,
+        disable_logging: bool = False,  # <-- Set True during Optuna HPO!
     ):
         super().__init__()
-        # Pivot the dataframe so columns are symbols, index is timestamp, values are 'close'
         self.prices_df = prices_df.pivot(
             index="open_time", columns="symbol", values="close"
         )
@@ -85,12 +86,13 @@ class MinimalCryptoEnv(gym.Env):
         self.illegal_buy_penalty = illegal_buy_penalty
         self.trade_freq_incentive = trade_freq_incentive
         self.profit_bonus = profit_bonus
+        self.max_single_step_allocation = max_single_step_allocation
+        self.disable_logging = disable_logging
         self.fees_paid_total = 0.0
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
         self.asset_names = self.prices_df.columns.tolist()
         
-        # Action space setup
         self.action_space_type = action_space_type
         if self.action_space_type == "continuous":
             self.action_space = spaces.Box(
@@ -99,46 +101,129 @@ class MinimalCryptoEnv(gym.Env):
         else:
             self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
 
-        # Observation: window price changes + cash_pct + holdings_pct + unrealised_pnl_pct + volatility + momentum + rsi + macd
-        obs_dim = (
-            (window_size * self.num_assets) + 1 + 6 * self.num_assets
-        )
+        # Dimension breakdown:
+        # Static: prices_flat (W*N) + vol (N) + mom (N) + rsi (N) + macd (N) = (W + 4)*N
+        # Dynamic: cash_pct (1) + holdings_pct (N) + unrealised_pnl_pct (N) + has_position (N) = 1 + 3*N
+        self.static_dim = (window_size + 4) * self.num_assets
+        self.has_position_dim = self.num_assets
+        obs_dim = self.static_dim + 1 + (3 * self.num_assets)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
-        # Internal state
+        # Pre-allocate a single static buffer for observations to eliminate np.concatenate
+        self.obs_buf = np.zeros(obs_dim, dtype=np.float32)
+        # Pre-allocate dynamic slice buffers
+        self.unrealised_pnl_buf = np.zeros(self.num_assets, dtype=np.float32)
+
         self.current_step = self.window_size
         self.cash = BUDGET_INITIAL
-        self.holdings = np.zeros(self.num_assets)  # units of each asset
+        self.holdings = np.zeros(self.num_assets, dtype=np.float32)
         self.portfolio_value = BUDGET_INITIAL
         self.episode_count = 0
 
-        self.action_log = None
+        self.log_buffer = []
         self.log_file_path = None
-        # Internal state for tracking average entry price and total cost basis
-        self.avg_entry_price = np.zeros(self.num_assets)
-        self.total_cost_basis = np.zeros(self.num_assets)
-        # Tier 3A: set parquet_path + n_rows on the env to enable per-episode window resampling
+        self.last_remap_note = None
+        self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
+        self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
         self.parquet_path: str | None = None
         self.n_rows: int = 0
+
+        self._precalculate_indicators()
+
+    def _precalculate_indicators(self) -> None:
+        """Pre-calculates and packs all static features into a single master matrix."""
+        self.prices_arr = self.prices_df.values.astype(np.float32)
+        T = self.prices_df.shape[0]
+        N = self.num_assets
+        W = self.window_size
+
+        # 1. Vectorized Volatility
+        returns_df = self.prices_df.pct_change()
+        vol_df = returns_df.rolling(window=W - 1, min_periods=W - 1).std()
+        
+        # 2. Vectorized Momentum
+        momentum_df = (self.prices_df / self.prices_df.shift(W)) - 1.0
+
+        # 3. Vectorized RSI
+        delta = self.prices_df.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rs_df = avg_gain / (avg_loss + 1e-8)
+        rsi_df = (rs_df / (1 + rs_df)) * 2.0 - 1.0
+
+        # 4. Vectorized MACD
+        rolling_window = self.prices_df.rolling(window=W, min_periods=W)
+        mean_all = rolling_window.mean()
+        std_all = rolling_window.std()
+        mean_3 = self.prices_df.rolling(window=3, min_periods=3).mean()
+        macd_df = (mean_3 - mean_all) / (std_all + 1e-8)
+
+        vol_raw = vol_df.fillna(0.0).values.astype(np.float32)
+        mom_raw = momentum_df.fillna(0.0).values.astype(np.float32)
+        rsi_raw = rsi_df.fillna(0.0).values.astype(np.float32)
+        macd_raw = macd_df.fillna(0.0).values.astype(np.float32)
+
+        # Normalization
+        vol_row_means = np.mean(vol_raw, axis=1, keepdims=True)
+        vol_row_stds = np.std(vol_raw, axis=1, keepdims=True)
+        vol_norm = (vol_raw - vol_row_means) / (vol_row_stds + 1e-8)
+
+        mom_row_means = np.mean(mom_raw, axis=1, keepdims=True)
+        mom_row_stds = np.std(mom_raw, axis=1, keepdims=True)
+        mom_norm = (mom_raw - mom_row_means) / (mom_row_stds + 1e-8)
+
+        # PACK ALL STATIC FEATURES INTO ONE MASTER MATRIX (T+1, static_dim)
+        # Layout per row: [prices_flat (W*N) | vol (N) | mom (N) | rsi (N) | macd (N)]
+        self.precalc_static_obs = np.zeros((T + 1, self.static_dim), dtype=np.float32)
+        
+        for t in range(W, T):
+            window = self.prices_arr[t - W : t]
+            last_price = self.prices_arr[t - 1]
+            norm_win = ((window / last_price) - 1.0).ravel()
+            
+            # Pack contiguously into the master matrix
+            idx = 0
+            self.precalc_static_obs[t, idx : idx + W*N] = norm_win
+            idx += W*N
+            self.precalc_static_obs[t, idx : idx + N] = vol_norm[t]
+            idx += N
+            self.precalc_static_obs[t, idx : idx + N] = mom_norm[t]
+            idx += N
+            self.precalc_static_obs[t, idx : idx + N] = rsi_raw[t]
+            idx += N
+            self.precalc_static_obs[t, idx : idx + N] = macd_raw[t]
+
+        # Handle terminal step boundary safely
+        self.precalc_static_obs[T] = self.precalc_static_obs[T - 1]
 
     # ------------------------------------------------------------------
     # Logging helpers
     # ------------------------------------------------------------------
 
     def _init_log(self, run_id: str = "default") -> None:
-        """Initialize per-run action log."""
-        # Create a dedicated subdirectory for this run (e.g., logs/run-20260602-130000-minimal)
+        """Initialize per-run action log path and clear in-memory log buffer."""
         log_root = Path("logs")
         run_log_dir = log_root / run_id
         run_log_dir.mkdir(parents=True, exist_ok=True)
-        # Log file now only needs episode and timestamp info
         prefix = "actions_eval" if self.is_eval else "actions"
         self.log_file_path = (
-            run_log_dir / f"{prefix}_ep{self.episode_count}_{int(time.time())}.jsonl"
+            run_log_dir / f"{prefix}_ep{self.episode_count}_{int(time.time())}.parquet"
         )
-        self.action_log = open(self.log_file_path, "a", encoding="utf-8")
+        self.log_buffer = []
+
+    def _flush_log_parquet(self) -> None:
+        """Write buffered log entries to a single Parquet file at the end of an episode."""
+        if not self.disable_logging and self.log_buffer and self.log_file_path:
+            try:
+                df_log = pd.DataFrame(self.log_buffer)
+                df_log.to_parquet(self.log_file_path, index=False)
+            except Exception as e:
+                print(f"Warning: Failed to write action log to {self.log_file_path}: {e}")
+            self.log_buffer = []
 
     def log_action(
         self,
@@ -150,8 +235,8 @@ class MinimalCryptoEnv(gym.Env):
         trade_units: float = 0.0,
         fee: float = 0.0,
     ) -> None:
-        """Record step details in a storage-efficient, human-readable JSONL format."""
-        if self.action_log:
+        """Record step details into the in-memory log buffer."""
+        if not self.disable_logging:
             action_type_idx = int(action[0])
             action_types = {0: "HOLD", 1: "BUY", 2: "SELL"}
             action_type_str = action_types.get(action_type_idx, "UNKNOWN")
@@ -164,26 +249,20 @@ class MinimalCryptoEnv(gym.Env):
             )
 
             entry = {
-                "episode": self.episode_count,
-                "step": step,
+                "episode": int(self.episode_count),
+                "step": int(step),
                 "action_type": action_type_str,
                 "symbol": asset_str,
                 "amount_pct": float(action[2]),
                 "reward": float(reward),
                 "portfolio": float(portfolio),
+                "note": self.last_remap_note if self.last_remap_note else "",
+                "price": float(trade_price),
+                "units": float(trade_units),
+                "fee": float(fee),
             }
-            if self.last_remap_note:
-                entry["note"] = self.last_remap_note
-            if trade_price > 0:
-                entry["price"] = float(trade_price)
-                entry["units"] = float(trade_units)
-            if fee > 0:
-                entry["fee"] = float(fee)
 
-            self.action_log.write(json.dumps(entry) + "\n")
-            if step % 1000 == 0:
-                self.action_log.flush()
-            # Reset flag after logging
+            self.log_buffer.append(entry)
             self.last_invalid_sell = False
             self.last_remap_note = None
 
@@ -193,116 +272,92 @@ class MinimalCryptoEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+
+        # Flush previous episode logs to Parquet before starting a new episode
+        if not self.disable_logging and self.log_buffer:
+            self._flush_log_parquet()
+
         self.episode_count += 1
 
         # Tier 3A: resample a fresh random time window each episode when enabled.
-        # Set train_env.parquet_path and train_env.n_rows in main.py to activate.
         if self.parquet_path is not None:
             from crypto_rl.data import read_last_n
             new_df = read_last_n(self.parquet_path, n=self.n_rows)
             self.prices_df = new_df.pivot(
                 index="open_time", columns="symbol", values="close"
             )
+            # Re-run precalculation on the newly selected price distribution
+            self._precalculate_indicators()
 
-        # Close old log file if open to start a new file for the new episode
-        if self.action_log is not None:
-            self.action_log.close()
-            self.action_log = None
-
-        if self.action_log is None:
+        if not self.disable_logging:
             self._init_log(run_id=self.run_id)
 
         self.current_step = self.window_size
         self.cash = BUDGET_INITIAL
-        self.holdings = np.zeros(self.num_assets)
+        self.holdings = np.zeros(self.num_assets, dtype=np.float32)
         self.portfolio_value = BUDGET_INITIAL
         self.fees_paid_total = 0.0
         self.trades_count = 0
-        self.avg_entry_price = np.zeros(self.num_assets)
-        self.total_cost_basis = np.zeros(self.num_assets)
-        # 1C: vol/mom are now normalised per-step inside _get_obs(); no stale episode anchor needed.
+        self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
+        self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
         return self._get_obs(), {"fees_paid": 0.0}
 
     def close(self) -> None:
-        """Cleanly close resources."""
-        if self.action_log:
-            self.action_log.close()
-            self.action_log = None
+        """Cleanly close resources and flush pending logs."""
+        if not self.disable_logging and self.log_buffer:
+            self._flush_log_parquet()
         super().close()
 
     def _get_obs(self) -> np.ndarray:
-        # Return the last 'window_size' prices as simple percentage changes for all assets
-        window = self.prices_df.iloc[
-            self.current_step - self.window_size : self.current_step
-        ]
-        # Normalize each asset's window by its last price in the window
-        normalized = (window / window.iloc[-1]) - 1.0
-        prices_flat = normalized.values.astype(np.float32).flatten()
+        # 1. Zero-copy write of all static features (prices_flat, vol, mom, rsi, macd)
+        self.obs_buf[:self.static_dim] = self.precalc_static_obs[self.current_step]
 
-        # Calculate current asset values and portfolio value
-        current_prices = self.prices_df.iloc[self.current_step - 1].values
+        # 2. Fast scalar calculations
+        current_prices = self.prices_arr[self.current_step - 1]
         asset_value = np.sum(self.holdings * current_prices)
         total_val = self.cash + asset_value
 
+        idx = self.static_dim
         if total_val > 0:
-            cash_pct = self.cash / total_val
-            holdings_pct = (self.holdings * current_prices) / total_val
+            self.obs_buf[idx] = self.cash / total_val
+            idx += 1
+            # Write holdings_pct directly into the buffer slice
+            self.obs_buf[idx : idx + self.num_assets] = (self.holdings * current_prices) / total_val
         else:
-            cash_pct = 0.0
-            holdings_pct = np.zeros(self.num_assets)
+            self.obs_buf[idx] = 0.0
+            idx += 1
+            self.obs_buf[idx : idx + self.num_assets] = 0.0
+            
+        idx += self.num_assets
 
-        # Per-asset unrealised PnL % relative to average entry price.
-        # Zero when no position is held (avg_entry_price == 0).
-        unrealised_pnl_pct = np.divide(
-            current_prices - self.avg_entry_price,
-            self.avg_entry_price,
-            out=np.zeros_like(current_prices),
-            where=self.avg_entry_price != 0,
-        ).astype(np.float32)
+        # 3. Fast boolean masking for unrealised PnL (Bypasses slow np.divide ufunc)
+        self.unrealised_pnl_buf.fill(0.0)
+        mask = self.avg_entry_price > 0
+        if np.any(mask):
+            self.unrealised_pnl_buf[mask] = (
+                current_prices[mask] - self.avg_entry_price[mask]
+            ) / self.avg_entry_price[mask]
+            
+        self.obs_buf[idx : idx + self.num_assets] = self.unrealised_pnl_buf
+        idx += self.num_assets
 
-        # Volatility: standard deviation of per‑asset returns over the observation window
-        returns = window.pct_change().dropna()
-        volatility = returns.std().astype(np.float32).values  # shape (num_assets,)
-        # Momentum: total return from first to last price in the window
-        momentum = ((window.iloc[-1] / window.iloc[0]) - 1.0).astype(np.float32).values
-        # 1C: per-step rolling normalisation — avoids stale episode-anchor saturation.
-        # If all assets have identical vol/momentum (degenerate window), std ≈ 0; the
-        # epsilon guard keeps values finite without producing exploding obs.
-        volatility = (volatility - volatility.mean()) / (volatility.std() + 1e-8)
-        momentum   = (momentum  - momentum.mean())   / (momentum.std()  + 1e-8)
-        
-        # Calculate RSI and MACD for each asset
-        def _rsi(prices: np.ndarray, period: int = 14) -> float:
-            deltas = np.diff(prices)
-            gains  = np.where(deltas > 0, deltas, 0.0).mean()
-            losses = np.where(deltas < 0, -deltas, 0.0).mean()
-            rs = gains / (losses + 1e-8)
-            return (rs / (1 + rs)) * 2 - 1  # scaled to [-1, 1]
+        # 4. Binary per-asset position flags
+        has_position = (self.holdings > 1e-9).astype(np.float32)
+        self.obs_buf[idx : idx + self.num_assets] = has_position
 
-        rsi_vals = np.zeros(self.num_assets, dtype=np.float32)
-        macd_vals = np.zeros(self.num_assets, dtype=np.float32)
-        for i, col in enumerate(self.prices_df.columns):
-            col_prices = window[col].values
-            rsi_vals[i]  = _rsi(col_prices)
-            macd_vals[i] = (np.mean(col_prices[-3:]) - np.mean(col_prices)) / (np.std(col_prices) + 1e-8)
-
-        obs = np.concatenate(
-            [prices_flat, [cash_pct], holdings_pct, unrealised_pnl_pct, volatility, momentum, rsi_vals, macd_vals]
-        )
-        return obs
+        return self.obs_buf
 
     def step(self, action):
-        # Store previous portfolio value for reward calculation
         prev_portfolio_value = self.portfolio_value
-        # Get current and next prices for all assets
-        current_prices = self.prices_df.iloc[self.current_step - 1].values
-        next_prices = self.prices_df.iloc[self.current_step].values
         
-        # Initialize variables
+        # Pull step pricing boundaries from high-speed pre-allocated Numpy slices
+        current_prices = self.prices_arr[self.current_step - 1]
+        next_prices = self.prices_arr[self.current_step]
+        
         trade_price = 0.0
         trade_units = 0.0
         fee_paid = 0.0
-        self.last_remap_note = None  # Reset any previous note for this step
+        self.last_remap_note = None  
         realised_pnl = 0.0
         step_penalty = 0.0
         is_valid_sell = False
@@ -317,11 +372,12 @@ class MinimalCryptoEnv(gym.Env):
                 act_val = action[i]
                 if act_val < -threshold:
                     amount_pct = np.clip(abs(act_val), 0.0, 1.0)
+                    buy_fraction = min(amount_pct, self.max_single_step_allocation)
                     sells.append((i, amount_pct))
             
-            trade_prices = np.zeros(self.num_assets)
-            trade_units_dict = np.zeros(self.num_assets)
-            fees_paid_dict = np.zeros(self.num_assets)
+            trade_prices = np.zeros(self.num_assets, dtype=np.float32)
+            trade_units_dict = np.zeros(self.num_assets, dtype=np.float32)
+            fees_paid_dict = np.zeros(self.num_assets, dtype=np.float32)
             
             # Execute sells
             for asset_idx, amount_pct in sells:
@@ -360,7 +416,8 @@ class MinimalCryptoEnv(gym.Env):
                                 profit_bonus_reward += self.profit_bonus
                 else:
                     # Illegal SELL: no holdings
-                    step_penalty += self.illegal_sell_penalty * self.portfolio_value
+                    # step_penalty += self.illegal_sell_penalty * self.portfolio_value
+                    pass
             
             # Buys: action[i] > threshold
             buys = []
@@ -375,7 +432,7 @@ class MinimalCryptoEnv(gym.Env):
             
             for asset_idx, amount_pct in buys:
                 if cash_available <= 1e-9:
-                    step_penalty += self.illegal_buy_penalty * self.portfolio_value
+                    # step_penalty += self.illegal_buy_penalty * self.portfolio_value
                     continue
                 
                 # Normalize buy amount if sum of buy fractions > 1.0
@@ -477,9 +534,9 @@ class MinimalCryptoEnv(gym.Env):
                     amount_pct = 0.0
                     self.last_remap_note = "invalid asset index remapped to HOLD"
 
-        # Advance time
+        # Advance time steps
         self.current_step += 1
-        done = self.current_step >= len(self.prices_df)
+        done = self.current_step >= self.prices_arr.shape[0]
 
         # Update portfolio value based on new prices for held assets
         current_asset_value = np.sum(self.holdings * next_prices)
@@ -494,7 +551,7 @@ class MinimalCryptoEnv(gym.Env):
             )
             asset_returns = (next_prices - current_prices) / current_prices
             market_return = np.mean(asset_returns)
-            reward = (portfolio_return - market_return) * 100.0
+            reward = (portfolio_return - market_return) * 10.0  # 100.0
 
             # Penalise open positions by a small daily carry cost (skip if done)
             if not done and current_asset_value > 0:
@@ -520,60 +577,61 @@ class MinimalCryptoEnv(gym.Env):
         # 1B: terminal portfolio return bonus — aligns policy with terminal wealth.
         if done:
             terminal_return = (self.portfolio_value - BUDGET_INITIAL) / BUDGET_INITIAL
-            reward += terminal_return * 10.0
+            reward += terminal_return * 5.0  # 10.0
 
         # Subtract the accumulated logic penalties directly from the reward
         reward -= step_penalty
 
         # Log action(s)
-        if self.action_space_type == "continuous":
-            logged_any = False
-            for i in range(self.num_assets):
-                act_val = action[i]
-                if act_val > threshold:
-                    eff_action = np.array([1, i, act_val * 100.0])
+        if not self.disable_logging:
+            if self.action_space_type == "continuous":
+                logged_any = False
+                for i in range(self.num_assets):
+                    act_val = action[i]
+                    if act_val > threshold:
+                        eff_action = np.array([1, i, act_val * 100.0])
+                        self.log_action(
+                            self.current_step,
+                            eff_action,
+                            reward,
+                            prev_portfolio_value,
+                            trade_price=trade_prices[i],
+                            trade_units=trade_units_dict[i],
+                            fee=fees_paid_dict[i],
+                        )
+                        logged_any = True
+                    elif act_val < -threshold:
+                        eff_action = np.array([2, i, abs(act_val) * 100.0])
+                        self.log_action(
+                            self.current_step,
+                            eff_action,
+                            reward,
+                            prev_portfolio_value,
+                            trade_price=trade_prices[i],
+                            trade_units=trade_units_dict[i],
+                            fee=fees_paid_dict[i],
+                        )
+                        logged_any = True
+                
+                if not logged_any:
+                    eff_action = np.array([0, 0, 0.0])
                     self.log_action(
                         self.current_step,
                         eff_action,
                         reward,
                         prev_portfolio_value,
-                        trade_price=trade_prices[i],
-                        trade_units=trade_units_dict[i],
-                        fee=fees_paid_dict[i],
                     )
-                    logged_any = True
-                elif act_val < -threshold:
-                    eff_action = np.array([2, i, abs(act_val) * 100.0])
-                    self.log_action(
-                        self.current_step,
-                        eff_action,
-                        reward,
-                        prev_portfolio_value,
-                        trade_price=trade_prices[i],
-                        trade_units=trade_units_dict[i],
-                        fee=fees_paid_dict[i],
-                    )
-                    logged_any = True
-            
-            if not logged_any:
-                eff_action = np.array([0, 0, 0.0])
+            else:
+                effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
                 self.log_action(
                     self.current_step,
-                    eff_action,
+                    effective_action,
                     reward,
                     prev_portfolio_value,
+                    trade_price,
+                    trade_units,
+                    fee_paid,
                 )
-        else:
-            effective_action = np.array([action_type, asset_idx, amount_pct * 100.0])
-            self.log_action(
-                self.current_step,
-                effective_action,
-                reward,
-                prev_portfolio_value,
-                trade_price,
-                trade_units,
-                fee_paid,
-            )
 
         return (
             self._get_obs(),

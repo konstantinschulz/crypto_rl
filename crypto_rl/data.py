@@ -24,6 +24,7 @@ except Exception:
     pq = None  # type: ignore
     ds = None  # type: ignore
 
+#TODO: add more coins once the training setup is somewhat stable
 # The canonical list of symbols to trade, in priority order.
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
 

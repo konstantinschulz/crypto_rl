@@ -99,7 +99,7 @@ Examples:
     parser.add_argument(
         "--n-steps",
         type=int,
-        default=2048,
+        default=1024,
         help="The number of steps to run for each PPO model environment per update (i.e. rollout buffer size is n_steps * n_envs where n_envs is number of environment copies running in parallel)",
     )
 
@@ -163,6 +163,12 @@ Examples:
         type=float,
         default=0.005,
         help="Penalty multiplier for illegal SELL actions (default 0.005)",
+    )
+    parser.add_argument(
+        "--max-single-step-allocation",
+        type=float,
+        default=0.5,
+        help="Maximum amount of cash to be allocated within a single step (default 0.5)",
     )
     parser.add_argument(
         "--profit-bonus",

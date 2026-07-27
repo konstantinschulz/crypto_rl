@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import optuna
+from stable_baselines3.common.callbacks import EvalCallback
 
 try:
     from stable_baselines3.common.callbacks import BaseCallback
@@ -31,7 +33,7 @@ except ImportError:  # pragma: no cover
             return lambda *a, **k: None
 
 
-from .env import BUDGET_INITIAL
+from .env import BUDGET_INITIAL, MinimalCryptoEnv
 
 
 class DashboardCallback(BaseCallback):
@@ -88,6 +90,10 @@ class DashboardCallback(BaseCallback):
             "value_loss": [],
             "approx_kl": [],
             "clip_fraction": [],
+            "actor_loss": [],
+            "critic_loss": [],
+            "ent_coef_loss": [],
+            "ent_coef": [],
             "ram_mb": [],
             "total_return_pct": [],
             "drawdown_pct": [],
@@ -158,7 +164,9 @@ class DashboardCallback(BaseCallback):
 
             # Return and Drawdown
             total_return = (current_portfolio / BUDGET_INITIAL - 1.0) * 100.0
-            self.peak_portfolio_value = max(self.peak_portfolio_value, current_portfolio)
+            self.peak_portfolio_value = max(
+                self.peak_portfolio_value, current_portfolio
+            )
             drawdown = (1.0 - current_portfolio / self.peak_portfolio_value) * 100.0
 
             # Append to series
@@ -166,7 +174,9 @@ class DashboardCallback(BaseCallback):
                 {"step": step, "value": current_portfolio, "episode": current_episode}
             )
             self.series["train_reward"].append({"step": step, "value": mean_ep_rew})
-            self.series["trades"].append({"step": step, "value": int(self.current_trades)})
+            self.series["trades"].append(
+                {"step": step, "value": int(self.current_trades)}
+            )
             self.series["win_rate"].append({"step": step, "value": float(win_rate)})
             self.series["total_return_pct"].append(
                 {"step": step, "value": float(total_return)}
@@ -198,6 +208,23 @@ class DashboardCallback(BaseCallback):
                 }
             )
 
+            # SAC-specific metrics from SB3 logger
+            self.series["actor_loss"].append(
+                {"step": step, "value": float(logger_map.get("train/actor_loss", 0.0))}
+            )
+            self.series["critic_loss"].append(
+                {"step": step, "value": float(logger_map.get("train/critic_loss", 0.0))}
+            )
+            self.series["ent_coef_loss"].append(
+                {
+                    "step": step,
+                    "value": float(logger_map.get("train/ent_coef_loss", 0.0)),
+                }
+            )
+            self.series["ent_coef"].append(
+                {"step": step, "value": float(logger_map.get("train/ent_coef", 0.0))}
+            )
+
             # Memory usage
             if self.psutil:
                 ram = self.psutil.Process().memory_info().rss / (1024 * 1024)
@@ -226,7 +253,10 @@ class DashboardCallback(BaseCallback):
                     ),
                     "current_step": int(self.num_timesteps),
                     "progress_pct": int(
-                        100 * min(1.0, float(self.num_timesteps) / float(self.total_timesteps))
+                        100
+                        * min(
+                            1.0, float(self.num_timesteps) / float(self.total_timesteps)
+                        )
                     ),
                 },
                 "technical": {
@@ -248,3 +278,40 @@ class DashboardCallback(BaseCallback):
                 json.dump(state, f, indent=2)
         except Exception:
             pass
+
+
+class TrialEvalCallback(EvalCallback):
+    """Callback for evaluating a trial and reporting to Optuna, with pruning support."""
+
+    def __init__(
+        self,
+        eval_env: MinimalCryptoEnv,
+        trial: optuna.trial.Trial,
+        n_eval_episodes: int = 1,
+        eval_freq: int = 10000,
+        deterministic: bool = True,
+        verbose: int = 0,
+    ):
+        super().__init__(
+            eval_env=eval_env,
+            n_eval_episodes=n_eval_episodes,
+            eval_freq=eval_freq,
+            deterministic=deterministic,
+            verbose=verbose,
+        )
+        self.trial = trial
+        self.eval_idx = 0
+        self.is_pruned = False
+
+    def _on_step(self) -> bool:
+        # Run evaluation at the specified frequency
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            super()._on_step()
+            self.eval_idx += 1
+            # Report mean reward to Optuna
+            self.trial.report(self.last_mean_reward, self.eval_idx)
+            # Prune if Optuna decides
+            if self.trial.should_prune():
+                self.is_pruned = True
+                return False
+        return True
