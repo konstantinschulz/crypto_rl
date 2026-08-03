@@ -25,12 +25,12 @@ def objective(trial):
     args = parser.parse_args([])
 
     # Suggest hyperparameters via Optuna
-    args.profit_bonus = trial.suggest_float("profit_bonus", 0.6, 3.6)
+    args.profit_bonus = trial.suggest_float("profit_bonus", 1.45, 4.35)
     args.hold_cost_rate = trial.suggest_float("hold_cost_rate", 1e-7, 1e-4, log=True)
-    args.empty_buy_penalty = trial.suggest_float("empty_buy_penalty", 1e-4, 1e-1)
-    args.empty_sell_penalty = trial.suggest_float("empty_sell_penalty", 1e-4, 1e-1)
-    args.illegal_buy_penalty = trial.suggest_float("illegal_buy_penalty", 1e-4, 1e-1)
-    args.illegal_sell_penalty = trial.suggest_float("illegal_sell_penalty", 5e-4, 1e-1)
+    # args.empty_buy_penalty = trial.suggest_float("empty_buy_penalty", 1e-4, 1e-1)
+    # args.empty_sell_penalty = trial.suggest_float("empty_sell_penalty", 1e-4, 1e-1)
+    args.illegal_buy_penalty = trial.suggest_float("illegal_buy_penalty", 1e-5, 1e-2)
+    # args.illegal_sell_penalty = trial.suggest_float("illegal_sell_penalty", 5e-4, 1e-1)
     # args.lr = trial.suggest_float("lr", 1e-7, 1e-4, log=True)
     # ent = trial.suggest_float("ent", 1e-5, 1e-2, log=True)
     # gamma = trial.suggest_float("gamma", 0.99, 0.999999)

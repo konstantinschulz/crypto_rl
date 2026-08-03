@@ -33,13 +33,27 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260729-083929-minimal",
-    "state_file": "logs/run-20260729-083929-minimal/state.json",
+    "run_id": "run-20260803-083221-minimal",
+    "state_file": "logs/run-20260803-083221-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-07-29 08:39:29 UTC"
+    "started_at": "2026-08-03 08:32:21 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260803-083221-minimal",
+      "state_file": "logs/run-20260803-083221-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-03 08:32:21 UTC"
+    },
+    {
+      "run_id": "run-20260803-082010-minimal",
+      "state_file": "logs/run-20260803-082010-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-03 08:20:10 UTC"
+    },
     {
       "run_id": "run-20260729-083929-minimal",
       "state_file": "logs/run-20260729-083929-minimal/state.json",
