@@ -75,19 +75,19 @@ Examples:
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=0.0003,
+        default=0.00002,
         help="Learning rate for the PPO model",
     )
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.99,
+        default=0.9944,
         help="Discount factor for PPO model",
     )
     parser.add_argument(
         "--ent-coef",
         type=float,
-        default=0.01,
+        default=0.007,
         help="Entropy coefficient for the loss calculation of the PPO model",
     )
     parser.add_argument(

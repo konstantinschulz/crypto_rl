@@ -1,13 +1,12 @@
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import optuna
 import torch
 from stable_baselines3 import PPO, SAC
-from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.monitor import Monitor
 
 from crypto_rl import MinimalCryptoEnv, read_last_n
 from crypto_rl.callbacks import DashboardCallback, TrialEvalCallback
@@ -20,6 +19,11 @@ from scripts.eval_report import eval_report
 global BUDGET_INITIAL
 
 
+def print_if_not_trial(trial: optuna.trial.Trial | None = None, msg: str = ""):
+    if trial is None:
+        print(msg)
+
+
 def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     """Run a single training/evaluation loop.
     Returns the mean multi‑seed test portfolio value, which Optuna will maximize.
@@ -29,8 +33,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
 
     global BUDGET_INITIAL
     BUDGET_INITIAL = args.budget_initial
-
-    print("1. Loading raw data...")
+    print_if_not_trial(trial, "1. Loading raw data...")
     TEST_FRACTION: float = 0.2
     n_test = round(args.rows * TEST_FRACTION)
     n_train = args.rows - n_test
@@ -40,7 +43,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
 
     run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
 
-    print("2. Setting up environment...")
+    print_if_not_trial(trial, "2. Setting up environment...")
     train_env = MinimalCryptoEnv(
         train_prices_df,
         window_size=args.window_size,
@@ -57,7 +60,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         parquet_path=args.parquet_path,
         n_rows=args.rows,
         action_space_type=args.action_space_type,
-        max_single_step_allocation=args.max_single_step_allocation
+        max_single_step_allocation=args.max_single_step_allocation,
     )
 
     # Dashboard callback (optional)
@@ -105,7 +108,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     eval_callback = None
     eval_env = None
     if trial is not None:
-        eval_env = MinimalCryptoEnv(
+        raw_env = MinimalCryptoEnv(
             test_prices_df,
             window_size=args.window_size,
             run_id=run_id,
@@ -115,6 +118,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             is_eval=True,
             action_space_type=args.action_space_type,
         )
+        eval_env = Monitor(raw_env)
         eval_freq = max(1000, args.timesteps // 5)
         eval_callback = TrialEvalCallback(
             eval_env=eval_env,
@@ -126,7 +130,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    verbose = 1
+    verbose = 1 if trial is None else 0
     seed = args.data_seed
     ent_coef = args.ent_coef
     batch_size = args.batch_size
@@ -141,7 +145,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     n_steps = args.n_steps
 
     if args.algorithm == "SAC":
-        print("3. Training SAC model...")
+        print_if_not_trial(trial, "3. Training SAC model...")
         model = SAC(
             "MlpPolicy",
             train_env,
@@ -156,7 +160,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             policy_kwargs=policy_kwargs,
         )
     else:
-        print("3. Training PPO model...")
+        print_if_not_trial(trial, "3. Training PPO model...")
         model = PPO(
             "MlpPolicy",
             train_env,
@@ -190,7 +194,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             train_env.close()
             raise optuna.exceptions.TrialPruned()
 
-    print("4. Testing the trained model...")
+    print_if_not_trial(trial, "4. Testing the trained model...")
     test_env = MinimalCryptoEnv(
         test_prices_df,
         window_size=args.window_size,
@@ -218,26 +222,36 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             if info.get("realised_pnl", 0.0) > 0:
                 eval_winning_trades += 1
         eval_steps += 1
-        eval_portfolio_values.append({"step": eval_steps, "value": float(test_env.portfolio_value)})
-        eval_realized_pnl.append({
-            "step": eval_steps,
-            "value": float(test_env.portfolio_value - eval_initial_portfolio_value),
-        })
+        eval_portfolio_values.append(
+            {"step": eval_steps, "value": float(test_env.portfolio_value)}
+        )
+        eval_realized_pnl.append(
+            {
+                "step": eval_steps,
+                "value": float(test_env.portfolio_value - eval_initial_portfolio_value),
+            }
+        )
 
     eval_trades_count = test_env.trades_count
     test_env.close()
     train_env.close()
-    
-    print("-" * 30)
-    print("RESULTS:")
-    print(f"Final Test Portfolio Value: ${test_env.portfolio_value:.2f}")
-    print(f"Total Trades (Eval):        {eval_trades_count}")
-    print(f"Total Closed Trades (Sells): {eval_closed_trades}")
-    print(f"Total Fees Paid (Eval):     ${test_env.fees_paid_total:.4f}")
+
+    print_if_not_trial(trial, "-" * 30)
+    print_if_not_trial(trial, "RESULTS:")
+    print_if_not_trial(
+        trial, f"Final Test Portfolio Value: ${test_env.portfolio_value:.2f}"
+    )
+    print_if_not_trial(trial, f"Total Trades (Eval):        {eval_trades_count}")
+    print_if_not_trial(trial, f"Total Closed Trades (Sells): {eval_closed_trades}")
+    print_if_not_trial(
+        trial, f"Total Fees Paid (Eval):     ${test_env.fees_paid_total:.4f}"
+    )
 
     # Compute win rate and buy‑hold baseline for dashboard
     eval_win_rate_pct = (
-        (eval_winning_trades / eval_closed_trades * 100.0) if eval_closed_trades > 0 else 0.0
+        (eval_winning_trades / eval_closed_trades * 100.0)
+        if eval_closed_trades > 0
+        else 0.0
     )
     pivoted_df = train_env.prices_df
     first_asset = pivoted_df.columns[0]
@@ -271,13 +285,14 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             multi_seed_pv.append(ms_env.portfolio_value)
             ms_env.close()
         except Exception as exc:
-            print(f"  seed {mseed} failed: {exc}")
+            print_if_not_trial(trial, f"  seed {mseed} failed: {exc}")
 
     if multi_seed_pv:
         arr = np.array(multi_seed_pv)
-        print(
+        print_if_not_trial(
+            trial,
             f"  n={len(arr)}  mean=${arr.mean():.2f}  std=${arr.std():.2f}  "
-            f"min=${arr.min():.2f}  max=${arr.max():.2f}"
+            f"min=${arr.min():.2f}  max=${arr.max():.2f}",
         )
 
     # Dashboard update
@@ -286,7 +301,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             with open(state_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
             state["run"]["status"] = "evaluated"
-            state["run"]["finished_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+            state["run"]["finished_at"] = datetime.now(UTC).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            )
             state["finance"]["evaluation_results"] = {
                 "final_portfolio_value": float(test_env.portfolio_value),
                 "pnl": float(test_env.portfolio_value - eval_initial_portfolio_value),
@@ -302,12 +319,16 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             state["series"]["test_realized_pnl"] = eval_realized_pnl
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
-            print(f"Dashboard state updated with evaluation results in {state_file}")
+            print_if_not_trial(
+                trial,
+                f"Dashboard state updated with evaluation results in {state_file}",
+            )
         except Exception as e:
-            print(f"Error updating dashboard state: {e}")
+            print_if_not_trial(trial, f"Error updating dashboard state: {e}")
 
-    eval_log_action_counter()
-    eval_report()
+    if trial is None:
+        eval_log_action_counter()
+        eval_report()
     # Return mean of multi‑seed portfolio values (or single test if none)
     if multi_seed_pv:
         return float(np.mean(multi_seed_pv))
