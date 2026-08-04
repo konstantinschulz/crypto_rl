@@ -120,28 +120,35 @@ def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
     return df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
 
 
-def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
-    """Memory-efficient path with dynamic, metadata-driven time anchoring."""
-    dataset = ds.dataset(path, format="parquet")
+def get_valid_start_timestamps(path: str, n: int = 10000) -> tuple[np.ndarray, list[str], int]:
+    """Scan the dataset once to pre-load valid start timestamps and symbol list.
 
-    # 1. Inspect file metadata to see which symbols from our desired list exist on disk
+    Returns
+    -------
+    tuple[np.ndarray, list[str], int]
+        (valid_open_times, symbols, k) where k is the per-symbol row count.
+    """
+    cols = ["symbol", "open_time"]
+    if ds is None or pq is None:
+        df = pd.read_parquet(path, columns=cols).dropna()
+        symbols = _pick_symbols(list(df["symbol"].unique()))
+        k = max(1, n // len(symbols))
+        df_sub = df[df["symbol"].isin(symbols)]
+        anchor_times = np.sort(df_sub[df_sub["symbol"] == symbols[0]]["open_time"].unique())
+        return anchor_times, symbols, k
+
+    dataset = ds.dataset(path, format="parquet")
     available_in_file = set(
         dataset.to_table(columns=["symbol"]).column("symbol").unique().to_pylist()
     )
     symbols = [s for s in DEFAULT_SYMBOLS if s in available_in_file]
-
     if not symbols:
         raise ValueError(f"None of {DEFAULT_SYMBOLS} were found in {path}.")
 
     k = max(1, n // len(symbols))
-
-    # 2. DYNAMIC DETECTION: Get exact start timestamps for all available coins
     start_times_map = _get_symbol_start_times(dataset, symbols)
-
-    # 3. The youngest coin is the one with the maximum start timestamp
     anchor_symbol = max(symbols, key=lambda s: start_times_map.get(s, 0))
 
-    # 4. Extract all valid timestamps for our automatically selected anchor
     anchor_filter = ds.field("symbol") == anchor_symbol
     valid_open_times = (
         dataset.to_table(columns=["open_time"], filter=anchor_filter)
@@ -152,9 +159,29 @@ def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
     if len(valid_open_times) == 0:
         raise ValueError(f"Anchor symbol '{anchor_symbol}' returned 0 timestamps!")
 
-    # 5. Sample a random window that is guaranteed to contain all symbols
+    return valid_open_times, symbols, k
+
+
+def read_window_from_timestamps(
+    path: str,
+    valid_open_times: np.ndarray,
+    symbols: list[str],
+    k: int,
+    cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Load a random window given pre-loaded valid start timestamps and metadata."""
+    if cols is None:
+        cols = ["symbol", "open_time", "close"]
+
     t_start, t_end = _random_window(valid_open_times, k)
 
+    if ds is None or pq is None:
+        df = pd.read_parquet(path, columns=cols).dropna()
+        df_sub = df[df["symbol"].isin(symbols)]
+        mask = (df_sub["open_time"] >= t_start) & (df_sub["open_time"] <= t_end)
+        return df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+
+    dataset = ds.dataset(path, format="parquet")
     query_filter = (
         ds.field("symbol").isin(symbols)
         & (ds.field("open_time") >= t_start)
@@ -162,6 +189,18 @@ def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
     )
     df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
     return df.dropna().sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+
+
+def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
+    """Fallback path used when PyArrow is unavailable."""
+    anchor_times, symbols, k = get_valid_start_timestamps(path, n)
+    return read_window_from_timestamps(path, anchor_times, symbols, k, cols)
+
+
+def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
+    """Memory-efficient path with dynamic, metadata-driven time anchoring."""
+    valid_open_times, symbols, k = get_valid_start_timestamps(path, n)
+    return read_window_from_timestamps(path, valid_open_times, symbols, k, cols)
 
 
 def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:

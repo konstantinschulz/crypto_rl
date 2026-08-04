@@ -183,6 +183,19 @@ Examples:
         help="Bonus per profitable trade for frequency incentive (default 0.01). This encourages the agent to trade more frequently.",
     )
 
+    parser.add_argument(
+        "--action-dead-zone",
+        type=float,
+        default=0.15,
+        help="Dead zone threshold for continuous actions (default 0.15)",
+    )
+    parser.add_argument(
+        "--hold-incentive",
+        type=float,
+        default=0.0005,
+        help="Micro-incentive reward per asset remaining in the action dead zone (default 0.0005)",
+    )
+
     # ------------------------------------------------------------------ dashboard
     parser.add_argument(
         "--dashboard",

@@ -70,6 +70,8 @@ class MinimalCryptoEnv(gym.Env):
         action_space_type: str = "continuous",
         max_single_step_allocation: float = 0.5,
         disable_logging: bool = False,  # <-- Set True during Optuna HPO!
+        action_dead_zone: float = 0.15,
+        hold_incentive: float = 0.0005,
     ):
         super().__init__()
         self.prices_df = self._pivot_dataframe(prices_df)
@@ -91,21 +93,25 @@ class MinimalCryptoEnv(gym.Env):
         self.last_invalid_sell = False
         self.num_assets = self.prices_df.shape[1]
         self.asset_names = self.prices_df.columns.tolist()
+        self.action_dead_zone = action_dead_zone
+        self.hold_incentive = hold_incentive
 
         self.action_space_type = action_space_type
         if self.action_space_type == "continuous":
             self.action_space = spaces.Box(
-                low=-1.0, high=1.0, shape=(self.num_assets,), dtype=np.float32
+                low=0.0, high=1.0, shape=(self.num_assets + 1,), dtype=np.float32
             )
         else:
             self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
 
         # Dimension breakdown:
         # Static: prices_flat (W*N) + vol (N) + mom (N) + rsi (N) + macd (N) = (W + 4)*N
-        # Dynamic: cash_pct (1) + holdings_pct (N) + unrealised_pnl_pct (N) + has_position (N) = 1 + 3*N
+        # Dynamic: cash_pct (1) + holdings_pct (N) + unrealised_pnl_pct (N) + has_position 
+        # Macro / BTC Regime features:
+        # btc_mom_norm (1), btc_vol_norm (1), btc_trend_regime 1-hot: [bull, ranging, bear] (3) -> total 5 features at start of obs vector.
+        self.macro_dim = 5
         self.static_per_asset_dim = window_size + 5
-        self.macro_dim = 2
-        self.static_dim = (self.static_per_asset_dim * self.num_assets) + self.macro_dim
+        self.static_dim = self.macro_dim + (self.static_per_asset_dim * self.num_assets)
         self.has_position_dim = self.num_assets
         obs_dim = self.static_dim + 1 + (3 * self.num_assets)
         self.observation_space = spaces.Box(
@@ -128,8 +134,19 @@ class MinimalCryptoEnv(gym.Env):
         self.last_remap_note = None
         self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
         self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
-        self.parquet_path: str | None = None
-        self.n_rows: int = 0
+        self.parquet_path: str | None = parquet_path
+        self.n_rows: int = n_rows
+
+        self._cached_valid_open_times: np.ndarray | None = None
+        self._cached_symbols: list[str] | None = None
+        self._cached_k: int | None = None
+
+        if self.parquet_path is not None and self.n_rows > 0:
+            from crypto_rl.data import get_valid_start_timestamps
+
+            self._cached_valid_open_times, self._cached_symbols, self._cached_k = (
+                get_valid_start_timestamps(self.parquet_path, n=self.n_rows)
+            )
 
         self._precalculate_indicators()
 
@@ -171,14 +188,30 @@ class MinimalCryptoEnv(gym.Env):
         mean_3 = self.prices_df.rolling(window=3, min_periods=3).mean()
         macd_df = (mean_3 - mean_all) / (std_all + 1e-8)
 
-        # 5. NEW: BTC Macro Features & Relative Strength
+        # 5. NEW: BTC Macro Features & Relative Strength & Trend Regime Label
         btc_symbol = (
             "BTCUSDT"
             if "BTCUSDT" in self.prices_df.columns
             else self.prices_df.columns[0]
         )
+        btc_prices = self.prices_df[btc_symbol]
         btc_mom = momentum_df[btc_symbol]
         btc_vol = vol_df[btc_symbol]
+
+        # Trend regime derived from 24h / 7d momentum comparison (assuming hourly bars or relative window shifts)
+        # 24h momentum: return over 24 steps; 7d momentum: return over 168 steps
+        btc_mom_24h = btc_prices.pct_change(24)
+        btc_mom_7d = btc_prices.pct_change(168)
+        # Threshold: if short-term (24h) and long-term (7d) momentum are aligned positive (> +0.5%) -> Bull (1,0,0)
+        # if short-term and long-term momentum are aligned negative (< -0.5%) -> Bear (0,0,1)
+        # otherwise -> Ranging (0,1,0)
+        bull_mask = (btc_mom_24h > 0.005) & (btc_mom_7d > 0.005)
+        bear_mask = (btc_mom_24h < -0.005) & (btc_mom_7d < -0.005)
+
+        btc_regime_1hot = np.zeros((T, 3), dtype=np.float32)
+        btc_regime_1hot[bull_mask.fillna(False).values, 0] = 1.0  # Bull
+        btc_regime_1hot[~(bull_mask | bear_mask).fillna(True).values, 1] = 1.0  # Ranging
+        btc_regime_1hot[bear_mask.fillna(False).values, 2] = 1.0  # Bear
 
         # Relative Strength: (Altcoin Return) - (BTC Return) over window W
         rel_mom_df = momentum_df.sub(btc_mom, axis=0)
@@ -212,16 +245,22 @@ class MinimalCryptoEnv(gym.Env):
         self.precalc_static_obs = np.zeros((T + 1, self.static_dim), dtype=np.float32)
 
         for t in range(W, T):
+            idx = 0
+            # 1. Macro / BTC Regime features at the VERY START of observation vector
+            self.precalc_static_obs[t, idx] = btc_mom_norm[t]
+            self.precalc_static_obs[t, idx + 1] = btc_vol_norm[t]
+            self.precalc_static_obs[t, idx + 2 : idx + 5] = btc_regime_1hot[t]
+            idx += self.macro_dim
+
+            # 2. Window relative prices per asset
             window = self.prices_arr[t - W : t]
             last_price = self.prices_arr[t - 1]
             norm_win = ((window / last_price) - 1.0).ravel()
 
-            idx = 0
-            # Pack window relative prices
             self.precalc_static_obs[t, idx : idx + W * N] = norm_win
             idx += W * N
 
-            # Pack per-asset normalized indicators
+            # 3. Pack per-asset normalized indicators
             self.precalc_static_obs[t, idx : idx + N] = vol_norm[t]
             idx += N
             self.precalc_static_obs[t, idx : idx + N] = mom_norm[t]
@@ -230,12 +269,8 @@ class MinimalCryptoEnv(gym.Env):
             idx += N
             self.precalc_static_obs[t, idx : idx + N] = macd_raw[t]
             idx += N
-            self.precalc_static_obs[t, idx : idx + N] = rel_mom_norm[t]  # NEW
+            self.precalc_static_obs[t, idx : idx + N] = rel_mom_norm[t]
             idx += N
-
-            # Pack global BTC macro features
-            self.precalc_static_obs[t, idx] = btc_mom_norm[t]  # NEW
-            self.precalc_static_obs[t, idx + 1] = btc_vol_norm[t]  # NEW
 
         # Handle terminal boundary
         self.precalc_static_obs[T] = self.precalc_static_obs[T - 1]
@@ -323,9 +358,24 @@ class MinimalCryptoEnv(gym.Env):
 
         # Tier 3A: resample a fresh random time window each episode when enabled.
         if self.parquet_path is not None:
-            from crypto_rl.data import read_last_n
+            from crypto_rl.data import (
+                get_valid_start_timestamps,
+                read_window_from_timestamps,
+            )
 
-            new_df = read_last_n(self.parquet_path, n=self.n_rows)
+            if self._cached_valid_open_times is None:
+                (
+                    self._cached_valid_open_times,
+                    self._cached_symbols,
+                    self._cached_k,
+                ) = get_valid_start_timestamps(self.parquet_path, n=self.n_rows)
+
+            new_df = read_window_from_timestamps(
+                self.parquet_path,
+                self._cached_valid_open_times,
+                self._cached_symbols,
+                self._cached_k,
+            )
             self.prices_df = self._pivot_dataframe(new_df)
             assert self.prices_df.shape[1] == self.num_assets, (
                 f"Asset count mismatch! Expected {self.num_assets} coins, "
@@ -411,108 +461,64 @@ class MinimalCryptoEnv(gym.Env):
         profit_bonus_reward = 0.0
 
         if self.action_space_type == "continuous":
-            threshold = 0.05
+            # Portfolio simplex action space: action \in R^{N+1}
+            # Softmax normalization -> target weights (sum = 1.0)
+            # Index 0: cash, Indices 1..N: assets 0..N-1
+            exp_action = np.exp(action - np.max(action))
+            target_weights = exp_action / np.sum(exp_action)
 
-            # Sells: action[i] < -threshold
-            sells = []
+            # Current portfolio value using current_prices
+            current_asset_values = self.holdings * current_prices
+            curr_portfolio_val = self.cash + np.sum(current_asset_values)
+
+            if curr_portfolio_val > 0:
+                old_weights = np.zeros(self.num_assets + 1, dtype=np.float32)
+                old_weights[0] = self.cash / curr_portfolio_val
+                old_weights[1:] = current_asset_values / curr_portfolio_val
+            else:
+                old_weights = np.zeros(self.num_assets + 1, dtype=np.float32)
+                old_weights[0] = 1.0
+
+            # Rebalancing turnover |w_new - w_old|
+            turnover = np.sum(np.abs(target_weights - old_weights))
+            # Transaction cost = fee_rate * sum |new_weight - old_weight| * portfolio_value / 2
+            rebalance_cost = self.fee_rate * turnover * curr_portfolio_val / 2.0
+
+            # Target allocation values after fee deduction
+            new_portfolio_val = max(0.0, curr_portfolio_val - rebalance_cost)
+            self.cash = new_portfolio_val * target_weights[0]
+            new_asset_allocations = new_portfolio_val * target_weights[1:]
+
+            # Update holdings and trading state
+            new_holdings = np.where(
+                current_prices > 0, new_asset_allocations / current_prices, 0.0
+            )
+
+            # Update cost basis and average entry price for held assets
             for i in range(self.num_assets):
-                act_val = action[i]
-                if act_val < -threshold:
-                    amount_pct = np.clip(abs(act_val), 0.0, 1.0)
-                    buy_fraction = min(amount_pct, self.max_single_step_allocation)
-                    sells.append((i, amount_pct))
-
-            trade_prices = np.zeros(self.num_assets, dtype=np.float32)
-            trade_units_dict = np.zeros(self.num_assets, dtype=np.float32)
-            fees_paid_dict = np.zeros(self.num_assets, dtype=np.float32)
-
-            # Execute sells
-            for asset_idx, amount_pct in sells:
-                if self.holdings[asset_idx] > 0:
-                    units_to_sell = self.holdings[asset_idx] * amount_pct
-                    if units_to_sell > 0:
-                        is_valid_sell = True
-                        t_price = current_prices[asset_idx]
-                        t_units = units_to_sell
-                        gross_proceeds = units_to_sell * t_price
-                        fee_paid_asset = gross_proceeds * self.fee_rate
-                        proceeds = gross_proceeds - fee_paid_asset
-                        self.cash += proceeds
-                        self.holdings[asset_idx] -= t_units
-                        self.fees_paid_total += fee_paid_asset
-                        fee_paid += fee_paid_asset
-                        self.trades_count += 1
-
-                        trade_prices[asset_idx] = t_price
-                        trade_units_dict[asset_idx] = t_units
-                        fees_paid_dict[asset_idx] = fee_paid_asset
-
-                        if self.holdings[asset_idx] <= 1e-9:
-                            self.avg_entry_price[asset_idx] = 0.0
-                            self.total_cost_basis[asset_idx] = 0.0
-                        else:
-                            self.total_cost_basis[asset_idx] *= self.holdings[
-                                asset_idx
-                            ] / (self.holdings[asset_idx] + units_to_sell)
-
-                        asset_realised_pnl = proceeds - (
-                            t_units * self.avg_entry_price[asset_idx]
-                        )
-                        realised_pnl += asset_realised_pnl
-
-                        # Profit bonus hurdle
-                        if asset_realised_pnl > 0:
-                            hurdle = t_units * t_price * 0.002
-                            if asset_realised_pnl > hurdle:
-                                profit_bonus_reward += self.profit_bonus
-                else:
-                    # Illegal SELL: no holdings
-                    # step_penalty += self.illegal_sell_penalty * self.portfolio_value
-                    pass
-
-            # Buys: action[i] > threshold
-            buys = []
-            for i in range(self.num_assets):
-                act_val = action[i]
-                if act_val > threshold:
-                    amount_pct = np.clip(act_val, 0.0, 1.0)
-                    buys.append((i, amount_pct))
-
-            sum_buys = sum(amount_pct for _, amount_pct in buys)
-            cash_available = self.cash
-
-            for asset_idx, amount_pct in buys:
-                if cash_available <= 1e-9:
-                    # step_penalty += self.illegal_buy_penalty * self.portfolio_value
-                    continue
-
-                # Normalize buy amount if sum of buy fractions > 1.0
-                if sum_buys > 1.0:
-                    buy_fraction = amount_pct / sum_buys
-                else:
-                    buy_fraction = amount_pct
-
-                buy_amount_usd = cash_available * buy_fraction
-                if buy_amount_usd > 0:
-                    t_price = current_prices[asset_idx]
-                    fee_paid_asset = buy_amount_usd * self.fee_rate
-                    amount_after_fee = buy_amount_usd - fee_paid_asset
-                    t_units = amount_after_fee / t_price
-                    self.cash -= buy_amount_usd
-                    self.holdings[asset_idx] += t_units
-                    self.fees_paid_total += fee_paid_asset
-                    fee_paid += fee_paid_asset
-                    self.trades_count += 1
-                    self.total_cost_basis[asset_idx] += amount_after_fee
-                    self.avg_entry_price[asset_idx] = (
-                        self.total_cost_basis[asset_idx] / self.holdings[asset_idx]
-                        if self.holdings[asset_idx] > 0
+                if new_holdings[i] > self.holdings[i]:
+                    # Position increased: add added cost basis
+                    added_units = new_holdings[i] - self.holdings[i]
+                    added_cost = added_units * current_prices[i]
+                    self.total_cost_basis[i] += added_cost
+                    self.avg_entry_price[i] = (
+                        self.total_cost_basis[i] / new_holdings[i]
+                        if new_holdings[i] > 0
                         else 0.0
                     )
+                elif new_holdings[i] < self.holdings[i]:
+                    # Position decreased: reduce cost basis proportionally
+                    if new_holdings[i] <= 1e-9:
+                        self.avg_entry_price[i] = 0.0
+                        self.total_cost_basis[i] = 0.0
+                    else:
+                        self.total_cost_basis[i] *= new_holdings[i] / self.holdings[i]
 
-                    trade_prices[asset_idx] = t_price
-                    trade_units_dict[asset_idx] = t_units
-                    fees_paid_dict[asset_idx] = fee_paid_asset
+            self.holdings = new_holdings
+            self.fees_paid_total += rebalance_cost
+            fee_paid = rebalance_cost
+            if turnover > 1e-4:
+                self.trades_count += 1
         else:
             # MultiDiscrete logic (original)
             action_type = action[0]
@@ -629,11 +635,18 @@ class MinimalCryptoEnv(gym.Env):
                     reward += self.profit_bonus  # flat — not scaled by PnL magnitude
         else:
             reward += profit_bonus_reward
+            # Micro-incentive for each asset that stays in the action dead zone
+            n_held = sum(
+                1
+                for i in range(self.num_assets)
+                if abs(action[i]) <= self.action_dead_zone
+            )
+            reward += n_held * self.hold_incentive
 
         # 1B: terminal portfolio return bonus — aligns policy with terminal wealth.
         if done:
             terminal_return = (self.portfolio_value - BUDGET_INITIAL) / BUDGET_INITIAL
-            reward += terminal_return * 5.0  # 10.0
+            reward += terminal_return * 1.0  # 5.0
 
         if step_penalty >= 0.1:
             logging.debug(f"High step penalty value (>= 0.1): {step_penalty}")
@@ -644,42 +657,17 @@ class MinimalCryptoEnv(gym.Env):
         # Log action(s)
         if not self.disable_logging:
             if self.action_space_type == "continuous":
-                logged_any = False
-                for i in range(self.num_assets):
-                    act_val = action[i]
-                    if act_val > threshold:
-                        eff_action = np.array([1, i, act_val * 100.0])
-                        self.log_action(
-                            self.current_step,
-                            eff_action,
-                            reward,
-                            prev_portfolio_value,
-                            trade_price=trade_prices[i],
-                            trade_units=trade_units_dict[i],
-                            fee=fees_paid_dict[i],
-                        )
-                        logged_any = True
-                    elif act_val < -threshold:
-                        eff_action = np.array([2, i, abs(act_val) * 100.0])
-                        self.log_action(
-                            self.current_step,
-                            eff_action,
-                            reward,
-                            prev_portfolio_value,
-                            trade_price=trade_prices[i],
-                            trade_units=trade_units_dict[i],
-                            fee=fees_paid_dict[i],
-                        )
-                        logged_any = True
-
-                if not logged_any:
-                    eff_action = np.array([0, 0, 0.0])
-                    self.log_action(
-                        self.current_step,
-                        eff_action,
-                        reward,
-                        prev_portfolio_value,
-                    )
+                exp_act = np.exp(action - np.max(action))
+                weights = exp_act / np.sum(exp_act)
+                # Log primary allocation weight (dominant asset or cash)
+                eff_action = np.array([0, np.argmax(weights[1:]), weights[0] * 100.0])
+                self.log_action(
+                    self.current_step,
+                    eff_action,
+                    reward,
+                    prev_portfolio_value,
+                    fee=fee_paid,
+                )
             else:
                 effective_action = np.array(
                     [action_type, asset_idx, amount_pct * 100.0]

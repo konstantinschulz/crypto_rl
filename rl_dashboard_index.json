@@ -33,13 +33,83 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260803-083221-minimal",
-    "state_file": "logs/run-20260803-083221-minimal/state.json",
+    "run_id": "run-20260804-120930-minimal",
+    "state_file": "logs/run-20260804-120930-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-08-03 08:32:21 UTC"
+    "started_at": "2026-08-04 12:09:31 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260804-120930-minimal",
+      "state_file": "logs/run-20260804-120930-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 12:09:31 UTC"
+    },
+    {
+      "run_id": "run-20260804-120903-minimal",
+      "state_file": "logs/run-20260804-120903-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 12:09:03 UTC"
+    },
+    {
+      "run_id": "run-20260804-115338-minimal",
+      "state_file": "logs/run-20260804-115338-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 11:53:38 UTC"
+    },
+    {
+      "run_id": "run-20260804-113008-minimal",
+      "state_file": "logs/run-20260804-113008-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 11:30:08 UTC"
+    },
+    {
+      "run_id": "run-20260804-112124-minimal",
+      "state_file": "logs/run-20260804-112124-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 11:21:24 UTC"
+    },
+    {
+      "run_id": "run-20260804-101156-minimal",
+      "state_file": "logs/run-20260804-101156-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 10:11:56 UTC"
+    },
+    {
+      "run_id": "run-20260804-101118-minimal",
+      "state_file": "logs/run-20260804-101118-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 10:11:18 UTC"
+    },
+    {
+      "run_id": "run-20260804-095426-minimal",
+      "state_file": "logs/run-20260804-095426-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 09:54:26 UTC"
+    },
+    {
+      "run_id": "run-20260804-095245-minimal",
+      "state_file": "logs/run-20260804-095245-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 09:52:45 UTC"
+    },
+    {
+      "run_id": "run-20260804-094015-minimal",
+      "state_file": "logs/run-20260804-094015-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-04 09:40:15 UTC"
+    },
     {
       "run_id": "run-20260803-083221-minimal",
       "state_file": "logs/run-20260803-083221-minimal/state.json",

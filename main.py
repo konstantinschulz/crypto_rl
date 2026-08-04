@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 import optuna
 import torch
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl import MinimalCryptoEnv, read_last_n
 from crypto_rl.callbacks import DashboardCallback, TrialEvalCallback
@@ -44,7 +46,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
 
     print_if_not_trial(trial, "2. Setting up environment...")
-    train_env = MinimalCryptoEnv(
+    minimal_crypto_env = MinimalCryptoEnv(
         train_prices_df,
         window_size=args.window_size,
         run_id=run_id,
@@ -61,8 +63,16 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         n_rows=args.rows,
         action_space_type=args.action_space_type,
         max_single_step_allocation=args.max_single_step_allocation,
+        action_dead_zone=args.action_dead_zone,
+        hold_incentive=args.hold_incentive,
     )
-
+    train_env = VecNormalize(
+        DummyVecEnv([lambda: minimal_crypto_env]),
+        norm_reward=True,
+        norm_obs=False,  # obs already normalized manually
+        gamma=args.gamma,
+        clip_reward=5.0,
+    )
     # Dashboard callback (optional)
     callback = None
     run_dir = None
@@ -117,8 +127,15 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             trade_freq_incentive=args.trade_freq_incentive,
             is_eval=True,
             action_space_type=args.action_space_type,
+            action_dead_zone=args.action_dead_zone,
+            hold_incentive=args.hold_incentive,
         )
-        eval_env = Monitor(raw_env)
+        eval_env = VecNormalize(
+            DummyVecEnv([lambda: Monitor(raw_env)]),
+            norm_reward=False,
+            norm_obs=False,
+            training=False,
+        )
         eval_freq = max(1000, args.timesteps // 5)
         eval_callback = TrialEvalCallback(
             eval_env=eval_env,
@@ -152,7 +169,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             device=device,
             verbose=verbose,
             seed=seed,
-            ent_coef=ent_coef if ent_coef != 0.01 else "auto",
+            ent_coef="auto",
             n_steps=n_steps,
             batch_size=batch_size,
             gamma=gamma,
@@ -161,8 +178,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         )
     else:
         print_if_not_trial(trial, "3. Training PPO model...")
-        model = PPO(
-            "MlpPolicy",
+        model = RecurrentPPO(
+            "MlpLstmPolicy",
             train_env,
             device=device,
             verbose=verbose,
@@ -170,10 +187,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             ent_coef=ent_coef,
             n_steps=n_steps,
             batch_size=batch_size,
-            gamma=gamma,
             learning_rate=learning_rate,
             clip_range=args.clip_range,
-            policy_kwargs=policy_kwargs | dict(ortho_init=True),
+            policy_kwargs={"lstm_hidden_size": 128, "n_lstm_layers": 1},
         )
 
     callbacks = []
@@ -204,6 +220,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         trade_freq_incentive=args.trade_freq_incentive,
         is_eval=True,
         action_space_type=args.action_space_type,
+        action_dead_zone=args.action_dead_zone,
+        hold_incentive=args.hold_incentive,
     )
     obs, _ = test_env.reset()
     done = False
@@ -253,7 +271,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         if eval_closed_trades > 0
         else 0.0
     )
-    pivoted_df = train_env.prices_df
+    pivoted_df = train_env.envs[0].prices_df
     first_asset = pivoted_df.columns[0]
     buy_hold_return = (
         pivoted_df.iloc[-1][first_asset] - pivoted_df.iloc[0][first_asset]
@@ -276,6 +294,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 reward_type=args.reward_type,
                 is_eval=True,
                 action_space_type=args.action_space_type,
+                action_dead_zone=args.action_dead_zone,
+                hold_incentive=args.hold_incentive,
             )
             ms_obs, _ = ms_env.reset()
             ms_done = False
@@ -326,13 +346,18 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         except Exception as e:
             print_if_not_trial(trial, f"Error updating dashboard state: {e}")
 
+    # Calculate Sharpe ratio for Optuna objective / returned score
+    pv_series = np.array([v["value"] for v in eval_portfolio_values])
+    returns = np.diff(pv_series) / pv_series[:-1]
+    sharpe = (
+        returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
+    )  # 1-min annualized
+
     if trial is None:
         eval_log_action_counter()
         eval_report()
-    # Return mean of multi‑seed portfolio values (or single test if none)
-    if multi_seed_pv:
-        return float(np.mean(multi_seed_pv))
-    return float(test_env.portfolio_value)
+
+    return float(sharpe)
 
 
 def main():

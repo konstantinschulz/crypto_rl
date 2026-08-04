@@ -17,8 +17,9 @@ You are working in the `crypto_rl` workspace. Only the new, refactored setup mus
    - Run logs (`*.jsonl`) and the dashboard `state.json` are written to and read from the unified path `logs/run-YYYYMMDD-HHMMSS-minimal/`.
    - Never use `rl_dashboard_runs/`.
 
-3. **Running the Agent:**
+3. **Running the Agent & Python Environment:**
+   - The primary Python interpreter for this workspace is located at `./.conda/bin/python` (or using `./.conda/bin/python main.py ...`).
    - To train the model or start a run:
      ```bash
-     python main.py --dashboard --rows 10000 --timesteps 20000
+     ./.conda/bin/python main.py --dashboard --rows 10000 --timesteps 20000
      ```
