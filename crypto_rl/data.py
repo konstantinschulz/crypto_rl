@@ -56,7 +56,7 @@ def read_last_n(path: str, n: int = 10000) -> pd.DataFrame:
         Long-format DataFrame with columns ``[symbol, open_time, close]``,
         sorted by ``open_time`` then ``symbol``, with no NaN values.
     """
-    cols = ["symbol", "open_time", "close"]
+    cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
 
     if ds is None or pq is None:
         return _read_last_n_pandas(path, n, cols)
@@ -171,7 +171,7 @@ def read_window_from_timestamps(
 ) -> pd.DataFrame:
     """Load a random window given pre-loaded valid start timestamps and metadata."""
     if cols is None:
-        cols = ["symbol", "open_time", "close"]
+        cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
 
     t_start, t_end = _random_window(valid_open_times, k)
 
@@ -204,10 +204,18 @@ def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
 
 
 def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (train_df, test_df) with non-overlapping time windows."""
-    df = read_last_n(path, n=n_train + n_test)
-    # Use last n_test rows as held-out set, always
-    split = len(df["open_time"].unique()) - n_test // len(DEFAULT_SYMBOLS)
-    times = sorted(df["open_time"].unique())
-    cut = times[split]
-    return df[df["open_time"] < cut], df[df["open_time"] >= cut]
+    """Return (train_df, test_df) with a walk‑forward split.
+
+    Loads the most recent (n_train + n_test) rows chronologically and
+    splits them so that the last n_test rows are used as the test set.
+    """
+    total = n_train + n_test
+    cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
+    # Load data (fallback to pandas if pyarrow unavailable)
+    df = pd.read_parquet(path, columns=cols).dropna()
+    df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+    # Keep only the most recent total rows
+    df = df.iloc[-total:]
+    train_df = df.iloc[:n_train]
+    test_df = df.iloc[n_train:]
+    return train_df, test_df

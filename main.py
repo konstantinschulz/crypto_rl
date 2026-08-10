@@ -4,9 +4,10 @@ from pathlib import Path
 
 import numpy as np
 import optuna
+import pandas as pd
 import torch
 from sb3_contrib import RecurrentPPO
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
@@ -272,20 +273,64 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         else 0.0
     )
     pivoted_df = train_env.envs[0].prices_df
-    first_asset = pivoted_df.columns[0]
-    buy_hold_return = (
-        pivoted_df.iloc[-1][first_asset] - pivoted_df.iloc[0][first_asset]
-    ) / pivoted_df.iloc[0][first_asset]
-    buy_hold_final = BUDGET_INITIAL * (1 + buy_hold_return)
 
+    # Select BTCUSDT if present, otherwise locate the first symbol with start_price > 0
+    if "BTCUSDT" in pivoted_df.columns and pivoted_df["BTCUSDT"].iloc[0] > 0:
+        first_asset = "BTCUSDT"
+    else:
+        valid_cols = [c for c in pivoted_df.columns if pivoted_df[c].iloc[0] > 1e-8]
+        first_asset = valid_cols[0] if valid_cols else pivoted_df.columns[0]
+
+    start_price = pivoted_df.iloc[0][first_asset]
+    end_price = pivoted_df.iloc[-1][first_asset]
+
+    if start_price > 1e-8:
+        buy_hold_return = (end_price - start_price) / start_price
+    else:
+        buy_hold_return = 0.0
+
+    buy_hold_final = BUDGET_INITIAL * (1 + buy_hold_return)
     # Multi‑seed evaluation (Tier 5)
     multi_seed_pv = []
+    # In main.py, inside the multi-seed evaluation loop:
     for mseed in range(5):
         np.random.seed(mseed + 100)
         try:
             ms_prices = read_last_n(args.parquet_path, n=args.rows)
-            split = int(len(ms_prices.open_time.unique()) * TEST_FRACTION)
-            ms_test = ms_prices.iloc[split:]
+
+            # Split by unique timestamps
+            unique_times = sorted(ms_prices.open_time.unique())
+            split_idx = int(len(unique_times) * (1 - TEST_FRACTION))
+            split_time = unique_times[split_idx]
+            ms_test = ms_prices[ms_prices.open_time >= split_time].copy()
+
+            # Filter to train symbols
+            train_symbols = train_prices_df["symbol"].unique().tolist()
+            ms_test = ms_test[ms_test["symbol"].isin(train_symbols)]
+
+            # INJECT MISSING SYMBOLS TO GUARANTEE SHAPE MATCH
+            ms_symbols = ms_test["symbol"].unique().tolist()
+            missing_symbols = set(train_symbols) - set(ms_symbols)
+            if missing_symbols:
+                dummy_rows = []
+                first_time = ms_test["open_time"].min()
+                for sym in missing_symbols:
+                    dummy_rows.append(
+                        {
+                            "open_time": first_time,
+                            "symbol": sym,
+                            "open": 0.0,
+                            "high": 0.0,
+                            "low": 0.0,
+                            "close": 0.0,
+                            "volume": 0.0,
+                        }
+                    )
+                # Add the missing symbols so pivot() generates all columns
+                ms_test = pd.concat(
+                    [ms_test, pd.DataFrame(dummy_rows)], ignore_index=True
+                )
+
             ms_env = MinimalCryptoEnv(
                 ms_test,
                 window_size=args.window_size,

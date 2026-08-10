@@ -9,14 +9,33 @@ def eval_report():
     f = sorted(glob.glob("logs/run-*/actions_eval_*.parquet"))[-1]
     df = pd.read_parquet(f)
     pv_series = df["portfolio"].to_numpy()
-    returns = np.diff(pv_series) / np.array(pv_series[:-1])
+
+    # Safe returns calculation (prevents division by zero when portfolio nears 0)
+    denom = pv_series[:-1]
+    returns = np.divide(
+        np.diff(pv_series),
+        denom,
+        out=np.zeros_like(np.diff(pv_series), dtype=float),
+        where=denom > 1e-8,
+    )
+
     sharpe = (
         returns.mean() / (returns.std() + 1e-8) * np.sqrt(1440)
     )  # annualised at 1-min
+
     downside = returns[returns < 0]
     sortino = returns.mean() / (downside.std() + 1e-8) * np.sqrt(1440)
+
     peak = np.maximum.accumulate(pv_series)
-    dd = (np.array(pv_series) - peak) / peak
+
+    # Safe drawdown calculation
+    dd = np.divide(
+        np.array(pv_series) - peak,
+        peak,
+        out=np.zeros_like(pv_series, dtype=float),
+        where=peak > 1e-8,
+    )
+
     print(
         f"Sharpe={sharpe:.2f}  Sortino={sortino:.2f}  MaxDD={dd.min() * 100:.1f}%  FinalPV={pv_series[-1]:.2f}"
     )
