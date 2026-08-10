@@ -14,5 +14,6 @@ tb_logs/
 optuna.db
 profile.stats
 *.parquet
-!subset.parquet
 *.profile
+rl_dashboard_index.json
+!subset.parquet
