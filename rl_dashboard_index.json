@@ -33,13 +33,34 @@
     }
   },
   "latest_model_run": {
-    "run_id": "run-20260810-084948-minimal",
-    "state_file": "logs/run-20260810-084948-minimal/state.json",
+    "run_id": "run-20260810-123118-minimal",
+    "state_file": "logs/run-20260810-123118-minimal/state.json",
     "mode": "minimal",
     "status": "initializing",
-    "started_at": "2026-08-10 08:49:52 UTC"
+    "started_at": "2026-08-10 12:31:26 UTC"
   },
   "runs": [
+    {
+      "run_id": "run-20260810-123118-minimal",
+      "state_file": "logs/run-20260810-123118-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-10 12:31:26 UTC"
+    },
+    {
+      "run_id": "run-20260810-122911-minimal",
+      "state_file": "logs/run-20260810-122911-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-10 12:29:19 UTC"
+    },
+    {
+      "run_id": "run-20260810-115943-minimal",
+      "state_file": "logs/run-20260810-115943-minimal/state.json",
+      "mode": "minimal",
+      "status": "initializing",
+      "started_at": "2026-08-10 11:59:52 UTC"
+    },
     {
       "run_id": "run-20260810-084948-minimal",
       "state_file": "logs/run-20260810-084948-minimal/state.json",

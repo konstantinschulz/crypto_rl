@@ -191,13 +191,27 @@ class MinimalCryptoEnv(gym.Env):
                 self._cached_symbols,
                 self._cached_k,
             )
-            (
-                self.prices_df,
-                self.open_df,
-                self.high_df,
-                self.low_df,
-                self.volume_df,
-            ) = pivot_ohlcv(new_df)
+
+            # Pivot the OHLCV data
+            prices_piv, open_piv, high_piv, low_piv, volume_piv = pivot_ohlcv(new_df)
+
+            # Ensure a fixed asset universe by reindexing to match original self.asset_names
+            self.prices_df = (
+                prices_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
+            )
+            self.open_df = (
+                open_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
+            )
+            self.high_df = (
+                high_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
+            )
+            self.low_df = (
+                low_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
+            )
+            self.volume_df = (
+                volume_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
+            )
+
             assert self.prices_df.shape[1] == self.num_assets, (
                 f"Asset count mismatch! Expected {self.num_assets} coins, "
                 f"but sampled window only contained {self.prices_df.shape[1]}."
@@ -470,7 +484,8 @@ class MinimalCryptoEnv(gym.Env):
                 exp_act = np.exp(action - np.max(action))
                 weights = exp_act / np.sum(exp_act)
                 eff_action = np.array([0, np.argmax(weights[1:]), weights[0] * 100.0])
-                self.log_action(
+                log_action(
+                    self,
                     self.current_step,
                     eff_action,
                     reward,
