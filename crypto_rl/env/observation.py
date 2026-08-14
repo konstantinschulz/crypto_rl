@@ -114,4 +114,8 @@ def build_observation(env) -> np.ndarray:
     env.obs_buf[idx : idx + N] = has_pos
     idx += N
 
+    current_drawdown = (env.portfolio_value - env.peak_portfolio_value) / max(env.peak_portfolio_value, 1e-8)
+    env.obs_buf[idx] = current_drawdown
+    idx += 1
+
     return env.obs_buf

@@ -214,39 +214,53 @@ def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
 
 
 def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (train_df, test_df) with a walk-forward split using memory-efficient PyArrow reads."""
+    """Return (train_df, test_df) with a walk-forward split using memory-efficient PyArrow reads, filtered by target symbols."""
     total = n_train + n_test
     cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
 
     try:
         dataset = ds.dataset(path, format="parquet")
 
-        # 1. Load ONLY the timestamps (a fraction of the memory footprint)
-        times_arr = (
-            dataset.to_table(columns=["open_time"]).column("open_time").to_numpy()
+        # 1. Identify available symbols and pick the target trading universe
+        available_symbols = (
+            dataset.to_table(columns=["symbol"]).column("symbol").unique().to_pylist()
         )
+        symbols = _pick_symbols(available_symbols)
+        symbol_filter = ds.field("symbol").isin(symbols)
 
-        if len(times_arr) > total:
-            # 2. Find the exact cutoff timestamp using O(N) partition (much faster than sorting)
-            cutoff_time = np.partition(times_arr, -total)[-total]
+        # 2. Get timestamps for an anchor symbol within the target group to calculate the exact cutoff
+        anchor_symbol = symbols[0]
+        anchor_filter = symbol_filter & (ds.field("symbol") == anchor_symbol)
+        anchor_times = (
+            dataset.to_table(columns=["open_time"], filter=anchor_filter)
+            .column("open_time")
+            .to_numpy()
+        )
+        anchor_times = np.sort(anchor_times)
 
-            # 3. Push the filter down to PyArrow so it only extracts the tail-end rows into RAM
-            df = dataset.to_table(
-                columns=cols, filter=ds.field("open_time") >= cutoff_time
-            ).to_pandas()
+        # Calculate required timesteps (k) per symbol to achieve `total` rows globally
+        k = max(1, total // len(symbols))
 
-            # Ensure strict sorting and trim any excess rows that share the exact cutoff timestamp
-            df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
-            df = df.iloc[-total:]
+        if len(anchor_times) > k:
+            cutoff_time = anchor_times[-k]
         else:
-            df = dataset.to_table(columns=cols).to_pandas()
-            df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+            cutoff_time = anchor_times[0]
+
+        # 3. Push BOTH symbol and time filters down to PyArrow
+        query_filter = symbol_filter & (ds.field("open_time") >= cutoff_time)
+        df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
+
+        # Ensure strict sorting and trim to exact row count
+        df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+        df = df.iloc[-total:]
 
     except Exception as e:
         print(
             f"PyArrow optimized read failed ({e}), falling back to pandas memory-hog read..."
         )
         df = pd.read_parquet(path, columns=cols).dropna()
+        symbols = _pick_symbols(list(df["symbol"].unique()))
+        df = df[df["symbol"].isin(symbols)]
         df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
         df = df.iloc[-total:]
 

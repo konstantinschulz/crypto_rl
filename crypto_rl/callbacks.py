@@ -67,6 +67,8 @@ class DashboardCallback(BaseCallback):
         total_timesteps: int,
         num_data_rows: int,
         check_freq: int = 500,
+        training_start_str: str | None = None,
+        training_end_str: str | None = None,
     ):
         super().__init__()
         self.state_path = state_path
@@ -76,8 +78,11 @@ class DashboardCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.num_data_rows = num_data_rows
         self.check_freq = check_freq
-        self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # Record start time in local timezone (CET/CEST) for dashboard display
+        self.start_ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
         self.last_portfolio_value = BUDGET_INITIAL
+        self.training_start_str = training_start_str
+        self.training_end_str = training_end_str
 
         # Series data
         self.series: dict[str, list] = {
@@ -231,9 +236,9 @@ class DashboardCallback(BaseCallback):
                 self.series["ram_mb"].append({"step": step, "value": float(ram)})
 
             self.last_portfolio_value = current_portfolio
-        except Exception:
+        except Exception as e:
             # Swallow metric-collection errors so training is never interrupted
-            pass
+            print(e)
 
     def _write_state(self, status: str = "running") -> None:
         try:
@@ -258,6 +263,8 @@ class DashboardCallback(BaseCallback):
                             1.0, float(self.num_timesteps) / float(self.total_timesteps)
                         )
                     ),
+                    "training_start": self.training_start_str,
+                    "training_end": self.training_end_str,
                 },
                 "technical": {
                     "loss": {
@@ -276,8 +283,8 @@ class DashboardCallback(BaseCallback):
             }
             with open(self.state_path, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(e)
 
 
 class TrialEvalCallback(EvalCallback):
@@ -316,6 +323,7 @@ class TrialEvalCallback(EvalCallback):
                 return False
         return True
 
+
 # New checkpoint callback that saves model when Sharpe improves
 class CheckpointCallback(BaseCallback):
     """
@@ -345,7 +353,7 @@ class CheckpointCallback(BaseCallback):
         self.test_env = test_env
         self.check_freq = check_freq
         self.max_checkpoints = max_checkpoints
-        self.best_sharpe = -float('inf')
+        self.best_sharpe = -float("inf")
         # Ensure directory exists
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -355,16 +363,23 @@ class CheckpointCallback(BaseCallback):
             if sharpe > self.best_sharpe:
                 self.best_sharpe = sharpe
                 timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-                ckpt_path = self.checkpoint_dir / f"checkpoint_{self.num_timesteps}_sharpe_{sharpe:.4f}_{timestamp}.zip"
+                ckpt_path = (
+                    self.checkpoint_dir
+                    / f"checkpoint_{self.num_timesteps}_sharpe_{sharpe:.4f}_{timestamp}.zip"
+                )
                 self.model.save(str(ckpt_path))
                 # Enforce max checkpoints globally
-                all_ckpts = sorted(self.checkpoint_dir.parent.parent.glob("**/*.zip"), key=lambda p: p.stat().st_mtime)
+                all_ckpts = sorted(
+                    self.checkpoint_dir.parent.parent.glob("**/*.zip"),
+                    key=lambda p: p.stat().st_mtime,
+                )
                 if len(all_ckpts) > self.max_checkpoints:
-                    for old_ckpt in all_ckpts[:-self.max_checkpoints]:
+                    for old_ckpt in all_ckpts[: -self.max_checkpoints]:
                         try:
                             old_ckpt.unlink()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(e)
+
         return True
 
     def _evaluate_sharpe(self) -> float:
@@ -375,11 +390,15 @@ class CheckpointCallback(BaseCallback):
         while not done:
             action, _ = self.model.predict(obs, deterministic=True)
             obs, _, done, _, _ = self.test_env.step(action)
-            portfolio_values.append({"step": len(portfolio_values), "value": float(self.test_env.portfolio_value)})
+            portfolio_values.append(
+                {
+                    "step": len(portfolio_values),
+                    "value": float(self.test_env.portfolio_value),
+                }
+            )
         pv_series = np.array([v["value"] for v in portfolio_values])
         returns = np.diff(pv_series) / pv_series[:-1]
-        sharpe = (returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600))
+        sharpe = returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
         # Reset env for future use
         self.test_env.reset()
         return sharpe
-

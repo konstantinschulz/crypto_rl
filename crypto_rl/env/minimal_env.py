@@ -106,7 +106,7 @@ class MinimalCryptoEnv(gym.Env):
         # self.asset_names already set from provided arguments
         self.action_dead_zone = action_dead_zone
         self.hold_incentive = hold_incentive
-
+        self.peak_portfolio_value = BUDGET_INITIAL
         self.action_space_type = action_space_type
         if self.action_space_type == "continuous":
             self.action_space = spaces.Box(
@@ -126,7 +126,7 @@ class MinimalCryptoEnv(gym.Env):
         )  # Added multi‑timeframe price change windows: 1‑min 30, 5‑min 24, 60‑min 24
         self.static_dim = self.macro_dim + (self.static_per_asset_dim * self.num_assets)
         self.has_position_dim = self.num_assets
-        obs_dim = self.static_dim + 1 + (3 * self.num_assets)
+        obs_dim = self.static_dim + 1 + (3 * self.num_assets) + 1
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -237,6 +237,7 @@ class MinimalCryptoEnv(gym.Env):
         self.trades_count = 0
         self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
         self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
+        self.peak_portfolio_value = BUDGET_INITIAL
         return self._get_obs(), {"fees_paid": 0.0}
 
     def close(self) -> None:
@@ -278,6 +279,11 @@ class MinimalCryptoEnv(gym.Env):
         done = self.current_step >= self.prices_arr.shape[0]
         current_asset_value = np.sum(self.holdings * next_prices)
         self.portfolio_value = self.cash + current_asset_value
+        self.peak_portfolio_value = max(self.peak_portfolio_value, self.portfolio_value)
+        # Range: 0.0 (at peak) down to -1.0 (-100% loss)
+        current_drawdown = (
+            self.portfolio_value - self.peak_portfolio_value
+        ) / self.peak_portfolio_value
 
         # Reward calculation (unchanged)
         if self.reward_type == "excess_return":
@@ -293,7 +299,19 @@ class MinimalCryptoEnv(gym.Env):
                 where=current_prices > 1e-8,
             )
             market_return = np.mean(asset_returns)
-            reward = (portfolio_return - market_return) * 10.0
+            base_penalty = 10.0
+            # ASYMMETRIC SCALING: Punish losses 2x harder than gains are rewarded
+            if portfolio_return < market_return:
+                alpha_diff = (portfolio_return - market_return) * (
+                    base_penalty * 2
+                )  # Heavier penalty for underperformance
+            else:
+                alpha_diff = (portfolio_return - market_return) * base_penalty
+            reward = alpha_diff
+            # DIRECT DRAWDOWN PENALTY: Continuously bleed reward the deeper the drawdown gets
+            # e.g., if drawdown is -10% (-0.10), it subtracts 0.5 points per step
+            drawdown_penalty_coef = 5.0
+            reward += current_drawdown * drawdown_penalty_coef
             if not done and current_asset_value > 0:
                 hold_cost = current_asset_value * self.hold_cost_rate
                 reward -= hold_cost

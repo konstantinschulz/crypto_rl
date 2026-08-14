@@ -214,6 +214,10 @@ def _resolve_dashboard_kpis(data):
     # Extract evaluation results
     eval_results = finance.get("evaluation_results", {})
 
+    # Training window timestamps
+    training_start = run.get("training_start")
+    training_end = run.get("training_end")
+
     return {
         "step": int(_to_float(run.get("current_step", 0), 0)),
         "train_loss": _to_float(tech.get("loss", {}).get("train", 0.0), 0.0),
@@ -238,6 +242,8 @@ def _resolve_dashboard_kpis(data):
         "eval_buy_hold_baseline": _to_float(eval_results.get("buy_hold_baseline", 0.0), 0.0),
         "eval_trades": int(_to_float(eval_results.get("eval_trades", 0), 0)), # Added for evaluation
         "eval_win_rate_pct": _to_float(eval_results.get("eval_win_rate_pct", 0.0), 0.0), # Added for evaluation
+        "training_start": training_start,
+        "training_end": training_end,
     }
 
 
@@ -348,7 +354,8 @@ st.sidebar.markdown(f"**Window Size:** {tech.get('window_size', '-')}")
 st.sidebar.markdown(f"**Reward Type:** {tech.get('reward_type', '-')}")
 st.sidebar.markdown(f"**Started:** {run.get('started_at', '-')}")
 st.sidebar.markdown(f"**Elapsed:** {_format_elapsed(_elapsed_seconds_for_run(run))}")
-st.sidebar.markdown(f"**Progress:** {run.get('progress_pct', 0)}%")
+st.sidebar.markdown(f"**Training Start:** {run.get('training_start', '-')}")
+st.sidebar.markdown(f"**Training End:** {run.get('training_end', '-')}")
 
 st.subheader("Training Metrics")
 col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)

@@ -44,6 +44,52 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     train_prices_df, test_prices_df = read_train_test(
         args.parquet_path, n_train, n_test
     )
+    # Compute training window timestamps for metadata using pandas datetime conversion
+    # Handles timestamps that may be in seconds, milliseconds, or nanoseconds
+    start_ts_raw = train_prices_df["open_time"].min()
+    end_ts_raw = train_prices_df["open_time"].max()
+
+    # Convert using pandas; infer the unit by magnitude
+    def _to_datetime(ts):
+        """
+        Convert a raw timestamp value to a pandas Timestamp.
+
+        The data source can provide the timestamp in three different ways:
+          * pd.Timestamp (already a datetime64[ns] object)
+          * int/np.integer in seconds, milliseconds, or nanoseconds
+        The function normalises all of them to a pandas Timestamp in UTC.
+        """
+        # 1️⃣ Already a Timestamp → nothing to do
+        if isinstance(ts, pd.Timestamp):
+            return ts
+        # 2️⃣ Raw integer → infer its unit
+        if isinstance(ts, (int, np.integer)):
+            # microseconds are > 1e12 (≈ 1970‑01‑01 00:00:01 ms)
+            if (
+                ts >= 1_000_000_000_000_000
+            ):  # > 1 quadrillion → microseconds, divide by 1 million to get seconds
+                return pd.to_datetime(ts / 1000000, unit="s")
+            # milliseconds are > 1e9 (≈ 1970‑01‑01 00:00:01 s)
+            if ts >= 1_000_000_000:  # > 1 billion → milliseconds
+                return pd.to_datetime(ts, unit="ms")
+            # otherwise treat as seconds
+            return pd.to_datetime(ts, unit="s")
+
+        # 3️⃣ Anything else – let pandas decide (covers strings etc.)
+        return pd.to_datetime(ts)
+
+    training_start_str = (
+        _to_datetime(start_ts_raw)
+        .tz_localize("UTC")
+        # .tz_convert("Europe/Berlin")
+        .strftime("%Y-%m-%d %H:%M:%S %Z")
+    )
+    training_end_str = (
+        _to_datetime(end_ts_raw)
+        .tz_localize("UTC")
+        # .tz_convert("Europe/Berlin")
+        .strftime("%Y-%m-%d %H:%M:%S %Z")
+    )
 
     prices_arr, static_obs, asset_names = compute_static_obs_from_long_df(
         train_prices_df, args.window_size
@@ -75,7 +121,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 n_rows=args.rows,
                 action_space_type=args.action_space_type,
                 max_single_step_allocation=args.max_single_step_allocation,
-                disable_logging=False,
+                disable_logging=trial is not None,  # disable logging for optuna
                 action_dead_zone=args.action_dead_zone,
                 hold_incentive=args.hold_incentive,
             )
@@ -97,6 +143,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     base_run_dir = Path(args.run_dir) if args.run_dir else Path("logs")
     run_dir = base_run_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    # For DashboardCallback and CheckpointCallback:
+    # Ensure checks happen at most 5 to 10 times per run instead of 100 times
+    safe_check_freq = max(500, args.timesteps // 5)
     if args.dashboard:
         state_file = run_dir / "state.json"
         # Update index file
@@ -124,14 +173,16 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             state_file,
             window_size=args.window_size,
             reward_type=args.reward_type,
-            check_freq=max(1, args.timesteps // 100 if args.timesteps >= 100 else 1),
+            check_freq=safe_check_freq,
             run_id=run_id,
             total_timesteps=args.timesteps,
             num_data_rows=args.rows,
+            training_start_str=training_start_str,
+            training_end_str=training_end_str,
         )
     print_if_not_trial(trial, "Computing test observations...")
-    shared_test_prices, shared_test_static, shared_test_names = compute_static_obs_from_long_df(
-        test_prices_df, args.window_size
+    shared_test_prices, shared_test_static, shared_test_names = (
+        compute_static_obs_from_long_df(test_prices_df, args.window_size)
     )
     # Setup checkpoint directory
     checkpoint_dir = run_dir / "checkpoints"
@@ -154,7 +205,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         checkpoint_callback = CheckpointCallback(
             checkpoint_dir=checkpoint_dir,
             test_env=checkpoint_test_env,
-            check_freq=max(1, args.timesteps // 100 if args.timesteps >= 100 else 1),
+            check_freq=safe_check_freq,
             max_checkpoints=args.max_checkpoints,
         )
 
@@ -375,8 +426,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                     [ms_test, pd.DataFrame(dummy_rows)], ignore_index=True
                 )
             # Prepare multi‑seed environment from raw parquet slice
-            ms_prices_arr, ms_static_obs, ms_asset_names = compute_static_obs_from_long_df(
-                ms_test, args.window_size
+            ms_prices_arr, ms_static_obs, ms_asset_names = (
+                compute_static_obs_from_long_df(ms_test, args.window_size)
             )
             ms_env = MinimalCryptoEnv(
                 prices_arr=ms_prices_arr,
