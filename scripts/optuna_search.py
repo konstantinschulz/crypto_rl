@@ -25,22 +25,24 @@ def objective(trial: optuna.trial.Trial):
     args = parser.parse_args([])
 
     # Suggest hyperparameters via Optuna
-    args.profit_bonus = trial.suggest_float("profit_bonus", 0.0, 0.5)
-    args.hold_cost_rate = trial.suggest_float("hold_cost_rate", 1e-7, 1e-5, log=True)
+    args.action_dead_zone = trial.suggest_float("action_dead_zone", 0.05, 0.30)
+    args.batch_size = trial.suggest_categorical("batch_size", [128, 256, 512, 1024])
+    args.clip_range = trial.suggest_float("clip", 0.01, 0.3)
     args.empty_buy_penalty = trial.suggest_float("empty_buy_penalty", 1e-4, 1e-1)
     args.empty_sell_penalty = trial.suggest_float("empty_sell_penalty", 1e-4, 1e-1)
+    args.gamma = trial.suggest_float("gamma", 0.98, 0.999)
+    args.hold_cost_rate = trial.suggest_float("hold_cost_rate", 1e-7, 1e-5, log=True)
+    args.hold_incentive = trial.suggest_float("hold_incentive", 1e-6, 0.002, log=True)
     args.illegal_buy_penalty = trial.suggest_float("illegal_buy_penalty", 1e-5, 1e-2)
     args.illegal_sell_penalty = trial.suggest_float("illegal_sell_penalty", 5e-4, 1e-1)
-    args.action_dead_zone = trial.suggest_float("action_dead_zone", 0.05, 0.30)
-    args.hold_incentive = trial.suggest_float("hold_incentive", 0.0, 0.002, log=True)
-    args.lr = trial.suggest_float("learning_rate", 5e-5, 5e-4, log=True)
-    args.gamma = trial.suggest_float("gamma", 0.98, 0.999)
+    args.learning_rate = trial.suggest_float("learning_rate", 1e-6, 1e-3, log=True)
+    args.n_envs = trial.suggest_int("n_envs", 3, 12)
     args.n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048, 4096])
-    args.batch_size = trial.suggest_categorical("batch_size", [128, 256, 512, 1024])
+    args.profit_bonus = trial.suggest_float("profit_bonus", 0.0, 0.5)
     args.window_size = trial.suggest_categorical("window_size", [30, 60, 120, 240])
-    # clip = trial.suggest_float("clip", 0.1, 0.4)
 
     # Scale up timesteps for Standard Tuning
+    args.n_envs = 4
     args.rows = 40000  # 10000 / 20000  / 40000
     args.timesteps = 150000  # 30000 / 50000 / 100000
     args.dashboard = False
@@ -58,7 +60,7 @@ def objective(trial: optuna.trial.Trial):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--n-trials", type=int, default=40)
+    p.add_argument("--n-trials", type=int, default=20)
     args = p.parse_args()
     study = optuna.create_study(
         direction="maximize",

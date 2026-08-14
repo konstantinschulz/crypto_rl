@@ -7,6 +7,7 @@ Call :func:`build_parser` to get a pre-configured :class:`argparse.ArgumentParse
 """
 
 import argparse
+import numpy as np
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,8 +42,8 @@ Examples:
     parser.add_argument(
         "--data-seed",
         type=int,
-        default=42,
-        help="Seed for data subset selection (default: 42)",
+        default=None,
+        help="Seed for data subset selection (default: None = random / no seed)",
     )
 
     # ------------------------------------------------------------------ training
@@ -56,7 +57,7 @@ Examples:
     parser.add_argument(
         "--algorithm",
         type=str,
-        default="SAC",
+        default="PPO",
         choices=["PPO", "SAC"],
         help="RL algorithm to use for training: PPO or SAC (default: SAC)",
     )
@@ -101,6 +102,12 @@ Examples:
         type=int,
         default=1024,
         help="The number of steps to run for each PPO model environment per update (i.e. rollout buffer size is n_steps * n_envs where n_envs is number of environment copies running in parallel)",
+    )
+    parser.add_argument(
+        "--n-envs",
+        type=int,
+        default=4,
+        help="Number of parallel environments for training (default: 4).",
     )
 
     # ------------------------------------------------------------------ environment
@@ -199,13 +206,21 @@ Examples:
     # ------------------------------------------------------------------ dashboard
     parser.add_argument(
         "--dashboard",
-        #action="store_true",
-        type=bool,
-        default=True,
-        help=(
-            "Enable dashboard integration: creates run entry in rl_dashboard_index.json "
-            "and writes periodic state.json for live monitoring in streamlit_dashboard.py"
-        ),
+        action="store_true",
+        default=False,
+        help="Enable dashboard UI",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        default=False,
+        help="Enable checkpointing of best Sharpe model",
+    )
+    parser.add_argument(
+        "--max-checkpoints",
+        type=int,
+        default=5,
+        help="Maximum number of checkpoints to retain (default 5)",
     )
     parser.add_argument(
         "--run-dir",

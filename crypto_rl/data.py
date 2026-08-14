@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pyarrow.dataset as ds
 
 # Try to use pyarrow for efficient, row-group-aware parquet reads so we
 # don't load the entire file into memory.  Fallback to pandas.read_parquet
@@ -109,6 +110,7 @@ def _random_window(times: np.ndarray, k: int) -> tuple:
 def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
     """Fallback path used when PyArrow is unavailable."""
     df = pd.read_parquet(path, columns=cols).dropna()
+    df = _downcast_ohlcv(df)
     symbols = _pick_symbols(list(df["symbol"].unique()))
     k = max(1, n // len(symbols))
 
@@ -120,7 +122,9 @@ def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
     return df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
 
 
-def get_valid_start_timestamps(path: str, n: int = 10000) -> tuple[np.ndarray, list[str], int]:
+def get_valid_start_timestamps(
+    path: str, n: int = 10000
+) -> tuple[np.ndarray, list[str], int]:
     """Scan the dataset once to pre-load valid start timestamps and symbol list.
 
     Returns
@@ -134,7 +138,9 @@ def get_valid_start_timestamps(path: str, n: int = 10000) -> tuple[np.ndarray, l
         symbols = _pick_symbols(list(df["symbol"].unique()))
         k = max(1, n // len(symbols))
         df_sub = df[df["symbol"].isin(symbols)]
-        anchor_times = np.sort(df_sub[df_sub["symbol"] == symbols[0]]["open_time"].unique())
+        anchor_times = np.sort(
+            df_sub[df_sub["symbol"] == symbols[0]]["open_time"].unique()
+        )
         return anchor_times, symbols, k
 
     dataset = ds.dataset(path, format="parquet")
@@ -177,9 +183,12 @@ def read_window_from_timestamps(
 
     if ds is None or pq is None:
         df = pd.read_parquet(path, columns=cols).dropna()
+        df = _downcast_ohlcv(df)
         df_sub = df[df["symbol"].isin(symbols)]
         mask = (df_sub["open_time"] >= t_start) & (df_sub["open_time"] <= t_end)
-        return df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+        return (
+            df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+        )
 
     dataset = ds.dataset(path, format="parquet")
     query_filter = (
@@ -188,6 +197,7 @@ def read_window_from_timestamps(
         & (ds.field("open_time") <= t_end)
     )
     df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
+    df = _downcast_ohlcv(df)
     return df.dropna().sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
 
 
@@ -204,18 +214,60 @@ def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
 
 
 def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return (train_df, test_df) with a walk‑forward split.
-
-    Loads the most recent (n_train + n_test) rows chronologically and
-    splits them so that the last n_test rows are used as the test set.
-    """
+    """Return (train_df, test_df) with a walk-forward split using memory-efficient PyArrow reads."""
     total = n_train + n_test
     cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
-    # Load data (fallback to pandas if pyarrow unavailable)
-    df = pd.read_parquet(path, columns=cols).dropna()
-    df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
-    # Keep only the most recent total rows
-    df = df.iloc[-total:]
+
+    try:
+        dataset = ds.dataset(path, format="parquet")
+
+        # 1. Load ONLY the timestamps (a fraction of the memory footprint)
+        times_arr = (
+            dataset.to_table(columns=["open_time"]).column("open_time").to_numpy()
+        )
+
+        if len(times_arr) > total:
+            # 2. Find the exact cutoff timestamp using O(N) partition (much faster than sorting)
+            cutoff_time = np.partition(times_arr, -total)[-total]
+
+            # 3. Push the filter down to PyArrow so it only extracts the tail-end rows into RAM
+            df = dataset.to_table(
+                columns=cols, filter=ds.field("open_time") >= cutoff_time
+            ).to_pandas()
+
+            # Ensure strict sorting and trim any excess rows that share the exact cutoff timestamp
+            df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+            df = df.iloc[-total:]
+        else:
+            df = dataset.to_table(columns=cols).to_pandas()
+            df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+
+    except Exception as e:
+        print(
+            f"PyArrow optimized read failed ({e}), falling back to pandas memory-hog read..."
+        )
+        df = pd.read_parquet(path, columns=cols).dropna()
+        df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+        df = df.iloc[-total:]
+
+    df = df.dropna()
+    df = _downcast_ohlcv(df)
+
     train_df = df.iloc[:n_train]
     test_df = df.iloc[n_train:]
     return train_df, test_df
+
+
+_OHLCV_NUMERIC_COLS = ["close", "open", "high", "low", "volume"]
+
+
+def _downcast_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    """Cast OHLCV numeric columns to float32 in-place to halve memory.
+
+    Only columns that exist in the DataFrame are touched, so this is safe
+    to call on any subset of the full schema.
+    """
+    for col in _OHLCV_NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype(np.float32)
+    return df

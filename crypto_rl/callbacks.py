@@ -315,3 +315,71 @@ class TrialEvalCallback(EvalCallback):
                 self.is_pruned = True
                 return False
         return True
+
+# New checkpoint callback that saves model when Sharpe improves
+class CheckpointCallback(BaseCallback):
+    """
+    Save model checkpoint whenever a new best Sharpe ratio is achieved on a test environment.
+
+    Parameters
+    ----------
+    checkpoint_dir: Path
+        Directory where checkpoint files will be saved.
+    test_env: MinimalCryptoEnv
+        Environment used for evaluation to compute Sharpe.
+    check_freq: int
+        How often (in timesteps) to evaluate and possibly checkpoint.
+    max_checkpoints: int
+        Maximum number of checkpoint files to retain globally. Older ones are deleted.
+    """
+
+    def __init__(
+        self,
+        checkpoint_dir: Path,
+        test_env: MinimalCryptoEnv,
+        check_freq: int = 500,
+        max_checkpoints: int = 5,
+    ):
+        super().__init__()
+        self.checkpoint_dir = checkpoint_dir
+        self.test_env = test_env
+        self.check_freq = check_freq
+        self.max_checkpoints = max_checkpoints
+        self.best_sharpe = -float('inf')
+        # Ensure directory exists
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps % self.check_freq == 0:
+            sharpe = self._evaluate_sharpe()
+            if sharpe > self.best_sharpe:
+                self.best_sharpe = sharpe
+                timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+                ckpt_path = self.checkpoint_dir / f"checkpoint_{self.num_timesteps}_sharpe_{sharpe:.4f}_{timestamp}.zip"
+                self.model.save(str(ckpt_path))
+                # Enforce max checkpoints globally
+                all_ckpts = sorted(self.checkpoint_dir.parent.parent.glob("**/*.zip"), key=lambda p: p.stat().st_mtime)
+                if len(all_ckpts) > self.max_checkpoints:
+                    for old_ckpt in all_ckpts[:-self.max_checkpoints]:
+                        try:
+                            old_ckpt.unlink()
+                        except Exception:
+                            pass
+        return True
+
+    def _evaluate_sharpe(self) -> float:
+        """Run a full evaluation on the test environment and compute Sharpe ratio."""
+        obs, _ = self.test_env.reset()
+        done = False
+        portfolio_values = [{"step": 0, "value": float(self.test_env.portfolio_value)}]
+        while not done:
+            action, _ = self.model.predict(obs, deterministic=True)
+            obs, _, done, _, _ = self.test_env.step(action)
+            portfolio_values.append({"step": len(portfolio_values), "value": float(self.test_env.portfolio_value)})
+        pv_series = np.array([v["value"] for v in portfolio_values])
+        returns = np.diff(pv_series) / pv_series[:-1]
+        sharpe = (returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600))
+        # Reset env for future use
+        self.test_env.reset()
+        return sharpe
+

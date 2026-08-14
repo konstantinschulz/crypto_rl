@@ -1,3 +1,4 @@
+import gc
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,14 +13,15 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl import MinimalCryptoEnv, read_last_n
-from crypto_rl.callbacks import DashboardCallback, TrialEvalCallback
-from crypto_rl.cli import build_parser
+from crypto_rl.callbacks import CheckpointCallback, DashboardCallback, TrialEvalCallback
 from crypto_rl.data import read_train_test
+from crypto_rl.env.data_utils import compute_static_obs_from_long_df
 from scripts.eval_log_action_counter import eval_log_action_counter
 from scripts.eval_report import eval_report
 
 # Global budget variable required by other parts of the package
 global BUDGET_INITIAL
+
 
 def print_if_not_trial(trial: optuna.trial.Trial | None = None, msg: str = ""):
     if trial is None:
@@ -43,31 +45,43 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         args.parquet_path, n_train, n_test
     )
 
+    prices_arr, static_obs, asset_names = compute_static_obs_from_long_df(
+        train_prices_df, args.window_size
+    )
+
     run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
 
     print_if_not_trial(trial, "2. Setting up environment...")
-    minimal_crypto_env = MinimalCryptoEnv(
-        train_prices_df,
-        window_size=args.window_size,
-        run_id=run_id,
-        fee_rate=args.fee_rate,
-        reward_type=args.reward_type,
-        hold_cost_rate=args.hold_cost_rate,
-        empty_buy_penalty=args.empty_buy_penalty,
-        empty_sell_penalty=args.empty_sell_penalty,
-        illegal_sell_penalty=args.illegal_sell_penalty,
-        illegal_buy_penalty=args.illegal_buy_penalty,
-        trade_freq_incentive=args.trade_freq_incentive,
-        profit_bonus=args.profit_bonus,
-        parquet_path=args.parquet_path,
-        n_rows=args.rows,
-        action_space_type=args.action_space_type,
-        max_single_step_allocation=args.max_single_step_allocation,
-        action_dead_zone=args.action_dead_zone,
-        hold_incentive=args.hold_incentive,
-    )
+    # Create multiple parallel training environments
+    env_fns = []
+    for _ in range(args.n_envs):
+        env_fns.append(
+            lambda: MinimalCryptoEnv(
+                prices_arr=prices_arr,
+                static_obs=static_obs,
+                asset_names=asset_names,
+                window_size=args.window_size,
+                run_id=run_id,
+                fee_rate=args.fee_rate,
+                reward_type=args.reward_type,
+                hold_cost_rate=args.hold_cost_rate,
+                empty_buy_penalty=args.empty_buy_penalty,
+                empty_sell_penalty=args.empty_sell_penalty,
+                illegal_sell_penalty=args.illegal_sell_penalty,
+                illegal_buy_penalty=args.illegal_buy_penalty,
+                trade_freq_incentive=args.trade_freq_incentive,
+                profit_bonus=args.profit_bonus,
+                parquet_path=None,
+                n_rows=args.rows,
+                action_space_type=args.action_space_type,
+                max_single_step_allocation=args.max_single_step_allocation,
+                disable_logging=False,
+                action_dead_zone=args.action_dead_zone,
+                hold_incentive=args.hold_incentive,
+            )
+        )
     train_env = VecNormalize(
-        DummyVecEnv([lambda: minimal_crypto_env]),
+        DummyVecEnv(env_fns),
         norm_reward=True,
         norm_obs=False,  # obs already normalized manually
         gamma=args.gamma,
@@ -77,11 +91,13 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     callback = None
     run_dir = None
     state_file = None
+    checkpoint_callback = None
+    checkpoint_dir = None
     index_file = Path("rl_dashboard_index.json")
+    base_run_dir = Path(args.run_dir) if args.run_dir else Path("logs")
+    run_dir = base_run_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
     if args.dashboard:
-        base_run_dir = Path(args.run_dir) if args.run_dir else Path("logs")
-        run_dir = base_run_dir / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
         state_file = run_dir / "state.json"
         # Update index file
         try:
@@ -113,13 +129,43 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             total_timesteps=args.timesteps,
             num_data_rows=args.rows,
         )
+    print_if_not_trial(trial, "Computing test observations...")
+    shared_test_prices, shared_test_static, shared_test_names = compute_static_obs_from_long_df(
+        test_prices_df, args.window_size
+    )
+    # Setup checkpoint directory
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if args.checkpoint:
+        checkpoint_test_env = MinimalCryptoEnv(
+            prices_arr=shared_test_prices,
+            static_obs=shared_test_static,
+            asset_names=shared_test_names,
+            window_size=args.window_size,
+            run_id=run_id,
+            fee_rate=args.fee_rate,
+            reward_type=args.reward_type,
+            trade_freq_incentive=args.trade_freq_incentive,
+            is_eval=True,
+            action_space_type=args.action_space_type,
+            action_dead_zone=args.action_dead_zone,
+            hold_incentive=args.hold_incentive,
+        )
+        checkpoint_callback = CheckpointCallback(
+            checkpoint_dir=checkpoint_dir,
+            test_env=checkpoint_test_env,
+            check_freq=max(1, args.timesteps // 100 if args.timesteps >= 100 else 1),
+            max_checkpoints=args.max_checkpoints,
+        )
 
     # Optuna evaluation callback (optional)
     eval_callback = None
     eval_env = None
     if trial is not None:
         raw_env = MinimalCryptoEnv(
-            test_prices_df,
+            prices_arr=shared_test_prices,
+            static_obs=shared_test_static,
+            asset_names=shared_test_names,
             window_size=args.window_size,
             run_id=run_id,
             fee_rate=args.fee_rate,
@@ -197,6 +243,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         callbacks.append(callback)
     if eval_callback is not None:
         callbacks.append(eval_callback)
+    if checkpoint_callback is not None:
+        callbacks.append(checkpoint_callback)
 
     if callbacks:
         model.learn(total_timesteps=args.timesteps, callback=callbacks)
@@ -212,7 +260,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
 
     print_if_not_trial(trial, "4. Testing the trained model...")
     test_env = MinimalCryptoEnv(
-        test_prices_df,
+        prices_arr=shared_test_prices,
+        static_obs=shared_test_static,
+        asset_names=shared_test_names,
         window_size=args.window_size,
         run_id=run_id,
         fee_rate=args.fee_rate,
@@ -240,11 +290,15 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             if info.get("realised_pnl", 0.0) > 0:
                 eval_winning_trades += 1
         eval_steps += 1
-        eval_portfolio_values.append({"step": eval_steps, "value": float(test_env.portfolio_value)})
-        eval_realized_pnl.append({
-            "step": eval_steps,
-            "value": float(test_env.portfolio_value - eval_initial_portfolio_value),
-        })
+        eval_portfolio_values.append(
+            {"step": eval_steps, "value": float(test_env.portfolio_value)}
+        )
+        eval_realized_pnl.append(
+            {
+                "step": eval_steps,
+                "value": float(test_env.portfolio_value - eval_initial_portfolio_value),
+            }
+        )
 
     eval_trades_count = test_env.trades_count
     test_env.close()
@@ -252,10 +306,14 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
 
     print_if_not_trial(trial, "-" * 30)
     print_if_not_trial(trial, "RESULTS:")
-    print_if_not_trial(trial, f"Final Test Portfolio Value: ${test_env.portfolio_value:.2f}")
+    print_if_not_trial(
+        trial, f"Final Test Portfolio Value: ${test_env.portfolio_value:.2f}"
+    )
     print_if_not_trial(trial, f"Total Trades (Eval):        {eval_trades_count}")
     print_if_not_trial(trial, f"Total Closed Trades (Sells): {eval_closed_trades}")
-    print_if_not_trial(trial, f"Total Fees Paid (Eval):     ${test_env.fees_paid_total:.4f}")
+    print_if_not_trial(
+        trial, f"Total Fees Paid (Eval):     ${test_env.fees_paid_total:.4f}"
+    )
 
     # Compute win rate and buy‑hold baseline for dashboard
     eval_win_rate_pct = (
@@ -263,17 +321,15 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         if eval_closed_trades > 0
         else 0.0
     )
-    pivoted_df = train_env.envs[0].prices_df
 
     # Select BTCUSDT if present, otherwise locate the first symbol with start_price > 0
-    if "BTCUSDT" in pivoted_df.columns and pivoted_df["BTCUSDT"].iloc[0] > 0:
-        first_asset = "BTCUSDT"
+    if "BTCUSDT" in asset_names:
+        btc_idx = asset_names.index("BTCUSDT")
+        start_price = prices_arr[0, btc_idx]
+        end_price = prices_arr[-1, btc_idx]
     else:
-        valid_cols = [c for c in pivoted_df.columns if pivoted_df[c].iloc[0] > 1e-8]
-        first_asset = valid_cols[0] if valid_cols else pivoted_df.columns[0]
-
-    start_price = pivoted_df.iloc[0][first_asset]
-    end_price = pivoted_df.iloc[-1][first_asset]
+        start_price = prices_arr[0, 0]
+        end_price = prices_arr[-1, 0]
 
     if start_price > 1e-8:
         buy_hold_return = (end_price - start_price) / start_price
@@ -287,33 +343,45 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         np.random.seed(mseed + 100)
         try:
             ms_prices = read_last_n(args.parquet_path, n=args.rows)
+            # read_last_n already returns float32 columns; downcast as safety net
             # Split by unique timestamps
             unique_times = sorted(ms_prices.open_time.unique())
             split_idx = int(len(unique_times) * (1 - TEST_FRACTION))
             split_time = unique_times[split_idx]
             ms_test = ms_prices[ms_prices.open_time >= split_time].copy()
+            del ms_prices  # free the full window immediately
+            gc.collect()
             # Filter to train symbols
-            train_symbols = train_prices_df["symbol"].unique().tolist()
-            ms_test = ms_test[ms_test["symbol"].isin(train_symbols)]
+            ms_test = ms_test[ms_test["symbol"].isin(asset_names)]
             # INJECT MISSING SYMBOLS TO GUARANTEE SHAPE MATCH
             ms_symbols = ms_test["symbol"].unique().tolist()
-            missing_symbols = set(train_symbols) - set(ms_symbols)
+            missing_symbols = set(asset_names) - set(ms_symbols)
             if missing_symbols:
                 dummy_rows = []
                 first_time = ms_test["open_time"].min()
                 for sym in missing_symbols:
-                    dummy_rows.append({
-                        "open_time": first_time,
-                        "symbol": sym,
-                        "open": 0.0,
-                        "high": 0.0,
-                        "low": 0.0,
-                        "close": 0.0,
-                        "volume": 0.0,
-                    })
-                ms_test = pd.concat([ms_test, pd.DataFrame(dummy_rows)], ignore_index=True)
+                    dummy_rows.append(
+                        {
+                            "open_time": first_time,
+                            "symbol": sym,
+                            "open": 0.0,
+                            "high": 0.0,
+                            "low": 0.0,
+                            "close": 0.0,
+                            "volume": 0.0,
+                        }
+                    )
+                ms_test = pd.concat(
+                    [ms_test, pd.DataFrame(dummy_rows)], ignore_index=True
+                )
+            # Prepare multi‑seed environment from raw parquet slice
+            ms_prices_arr, ms_static_obs, ms_asset_names = compute_static_obs_from_long_df(
+                ms_test, args.window_size
+            )
             ms_env = MinimalCryptoEnv(
-                ms_test,
+                prices_arr=ms_prices_arr,
+                static_obs=ms_static_obs,
+                asset_names=ms_asset_names,
                 window_size=args.window_size,
                 run_id=run_id,
                 fee_rate=args.fee_rate,
@@ -337,9 +405,15 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         arr = np.array(multi_seed_pv)
         print_if_not_trial(
             trial,
-            f"  n={len(arr)}  mean=${{arr.mean():.2f}}  std=${{arr.std():.2f}}  "
-            f"min=${{arr.min():.2f}}  max=${{arr.max():.2f}}",
+            f"  n={len(arr)}  mean=${arr.mean():.2f}  std=${arr.std():.2f}  "
+            f"min=${arr.min():.2f}  max=${arr.max():.2f}",
         )
+    # Calculate Sharpe ratio for Optuna objective / returned score
+    pv_series = np.array([v["value"] for v in eval_portfolio_values])
+    returns = np.diff(pv_series) / pv_series[:-1]
+    sharpe = (
+        returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
+    )  # 1‑min annualized
 
     # Dashboard update
     if args.dashboard and state_file and state_file.exists():
@@ -347,7 +421,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             with open(state_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
             state["run"]["status"] = "evaluated"
-            state["run"]["finished_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+            state["run"]["finished_at"] = datetime.now(UTC).strftime(
+                "%Y-%m-%d %H:%M:%S UTC"
+            )
             state["finance"]["evaluation_results"] = {
                 "final_portfolio_value": float(test_env.portfolio_value),
                 "pnl": float(test_env.portfolio_value - eval_initial_portfolio_value),
@@ -357,6 +433,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 "buy_hold_baseline": float(buy_hold_final),
                 "total_fees_paid": float(test_env.fees_paid_total),
             }
+            # Add Sharpe ratio to finance section for dashboard display
+            state["finance"]["sharpe"] = float(sharpe)
             if "series" not in state:
                 state["series"] = {}
             state["series"]["test_portfolio_value"] = eval_portfolio_values
@@ -369,11 +447,6 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             )
         except Exception as e:
             print_if_not_trial(trial, f"Error updating dashboard state: {e}")
-
-    # Calculate Sharpe ratio for Optuna objective / returned score
-    pv_series = np.array([v["value"] for v in eval_portfolio_values])
-    returns = np.diff(pv_series) / pv_series[:-1]
-    sharpe = (returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600))  # 1‑min annualized
 
     if trial is None:
         eval_log_action_counter()

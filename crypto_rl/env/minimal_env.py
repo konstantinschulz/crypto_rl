@@ -1,18 +1,17 @@
 import logging
-from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
-import pandas as pd
 from gymnasium import spaces
 
+from crypto_rl.env.action_processing import (
+    apply_continuous_action,
+    apply_discrete_action,
+)
 from crypto_rl.env.data_utils import pivot_ohlcv
 from crypto_rl.env.feature_utils import precalculate_static_obs
 from crypto_rl.env.logging_utils import flush_log_parquet, init_log, log_action
-
-# New helper modules
 from crypto_rl.env.observation import build_observation
-from crypto_rl.env.action_processing import apply_continuous_action, apply_discrete_action
 
 BUDGET_INITIAL = 100.0
 
@@ -52,7 +51,9 @@ class MinimalCryptoEnv(gym.Env):
 
     def __init__(
         self,
-        prices_df: pd.DataFrame,
+        prices_arr: np.ndarray,
+        static_obs: np.ndarray,
+        asset_names: list[str],
         window_size: int = 10,
         run_id: str = "default",
         fee_rate: float = 0.0007,
@@ -74,11 +75,17 @@ class MinimalCryptoEnv(gym.Env):
         hold_incentive: float = 0.0005,
     ):
         super().__init__()
-        self.precalc_static_obs: np.ndarray
-        self.prices_arr: np.ndarray
-        self.prices_df, self.open_df, self.high_df, self.low_df, self.volume_df = (
-            pivot_ohlcv(prices_df)
-        )
+        # Preprocessed data supplied externally
+        self.prices_arr: np.ndarray = prices_arr
+        self.precalc_static_obs: np.ndarray = static_obs
+        self.asset_names: list[str] = asset_names
+        self.num_assets: int = len(asset_names)
+        # Preserve DataFrame attributes for compatibility when resetting from parquet
+        self.prices_df = None
+        self.open_df = None
+        self.high_df = None
+        self.low_df = None
+        self.volume_df = None
         self.window_size = window_size
         self.run_id = run_id
         self.fee_rate = fee_rate
@@ -95,8 +102,8 @@ class MinimalCryptoEnv(gym.Env):
         self.disable_logging = disable_logging
         self.fees_paid_total = 0.0
         self.last_invalid_sell = False
-        self.num_assets = self.prices_df.shape[1]
-        self.asset_names = self.prices_df.columns.tolist()
+        # self.num_assets and asset_names are set from provided arguments
+        # self.asset_names already set from provided arguments
         self.action_dead_zone = action_dead_zone
         self.hold_incentive = hold_incentive
 
@@ -154,7 +161,8 @@ class MinimalCryptoEnv(gym.Env):
                 get_valid_start_timestamps(self.parquet_path, n=self.n_rows)
             )
 
-        precalculate_static_obs(self)
+        # Static observations already precomputed; no need to recalculate here.
+        # If parquet_path is provided for evaluation, static_obs will be recomputed in reset.
 
     # Deprecated: pivot logic moved to data_utils.pivot_ohlcv
     # def _pivot_dataframe(self, prices_df) -> pd.DataFrame:
@@ -261,7 +269,9 @@ class MinimalCryptoEnv(gym.Env):
             fee_paid, trade_units = apply_continuous_action(self, action)
         else:
             # Discrete action processing moved to helper
-            fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price = apply_discrete_action(self, action)
+            fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price = (
+                apply_discrete_action(self, action)
+            )
 
         # Advance step
         self.current_step += 1
@@ -298,7 +308,9 @@ class MinimalCryptoEnv(gym.Env):
         else:
             reward += profit_bonus_reward
             n_held = sum(
-                1 for i in range(self.num_assets) if abs(action[i]) <= self.action_dead_zone
+                1
+                for i in range(self.num_assets)
+                if abs(action[i]) <= self.action_dead_zone
             )
             reward += n_held * self.hold_incentive
 
