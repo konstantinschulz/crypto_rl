@@ -393,6 +393,44 @@ if st.session_state.get('finance_view') == "Eval":
         y=alt.Y("Value:Q")
     )
     st.altair_chart(chart, use_container_width=True)
+# Explainability Section
+explainability = data.get("explainability", {})
+cumulative_rewards = explainability.get("cumulative_rewards", {})
+
+if cumulative_rewards:
+    st.markdown("---")
+    st.subheader("Explainability: Reward Decomposition (Evaluation)")
+    
+    # 1. Show the active hyperparameters that affect these rewards
+    hyperparams = explainability.get("hyperparameters", {})
+    if hyperparams:
+        hp_str = " | ".join([f"**{k}**: {v}" for k, v in hyperparams.items()])
+        st.markdown(f"> {hp_str}")
+
+    # 2. Plot the cumulative reward components
+    df_components = pd.DataFrame(list(cumulative_rewards.items()), columns=["Component", "Cumulative Reward"])
+    
+    # Filter out absolute zeros for a cleaner chart
+    df_components = df_components[df_components["Cumulative Reward"] != 0.0]
+    
+    if not df_components.empty:
+        # Create a diverging bar chart (Green for positive, Red for negative)
+        explain_chart = alt.Chart(df_components).mark_bar().encode(
+            x=alt.X("Cumulative Reward:Q", title="Total Accumulated Reward"),
+            y=alt.Y("Component:N", sort="-x", title="Reward Component"),
+            color=alt.condition(
+                alt.datum['Cumulative Reward'] > 0,
+                alt.value("#2ca02c"),  # Green for positive
+                alt.value("#d62728")   # Red for negative
+            ),
+            tooltip=["Component:N", alt.Tooltip("Cumulative Reward:Q", format=".4f")]
+        ).properties(
+            height=250
+        )
+        
+        st.altair_chart(explain_chart, use_container_width=True)
+    else:
+        st.info("No reward components accumulated during this evaluation.")
 st.subheader("Training Series")
 
 # Portfolio Value

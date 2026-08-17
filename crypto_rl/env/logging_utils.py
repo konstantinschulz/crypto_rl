@@ -1,8 +1,7 @@
-import json
-import logging
 import time
 from pathlib import Path
 import pandas as pd
+
 
 def init_log(env, run_id: str = "default") -> None:
     """Initialize per-run action log path and clear in-memory log buffer."""
@@ -15,6 +14,7 @@ def init_log(env, run_id: str = "default") -> None:
     )
     env.log_buffer = []
 
+
 def flush_log_parquet(env) -> None:
     """Write buffered log entries to a single Parquet file at the end of an episode."""
     if not env.disable_logging and env.log_buffer and env.log_file_path:
@@ -22,10 +22,9 @@ def flush_log_parquet(env) -> None:
             df_log = pd.DataFrame(env.log_buffer)
             df_log.to_parquet(env.log_file_path, index=False)
         except Exception as e:
-            print(
-                f"Warning: Failed to write action log to {env.log_file_path}: {e}"
-            )
+            print(f"Warning: Failed to write action log to {env.log_file_path}: {e}")
         env.log_buffer = []
+
 
 def log_action(
     env,
@@ -36,6 +35,7 @@ def log_action(
     trade_price: float = 0.0,
     trade_units: float = 0.0,
     fee: float = 0.0,
+    reward_components: dict | None = None,
 ) -> None:
     """Record step details into the in-memory log buffer."""
     if env.disable_logging:
@@ -61,6 +61,7 @@ def log_action(
         "price": float(trade_price),
         "units": float(trade_units),
         "fee": float(fee),
+        "reward_components": reward_components
     }
     env.log_buffer.append(entry)
     env.last_invalid_sell = False

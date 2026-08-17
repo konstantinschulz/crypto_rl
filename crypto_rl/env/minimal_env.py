@@ -262,7 +262,6 @@ class MinimalCryptoEnv(gym.Env):
         realised_pnl = 0.0
 
         is_valid_sell = False
-        profit_bonus_reward = 0.0
         self.last_remap_note = None
 
         if self.action_space_type == "continuous":
@@ -284,6 +283,16 @@ class MinimalCryptoEnv(gym.Env):
         current_drawdown = (
             self.portfolio_value - self.peak_portfolio_value
         ) / self.peak_portfolio_value
+        # 1. Initialize a decomposition tracker
+        reward_components = {
+            "market_alpha": 0.0,
+            "hold_cost": 0.0,
+            "profit_bonus": 0.0,
+            "drawdown_penalty": 0.0,
+            "rule_penalties": -step_penalty,  # From invalid buys/sells
+            "hold_incentive": 0.0,
+            "terminal_return": 0.0,
+        }
 
         # Reward calculation (unchanged)
         if self.reward_type == "excess_return":
@@ -307,40 +316,45 @@ class MinimalCryptoEnv(gym.Env):
                 )  # Heavier penalty for underperformance
             else:
                 alpha_diff = (portfolio_return - market_return) * base_penalty
-            reward = alpha_diff
+            reward_components["market_alpha"] = alpha_diff
             # DIRECT DRAWDOWN PENALTY: Continuously bleed reward the deeper the drawdown gets
             # e.g., if drawdown is -10% (-0.10), it subtracts 0.5 points per step
             drawdown_penalty_coef = 5.0
-            reward += current_drawdown * drawdown_penalty_coef
+            reward_components["drawdown_penalty"] = (
+                current_drawdown * drawdown_penalty_coef
+            )
             if not done and current_asset_value > 0:
-                hold_cost = current_asset_value * self.hold_cost_rate
-                reward -= hold_cost
+                reward_components["hold_cost"] = -(
+                    current_asset_value * self.hold_cost_rate
+                )
         else:
-            reward = self.portfolio_value - prev_portfolio_value
+            reward_components["market_alpha"] = (
+                self.portfolio_value - prev_portfolio_value
+            )
 
         if self.action_space_type != "continuous":
             if realised_pnl > 0 and is_valid_sell:
                 hurdle = trade_units * trade_price * 0.002
                 if realised_pnl > hurdle:
-                    reward += self.profit_bonus
+                    reward_components["profit_bonus"] = self.profit_bonus
         else:
-            reward += profit_bonus_reward
+            reward_components["profit_bonus"] = self.profit_bonus
             n_held = sum(
                 1
                 for i in range(self.num_assets)
                 if abs(action[i]) <= self.action_dead_zone
             )
-            reward += n_held * self.hold_incentive
+            reward_components["hold_incentive"] = n_held * self.hold_incentive
 
         if done:
             terminal_return = (self.portfolio_value - BUDGET_INITIAL) / BUDGET_INITIAL
-            reward += terminal_return * 1.0
+            terminal_reward = terminal_return * 1.0
+            reward_components["terminal_return"] = terminal_reward
 
         if step_penalty >= 0.1:
             logging.debug(f"High step penalty value (>= 0.1): {step_penalty}")
 
-        reward -= step_penalty
-
+        reward = sum(reward_components.values())
         if not self.disable_logging:
             if self.action_space_type == "continuous":
                 exp_act = np.exp(action - np.max(action))
@@ -353,6 +367,7 @@ class MinimalCryptoEnv(gym.Env):
                     reward,
                     prev_portfolio_value,
                     fee=fee_paid,
+                    reward_components=reward_components,
                 )
             else:
                 # Discrete action logging remains unchanged (action variables are updated inside helper)
@@ -365,6 +380,7 @@ class MinimalCryptoEnv(gym.Env):
                     trade_price=trade_price,
                     trade_units=trade_units,
                     fee=fee_paid,
+                    reward_components=reward_components,
                 )
 
         return (
@@ -378,6 +394,7 @@ class MinimalCryptoEnv(gym.Env):
                 "realised_pnl": realised_pnl,
                 "is_valid_sell": is_valid_sell,
                 "episode_count": self.episode_count,
+                "reward_components": reward_components,
             },
         )
 

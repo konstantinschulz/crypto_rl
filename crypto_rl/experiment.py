@@ -332,10 +332,13 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     eval_realized_pnl = [{"step": 0, "value": 0.0}]
     eval_closed_trades = 0
     eval_winning_trades = 0
-
+    eval_reward_totals = {}
     while not done:
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, done, _, info = test_env.step(action)
+        if "reward_components" in info:
+            for k, v in info["reward_components"].items():
+                eval_reward_totals[k] = eval_reward_totals.get(k, 0) + v
         if info.get("is_valid_sell", False):
             eval_closed_trades += 1
             if info.get("realised_pnl", 0.0) > 0:
@@ -486,6 +489,14 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             }
             # Add Sharpe ratio to finance section for dashboard display
             state["finance"]["sharpe"] = float(sharpe)
+            state["explainability"] = {
+                "cumulative_rewards": {k: float(v) for k, v in eval_reward_totals.items()},
+                "hyperparameters": {
+                    "hold_cost_rate": args.hold_cost_rate,
+                    "action_dead_zone": args.action_dead_zone,
+                    "profit_bonus": args.profit_bonus
+                }
+            }
             if "series" not in state:
                 state["series"] = {}
             state["series"]["test_portfolio_value"] = eval_portfolio_values
