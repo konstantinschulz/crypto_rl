@@ -16,8 +16,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py --rows 10000 --timesteps 20000
-  python main.py --dashboard --rows 15000 --timesteps 50000 --run-dir logs
+  python main.py --n-rows 10000 --timesteps 20000
+  python main.py --dashboard --n-rows 15000 --timesteps 50000 --run-dir logs
         """,
     )
 
@@ -100,7 +100,7 @@ Examples:
         "--fee-rate",
         type=float,
         default=0.001,
-        help="Trading fee rate (flat percentage of trade volume, e.g. 0.001 for 0.1%)",
+        help="Trading fee rate (flat percentage of trade volume, e.g. 0.001 for 0.1%%)",
     )
     parser.add_argument(
         "--gamma",
@@ -170,7 +170,7 @@ Examples:
     parser.add_argument(
         "--parquet-path",
         type=str,
-        default="subset.parquet",
+        default="binance_spot_1m_last4y_single.parquet",
         help="Path to Parquet dataset file (default: subset.parquet)",
     )
     parser.add_argument(
@@ -180,6 +180,12 @@ Examples:
         help="Bonus reward for profitable trades (default 0.15). Encourages the agent to maximize the absolute amount of profit (realized PnL) for each trade.",
     )
     parser.add_argument(
+        "--drawdown-penalty-coef",
+        type=float,
+        default=5.0,
+        help="Coefficient for drawdown penalty term (default 5.0)",
+    )
+    parser.add_argument(
         "--reward-type",
         type=str,
         default="excess_return",
@@ -187,7 +193,7 @@ Examples:
         help="Reward function type to use for training (default: excess_return)",
     )
     parser.add_argument(
-        "--rows",
+        "--n-rows",
         type=int,
         default=10000,
         help=(
@@ -216,6 +222,12 @@ Examples:
         type=float,
         default=0.01,
         help="Bonus per profitable trade for frequency incentive (default 0.01). This encourages the agent to trade more frequently.",
+    )
+    parser.add_argument(
+        "--skip-multi-seed-eval",
+        action="store_true",
+        default=False,
+        help="Skip the slow multi-seed evaluation loop after training (useful for fast smoke tests)",
     )
     parser.add_argument(
         "--window-size",

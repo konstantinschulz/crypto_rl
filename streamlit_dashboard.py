@@ -294,7 +294,7 @@ st.session_state.finance_view = st.sidebar.selectbox(
     if st.session_state.finance_view in {"Both", "Train", "Eval"}
     else 0,
 )
-st.session_state.auto_refresh_enabled = st.sidebar.checkbox("Auto-Refresh (2s)", value=st.session_state.auto_refresh_enabled)
+st.session_state.auto_refresh_enabled = st.sidebar.checkbox("Auto-Refresh (5s)", value=st.session_state.auto_refresh_enabled)
 
 # Minimal run launcher: start the provided `main.py` training in background
 st.sidebar.markdown("---")
@@ -313,7 +313,7 @@ with start_col:
             python_exe,
             "main.py",
             "--dashboard",
-            "--rows",
+            "--n-rows",
             str(int(min_rows)),
             "--timesteps",
             str(int(min_steps)),
@@ -357,6 +357,19 @@ st.sidebar.markdown(f"**Elapsed:** {_format_elapsed(_elapsed_seconds_for_run(run
 st.sidebar.markdown(f"**Training Start:** {run.get('training_start', '-')}")
 st.sidebar.markdown(f"**Training End:** {run.get('training_end', '-')}")
 
+# Progress bar — show only while training is active or just finished
+_progress_pct = int(_to_float(run.get("progress_pct", 0), 0))
+_status = str(run.get("status", "")).lower()
+if _status in {"initializing", "running", "finished"}:
+    _step = int(_to_float(run.get("current_step", 0), 0))
+    _total = int(_to_float(run.get("total_timesteps", 0), 0))
+    _label = (
+        f"Progress: {_progress_pct}%"
+        + (f"  —  Step {_step:,}" if _step else "")
+        + (" ✓ Complete" if _status == "finished" else "")
+    )
+    st.progress(_progress_pct / 100.0, text=_label)
+
 st.subheader("Training Metrics")
 col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)
 col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
@@ -392,7 +405,7 @@ if st.session_state.get('finance_view') == "Eval":
         x=alt.X("Metric:N", sort=None),
         y=alt.Y("Value:Q")
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 # Explainability Section
 explainability = data.get("explainability", {})
 cumulative_rewards = explainability.get("cumulative_rewards", {})
@@ -428,7 +441,7 @@ if cumulative_rewards:
             height=250
         )
         
-        st.altair_chart(explain_chart, use_container_width=True)
+        st.altair_chart(explain_chart, width="stretch")
     else:
         st.info("No reward components accumulated during this evaluation.")
 st.subheader("Training Series")
@@ -468,7 +481,7 @@ if portfolio_series:
                     x=alt.X("step:Q", title="Step"),
                     y=alt.Y("value:Q", title="Mean Episode Reward")
                 )
-                st.altair_chart(reward_chart, use_container_width=True)
+                st.altair_chart(reward_chart, width="stretch")
         # Total Return %
         if "total_return_pct" in series:
             df_ret = pd.DataFrame(series.get("total_return_pct", []))
@@ -478,7 +491,7 @@ if portfolio_series:
                     x=alt.X("step:Q", title="Step"),
                     y=alt.Y("value:Q", title="Total Return %")
                 )
-                st.altair_chart(ret_chart, use_container_width=True)
+                st.altair_chart(ret_chart, width="stretch")
     elif view == "Eval":
         # Plot raw portfolio series for Dev and Test
         keep_cols = [c for c in portfolio_df.columns if c in {"Dev", "Test"}]
@@ -491,7 +504,7 @@ if portfolio_series:
                 y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain, zero=False, nice=False)),
                 color=alt.Color("Series:N", title="Series")
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
     # Split Portfolio Value into separate Train and Evaluation charts
     # This avoids plotting eval (much fewer timesteps) on the same axis as training.
@@ -545,7 +558,7 @@ if portfolio_series:
                 tooltip=["episode:O", "step:Q", "value:Q"]
             ).interactive()
             
-            container.altair_chart(train_chart, use_container_width=True)
+            container.altair_chart(train_chart, width="stretch")
 
     # Eval chart (Dev/Test)
     if eval_present:
@@ -564,9 +577,9 @@ if portfolio_series:
             color=alt.Color("Series:N", title="Series")
         )
         if col_eval is st:
-            st.altair_chart(eval_chart, use_container_width=True)
+            st.altair_chart(eval_chart, width="stretch")
         else:
-            col_eval.altair_chart(eval_chart, use_container_width=True)
+            col_eval.altair_chart(eval_chart, width="stretch")
 # Realized PnL
 st.markdown("### Realized PnL")
 pnl_series = {}
@@ -759,8 +772,8 @@ if memory_series:
                 color=alt.Color("Series:N", title="Series"),
             )
         )
-        st.altair_chart(memory_chart, use_container_width=True)
+        st.altair_chart(memory_chart, width="stretch")
 
 if st.session_state.get("auto_refresh_enabled"):
-    time.sleep(2)
+    time.sleep(5)
     st.rerun()

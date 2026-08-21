@@ -21,5 +21,5 @@ You are working in the `crypto_rl` workspace. Only the new, refactored setup mus
    - The primary Python interpreter for this workspace is located at `./.conda/bin/python` (or using `./.conda/bin/python main.py ...`).
    - To train the model or start a run:
      ```bash
-     ./.conda/bin/python main.py --dashboard --rows 10000 --timesteps 20000
+     ./.conda/bin/python main.py --dashboard --n-rows 10000 --timesteps 20000
      ```

@@ -78,11 +78,16 @@ class DashboardCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.num_data_rows = num_data_rows
         self.check_freq = check_freq
-        # Record start time in local timezone (CET/CEST) for dashboard display
-        self.start_ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        # Always store started_at in UTC so _parse_dashboard_ts can parse it reliably.
+        self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         self.last_portfolio_value = BUDGET_INITIAL
         self.training_start_str = training_start_str
         self.training_end_str = training_end_str
+        # Maximum data-points kept in memory per series to avoid unbounded RAM growth
+        # during very long experiments (e.g. 400 k rows / 1.2 M timesteps).
+        # The dashboard JSON is further trimmed to _MAX_JSON_POINTS at write time.
+        self._MAX_SERIES_POINTS: int = 600
+        self._MAX_JSON_POINTS: int = 300
 
         # Series data
         self.series: dict[str, list] = {
@@ -236,14 +241,22 @@ class DashboardCallback(BaseCallback):
                 self.series["ram_mb"].append({"step": step, "value": float(ram)})
 
             self.last_portfolio_value = current_portfolio
+
+            # Trim every series in-place to avoid unbounded RAM growth on long runs.
+            cap = self._MAX_SERIES_POINTS
+            for key in self.series:
+                if len(self.series[key]) > cap:
+                    self.series[key] = self.series[key][-cap:]
         except Exception as e:
             # Swallow metric-collection errors so training is never interrupted
             print(e)
 
     def _write_state(self, status: str = "running") -> None:
         try:
-            # Keep only the last 100 entries to avoid unbounded JSON growth
-            series_data = {key: data[-100:] for key, data in self.series.items()}
+            # Trim to the last _MAX_JSON_POINTS entries so the JSON file stays
+            # small and the browser renders charts without freezing.
+            n = self._MAX_JSON_POINTS
+            series_data = {key: data[-n:] for key, data in self.series.items()}
 
             state = {
                 "run": {
@@ -257,6 +270,7 @@ class DashboardCallback(BaseCallback):
                         else datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
                     ),
                     "current_step": int(self.num_timesteps),
+                    "total_timesteps": int(self.total_timesteps),
                     "progress_pct": int(
                         100
                         * min(
@@ -399,6 +413,4 @@ class CheckpointCallback(BaseCallback):
         pv_series = np.array([v["value"] for v in portfolio_values])
         returns = np.diff(pv_series) / pv_series[:-1]
         sharpe = returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
-        # Reset env for future use
-        self.test_env.reset()
         return sharpe

@@ -15,6 +15,7 @@ def precalculate_static_obs(env) -> None:
     deleted from the env to free the memory they occupied; only the derived
     numpy arrays are retained.
     """
+    # if "prices_arr" not in env.__dict__:
     # ------------------------------------------------------------------
     # Convert DataFrames → float32 numpy arrays (half the memory of float64)
     # ------------------------------------------------------------------
@@ -23,9 +24,8 @@ def precalculate_static_obs(env) -> None:
     env.high_arr = env.high_df.values.astype(np.float32)
     env.low_arr = env.low_df.values.astype(np.float32)
     env.volume_arr = env.volume_df.values.astype(np.float32)
-
     # Keep column names before freeing the DataFrame
-    asset_cols = list(env.prices_df.columns)
+    env.asset_cols = list(env.prices_df.columns)
 
     # ------------------------------------------------------------------
     # Drop source DataFrames immediately – they are never needed again
@@ -36,7 +36,7 @@ def precalculate_static_obs(env) -> None:
     env.low_df = None
     env.volume_df = None
     gc.collect()  # Force memory release before allocating precalc_static_obs
-    
+
     T, N = env.prices_arr.shape
     W = env.window_size
 
@@ -111,7 +111,7 @@ def precalculate_static_obs(env) -> None:
     vwap_dev = np.nan_to_num((prices / safe_vwap) - 1.0, nan=0.0).astype(np.float32)
 
     # --- BTC macro features -------------------------------------------
-    btc_idx = asset_cols.index("BTCUSDT") if "BTCUSDT" in asset_cols else 0
+    btc_idx = env.asset_cols.index("BTCUSDT") if "BTCUSDT" in env.asset_cols else 0
     btc_prices = prices[:, btc_idx]  # (T,)
     btc_mom = momentum[:, btc_idx]  # (T,)
     btc_vol = vol_norm_arr[:, btc_idx]  # (T,)

@@ -1,4 +1,5 @@
 import gc
+import inspect
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,8 +40,8 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     BUDGET_INITIAL = args.budget_initial
     print_if_not_trial(trial, "1. Loading raw data...")
     TEST_FRACTION: float = 0.2
-    n_test = round(args.rows * TEST_FRACTION)
-    n_train = args.rows - n_test
+    n_test = round(args.n_rows * TEST_FRACTION)
+    n_train = args.n_rows - n_test
     train_prices_df, test_prices_df = read_train_test(
         args.parquet_path, n_train, n_test
     )
@@ -98,6 +99,11 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
 
     print_if_not_trial(trial, "2. Setting up environment...")
+    env_args_allowed: list[str] = inspect.getfullargspec(MinimalCryptoEnv.__init__)[0]
+    all_args = dict(args._get_kwargs())
+    # Exclude data loading parameters so they don't override the precomputed split
+    excluded_env_args = {"parquet_path", "n_rows", "prices_arr", "static_obs", "asset_names", "self"}
+    env_args: dict = {k: v for k, v in all_args.items() if k in env_args_allowed and k not in excluded_env_args}
     # Create multiple parallel training environments
     env_fns = []
     for _ in range(args.n_envs):
@@ -106,24 +112,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 prices_arr=prices_arr,
                 static_obs=static_obs,
                 asset_names=asset_names,
-                window_size=args.window_size,
                 run_id=run_id,
-                fee_rate=args.fee_rate,
-                reward_type=args.reward_type,
-                hold_cost_rate=args.hold_cost_rate,
-                empty_buy_penalty=args.empty_buy_penalty,
-                empty_sell_penalty=args.empty_sell_penalty,
-                illegal_sell_penalty=args.illegal_sell_penalty,
-                illegal_buy_penalty=args.illegal_buy_penalty,
-                trade_freq_incentive=args.trade_freq_incentive,
-                profit_bonus=args.profit_bonus,
-                parquet_path=None,
-                n_rows=args.rows,
-                action_space_type=args.action_space_type,
-                max_single_step_allocation=args.max_single_step_allocation,
                 disable_logging=trial is not None,  # disable logging for optuna
-                action_dead_zone=args.action_dead_zone,
-                hold_incentive=args.hold_incentive,
+                **env_args,
             )
         )
     train_env = VecNormalize(
@@ -143,9 +134,10 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     base_run_dir = Path(args.run_dir) if args.run_dir else Path("logs")
     run_dir = base_run_dir / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    # For DashboardCallback and CheckpointCallback:
-    # Ensure checks happen at most 5 to 10 times per run instead of 100 times
-    safe_check_freq = max(500, args.timesteps // 5)
+    # Target ~300 dashboard snapshots regardless of experiment size.
+    # Floor of 500 ensures we don't write too frequently for tiny runs.
+    _TARGET_CHECKPOINTS = 300
+    safe_check_freq = max(500, args.timesteps // _TARGET_CHECKPOINTS)
     if args.dashboard:
         state_file = run_dir / "state.json"
         # Update index file
@@ -176,7 +168,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             check_freq=safe_check_freq,
             run_id=run_id,
             total_timesteps=args.timesteps,
-            num_data_rows=args.rows,
+            num_data_rows=args.n_rows,
             training_start_str=training_start_str,
             training_end_str=training_end_str,
         )
@@ -192,15 +184,10 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             prices_arr=shared_test_prices,
             static_obs=shared_test_static,
             asset_names=shared_test_names,
-            window_size=args.window_size,
-            run_id=run_id,
-            fee_rate=args.fee_rate,
-            reward_type=args.reward_type,
-            trade_freq_incentive=args.trade_freq_incentive,
             is_eval=True,
-            action_space_type=args.action_space_type,
-            action_dead_zone=args.action_dead_zone,
-            hold_incentive=args.hold_incentive,
+            disable_logging=True,
+            run_id=run_id,
+            **env_args,
         )
         checkpoint_callback = CheckpointCallback(
             checkpoint_dir=checkpoint_dir,
@@ -208,7 +195,6 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             check_freq=safe_check_freq,
             max_checkpoints=args.max_checkpoints,
         )
-
     # Optuna evaluation callback (optional)
     eval_callback = None
     eval_env = None
@@ -217,15 +203,10 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             prices_arr=shared_test_prices,
             static_obs=shared_test_static,
             asset_names=shared_test_names,
-            window_size=args.window_size,
             run_id=run_id,
-            fee_rate=args.fee_rate,
-            reward_type=args.reward_type,
-            trade_freq_incentive=args.trade_freq_incentive,
             is_eval=True,
-            action_space_type=args.action_space_type,
-            action_dead_zone=args.action_dead_zone,
-            hold_incentive=args.hold_incentive,
+            disable_logging=True,
+            **env_args
         )
         eval_env = VecNormalize(
             DummyVecEnv([lambda: Monitor(raw_env)]),
@@ -314,15 +295,9 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         prices_arr=shared_test_prices,
         static_obs=shared_test_static,
         asset_names=shared_test_names,
-        window_size=args.window_size,
         run_id=run_id,
-        fee_rate=args.fee_rate,
-        reward_type=args.reward_type,
-        trade_freq_incentive=args.trade_freq_incentive,
         is_eval=True,
-        action_space_type=args.action_space_type,
-        action_dead_zone=args.action_dead_zone,
-        hold_incentive=args.hold_incentive,
+        **env_args
     )
     obs, _ = test_env.reset()
     done = False
@@ -393,67 +368,65 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     buy_hold_final = BUDGET_INITIAL * (1 + buy_hold_return)
     # Multi‑seed evaluation (Tier 5)
     multi_seed_pv = []
-    for mseed in range(5):
-        np.random.seed(mseed + 100)
-        try:
-            ms_prices = read_last_n(args.parquet_path, n=args.rows)
-            # read_last_n already returns float32 columns; downcast as safety net
-            # Split by unique timestamps
-            unique_times = sorted(ms_prices.open_time.unique())
-            split_idx = int(len(unique_times) * (1 - TEST_FRACTION))
-            split_time = unique_times[split_idx]
-            ms_test = ms_prices[ms_prices.open_time >= split_time].copy()
-            del ms_prices  # free the full window immediately
-            gc.collect()
-            # Filter to train symbols
-            ms_test = ms_test[ms_test["symbol"].isin(asset_names)]
-            # INJECT MISSING SYMBOLS TO GUARANTEE SHAPE MATCH
-            ms_symbols = ms_test["symbol"].unique().tolist()
-            missing_symbols = set(asset_names) - set(ms_symbols)
-            if missing_symbols:
-                dummy_rows = []
-                first_time = ms_test["open_time"].min()
-                for sym in missing_symbols:
-                    dummy_rows.append(
-                        {
-                            "open_time": first_time,
-                            "symbol": sym,
-                            "open": 0.0,
-                            "high": 0.0,
-                            "low": 0.0,
-                            "close": 0.0,
-                            "volume": 0.0,
-                        }
+    if not getattr(args, "skip_multi_seed_eval", False):
+        print("Performing multi‑seed evaluation...")
+        for mseed in range(5):
+            np.random.seed(mseed + 100)
+            try:
+                ms_prices = read_last_n(args.parquet_path, n=args.n_rows)
+                # read_last_n already returns float32 columns; downcast as safety net
+                # Split by unique timestamps
+                unique_times = sorted(ms_prices.open_time.unique())
+                split_idx = int(len(unique_times) * (1 - TEST_FRACTION))
+                split_time = unique_times[split_idx]
+                ms_test = ms_prices[ms_prices.open_time >= split_time].copy()
+                del ms_prices  # free the full window immediately
+                gc.collect()
+                # Filter to train symbols
+                ms_test = ms_test[ms_test["symbol"].isin(asset_names)]
+                # INJECT MISSING SYMBOLS TO GUARANTEE SHAPE MATCH
+                ms_symbols = ms_test["symbol"].unique().tolist()
+                missing_symbols = set(asset_names) - set(ms_symbols)
+                if missing_symbols:
+                    dummy_rows = []
+                    first_time = ms_test["open_time"].min()
+                    for sym in missing_symbols:
+                        dummy_rows.append(
+                            {
+                                "open_time": first_time,
+                                "symbol": sym,
+                                "open": 0.0,
+                                "high": 0.0,
+                                "low": 0.0,
+                                "close": 0.0,
+                                "volume": 0.0,
+                            }
+                        )
+                    ms_test = pd.concat(
+                        [ms_test, pd.DataFrame(dummy_rows)], ignore_index=True
                     )
-                ms_test = pd.concat(
-                    [ms_test, pd.DataFrame(dummy_rows)], ignore_index=True
+                # Prepare multi‑seed environment from raw parquet slice
+                ms_prices_arr, ms_static_obs, ms_asset_names = (
+                    compute_static_obs_from_long_df(ms_test, args.window_size)
                 )
-            # Prepare multi‑seed environment from raw parquet slice
-            ms_prices_arr, ms_static_obs, ms_asset_names = (
-                compute_static_obs_from_long_df(ms_test, args.window_size)
-            )
-            ms_env = MinimalCryptoEnv(
-                prices_arr=ms_prices_arr,
-                static_obs=ms_static_obs,
-                asset_names=ms_asset_names,
-                window_size=args.window_size,
-                run_id=run_id,
-                fee_rate=args.fee_rate,
-                reward_type=args.reward_type,
-                is_eval=True,
-                action_space_type=args.action_space_type,
-                action_dead_zone=args.action_dead_zone,
-                hold_incentive=args.hold_incentive,
-            )
-            ms_obs, _ = ms_env.reset()
-            ms_done = False
-            while not ms_done:
-                ms_action, _ = model.predict(ms_obs, deterministic=True)
-                ms_obs, _, ms_done, _, _ = ms_env.step(ms_action)
-            multi_seed_pv.append(ms_env.portfolio_value)
-            ms_env.close()
-        except Exception as exc:
-            print_if_not_trial(trial, f"  seed {mseed} failed: {exc}")
+                ms_env = MinimalCryptoEnv(
+                    prices_arr=ms_prices_arr,
+                    static_obs=ms_static_obs,
+                    asset_names=ms_asset_names,
+                    run_id=run_id,
+                    is_eval=True,
+                    disable_logging=True,
+                    **env_args,
+                )
+                ms_obs, _ = ms_env.reset()
+                ms_done = False
+                while not ms_done:
+                    ms_action, _ = model.predict(ms_obs, deterministic=True)
+                    ms_obs, _, ms_done, _, _ = ms_env.step(ms_action)
+                multi_seed_pv.append(ms_env.portfolio_value)
+                ms_env.close()
+            except Exception as exc:
+                print_if_not_trial(trial, f"  seed {mseed} failed: {exc}")
 
     if multi_seed_pv:
         arr = np.array(multi_seed_pv)
@@ -490,12 +463,15 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             # Add Sharpe ratio to finance section for dashboard display
             state["finance"]["sharpe"] = float(sharpe)
             state["explainability"] = {
-                "cumulative_rewards": {k: float(v) for k, v in eval_reward_totals.items()},
+                "cumulative_rewards": {
+                    k: float(v) for k, v in eval_reward_totals.items()
+                },
                 "hyperparameters": {
                     "hold_cost_rate": args.hold_cost_rate,
                     "action_dead_zone": args.action_dead_zone,
-                    "profit_bonus": args.profit_bonus
-                }
+                    "profit_bonus": args.profit_bonus,
+                    "drawdown_penalty_coef": args.drawdown_penalty_coef,
+                },
             }
             if "series" not in state:
                 state["series"] = {}

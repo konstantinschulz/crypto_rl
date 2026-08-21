@@ -10,14 +10,16 @@
 
 ### Eval episode outcomes (6 multi-seed evaluations)
 
-| Episode file | Steps | Final PV | Return | Sell/Buy ratio | HOLD% |
-|---|---|---|---|---|---|
-| `ep1_1785748146` | 11 368 | $101.38 | **+1.38%** | 2.91× | **0%** |
-| `ep1_1785748151` | 57 674 | $84.95 | **−15.05%** | 2.24× | **0%** |
-| `ep1_1785748159` | 58 122 | $98.40 | **−1.60%** | 0.50× | **0%** |
-| `ep1_1785748167` | 57 733 | $98.99 | **−1.01%** | 2.14× | **0%** |
-| `ep1_1785748176` | 57 737 | $114.15 | **+14.15%** | 2.49× | **0%** |
-| `ep1_1785748184` | 57 711 | $97.29 | **−2.71%** | 2.34× | **0%** |
+
+| Episode file     | Steps  | Final PV | Return      | Sell/Buy ratio | HOLD%  |
+| ---------------- | ------ | -------- | ----------- | -------------- | ------ |
+| `ep1_1785748146` | 11 368 | $101.38  | **+1.38%**  | 2.91×          | **0%** |
+| `ep1_1785748151` | 57 674 | $84.95   | **−15.05%** | 2.24×          | **0%** |
+| `ep1_1785748159` | 58 122 | $98.40   | **−1.60%**  | 0.50×          | **0%** |
+| `ep1_1785748167` | 57 733 | $98.99   | **−1.01%**  | 2.14×          | **0%** |
+| `ep1_1785748176` | 57 737 | $114.15  | **+14.15%** | 2.49×          | **0%** |
+| `ep1_1785748184` | 57 711 | $97.29   | **−2.71%**  | 2.34×          | **0%** |
+
 
 **Multi-seed mean return: −0.81%** (excluding the first short 11k-step episode).  
 **Negative reward steps across all episodes: 82–99%.**
@@ -31,7 +33,11 @@
 
 ---
 
+
+
 ## 2. Identified Weaknesses (Ranked by Impact)
+
+
 
 ### W1 — Degenerate action collapse: ZERO HOLD actions ⚠️ CRITICAL
 
@@ -47,6 +53,8 @@
 
 ---
 
+
+
 ### W2 — Massive unstable SAC critic loss ⚠️ HIGH
 
 **Observation:** SAC critic loss ranges from **947 to 2875** with no clear downward trend across the full 200k-step run.
@@ -58,6 +66,8 @@
 3. `ent_coef=0.007` passed as a fixed float to SB3's `SAC()` **disables auto-tuning** — `ent_coef_loss = 0.0000` across the entire run confirms this. The agent has no adaptive entropy regulation.
 
 ---
+
+
 
 ### W3 — Reward signal drowned by shaping noise ⚠️ HIGH
 
@@ -71,6 +81,8 @@
 
 ---
 
+
+
 ### W4 — Agent never learns patience (no hold) MEDIUM
 
 **Observation:** Even with `hold_cost_rate=0.000002` (≈ 0.12% per day), the policy never produces actions within the ±0.05 dead zone.
@@ -81,6 +93,8 @@
 2. `max_single_step_allocation=0.5` is not enforced when the per-asset action `< 0.5` and `sum_buys ≤ 1.0`. With 9 assets each buying 30–90%, the normalization path that would cap individual buys is bypassed.
 
 ---
+
+
 
 ### W5 — Very high cross-market variance MEDIUM
 
@@ -94,6 +108,8 @@
 
 ---
 
+
+
 ### W6 — Observation window too narrow for meaningful alpha LOW-MEDIUM
 
 **Observation:** `window_size=60` (60 minutes) with RSI(14), MACD, and momentum all computed over that window.
@@ -106,6 +122,8 @@
 
 ---
 
+
+
 ### W7 — Policy network too small for observation space LOW
 
 **Observation:** `[128, 128]` actor/critic nets; obs dim = `(60+5)×9 + 2 + 1 + 3×9 = 615`.
@@ -117,7 +135,11 @@
 
 ---
 
+
+
 ## 3. Optimization Plan
+
+
 
 ### Priority 1 — Fix the Degenerate Trading Loop (1–3 days)
 
@@ -171,7 +193,11 @@ Remove `--ent-coef` from `run_large.sh` and the Optuna search.
 
 ---
 
+
+
 ### Priority 2 — Stabilize the Reward Signal (Week 1)
+
+
 
 #### 2A. Add reward clipping via VecNormalize
 
@@ -215,28 +241,36 @@ Sharpe ratio penalizes variance across regimes, making HPO more robust than opti
 
 ---
 
+
+
 ### Priority 3 — Broaden Optuna Search Space (Weeks 2–3)
 
 Current Optuna only tunes 3 parameters (`profit_bonus`, `hold_cost_rate`, `illegal_buy_penalty`).  
 After Priority 1–2 fixes, expand to the full set below:
 
-| Parameter | Current | Suggested Search Range | Notes |
-|---|---|---|---|
-| `profit_bonus` | 2.91 | `[0.0, 0.5]` | After switch to % bonus |
-| `hold_cost_rate` | 0.000002 | `[1e-7, 1e-5]` (log) | Fine range |
-| `learning_rate` | 0.00002 | `[5e-5, 5e-4]` (log) | SAC often benefits from higher LR |
-| `gamma` | 0.9944 | `[0.98, 0.999]` | Effective horizon sensitivity |
-| `batch_size` | 256 | `{128, 256, 512, 1024}` | Replay sample diversity |
-| `action_dead_zone` | 0.05 | `[0.05, 0.30]` | New parameter (Priority 1B) |
-| `hold_incentive` | 0.0 | `[0.0, 0.002]` | New parameter (Priority 1B) |
-| `n_steps` | 1024 | `{512, 1024, 2048, 4096}` | Replay buffer fill rate |
-| `window_size` | 60 | `{30, 60, 120, 240}` | Lookback sensitivity |
+
+| Parameter          | Current  | Suggested Search Range    | Notes                             |
+| ------------------ | -------- | ------------------------- | --------------------------------- |
+| `profit_bonus`     | 2.91     | `[0.0, 0.5]`              | After switch to % bonus           |
+| `hold_cost_rate`   | 0.000002 | `[1e-7, 1e-5]` (log)      | Fine range                        |
+| `learning_rate`    | 0.00002  | `[5e-5, 5e-4]` (log)      | SAC often benefits from higher LR |
+| `gamma`            | 0.9944   | `[0.98, 0.999]`           | Effective horizon sensitivity     |
+| `batch_size`       | 256      | `{128, 256, 512, 1024}`   | Replay sample diversity           |
+| `action_dead_zone` | 0.05     | `[0.05, 0.30]`            | New parameter (Priority 1B)       |
+| `hold_incentive`   | 0.0      | `[0.0, 0.002]`            | New parameter (Priority 1B)       |
+| `n_steps`          | 1024     | `{512, 1024, 2048, 4096}` | Replay buffer fill rate           |
+| `window_size`      | 60       | `{30, 60, 120, 240}`      | Lookback sensitivity              |
+
 
 **Target:** 200 trials at `--rows 40000 --timesteps 150000`, using `n_jobs=2–4` if hardware permits.
 
 ---
 
+
+
 ### Priority 4 — Improve Data Regime Coverage (Week 3)
+
+
 
 #### 4A. Audit the episode re-sampling pipeline
 
@@ -262,7 +296,11 @@ The `btc_mom_norm` and `btc_vol_norm` signals are already computed but currently
 
 ---
 
+
+
 ### Priority 5 — Architectural Changes (Month 2)
+
+
 
 #### 5A. LSTM / Recurrent policy
 
@@ -272,6 +310,7 @@ The current MLP policy has no temporal memory. Each step is processed independen
 - Implicitly track position state without relying solely on the portfolio observation features
 
 **Implementation path:**
+
 ```python
 # Install sb3-contrib:
 pip install sb3-contrib
@@ -298,6 +337,7 @@ reward = Σ_i w_i * r_i − transaction_cost(|Δw|)
 ```
 
 **Advantages:**
+
 - Eliminates illegal buy/sell states entirely (no negative allocations possible)
 - Removes the need for `illegal_buy_penalty`, `illegal_sell_penalty`, `empty_buy_penalty`, `empty_sell_penalty`
 - Makes position sizing directly interpretable
@@ -320,28 +360,37 @@ This adds 3×N new features to the observation, requiring a network size bump fr
 
 Rather than one 60-minute window at 1-minute resolution, compute indicators at multiple resolutions:
 
-| Timeframe | Window | Features | Purpose |
-|---|---|---|---|
-| 1-min | 30 bars | Price changes, RSI | Micro-structure momentum |
-| 5-min | 24 bars | Price changes, Vol | Hourly drift |
-| 60-min | 24 bars | Price changes, Trend | Daily structure |
+
+| Timeframe | Window  | Features             | Purpose                  |
+| --------- | ------- | -------------------- | ------------------------ |
+| 1-min     | 30 bars | Price changes, RSI   | Micro-structure momentum |
+| 5-min     | 24 bars | Price changes, Vol   | Hourly drift             |
+| 60-min    | 24 bars | Price changes, Trend | Daily structure          |
+
 
 This provides a 3× longer effective lookback without 3× more raw features, and allows the network to learn to combine signals across scales.
 
 ---
 
+
+
 ### Priority 6 — Training Infrastructure (Ongoing)
+
+
 
 #### 6A. Walk-forward (temporal) train/test split
 
 The current `read_train_test()` samples a random window from the full dataset. This can cause the test window to be temporally earlier than training data, enabling subtle lookahead leakage via the indicator pre-calculations.
 
 **Fix:** Always hold the **last 20% of chronological time** as the test set:
+
 ```python
 # In main.py:
 # Load the last (n_train + n_test) rows chronologically,
 # then split at the 80% mark — never resample the test window.
 ```
+
+
 
 #### 6B. Parallel environments (VecEnv)
 
@@ -361,32 +410,37 @@ Add a `CheckpointCallback` that saves the model whenever a new best Sharpe is ac
 
 ---
 
+
+
 ## 4. Prioritized Action Roadmap
 
-| Phase | Key Actions | Effort | Expected Impact |
-|---|---|---|---|
-| **Immediate (days 1–3)** | 1A: Scale profit_bonus; 1B: widen dead zone + hold incentive; 1C: SAC auto entropy | Low code changes | Eliminate 0% HOLD regime |
-| **Week 1** | 2A: VecNormalize; 2B: reduce terminal bonus; 2C: Sharpe as HPO objective | Medium | Stable critic, reliable HPO |
-| **Weeks 2–3** | 3: Optuna expanded search (200 trials, full parameter set) | Compute | Find robust hyperparameter region |
-| **Week 3** | 4A: Cache reset timestamps; 4B: increase rows to 200k; 4C: BTC regime features | Medium | Broader regime coverage |
-| **Month 2** | 5A: LSTM/RecurrentPPO; 5B: Portfolio simplex; 5C: Volume features; 5D: Multi-timeframe | High | Architectural alpha uplift |
-| **Ongoing** | 6A: Walk-forward split; 6B: VecEnv parallel; 6C: Sharpe-checkpoint | Medium | Robust evaluation and training |
+
+| Phase                    | Key Actions                                                                            | Effort           | Expected Impact                   |
+| ------------------------ | -------------------------------------------------------------------------------------- | ---------------- | --------------------------------- |
+| **Immediate (days 1–3)** | 1A: Scale profit_bonus; 1B: widen dead zone + hold incentive; 1C: SAC auto entropy     | Low code changes | Eliminate 0% HOLD regime          |
+| **Week 1**               | 2A: VecNormalize; 2B: reduce terminal bonus; 2C: Sharpe as HPO objective               | Medium           | Stable critic, reliable HPO       |
+| **Weeks 2–3**            | 3: Optuna expanded search (200 trials, full parameter set)                             | Compute          | Find robust hyperparameter region |
+| **Week 3**               | 4A: Cache reset timestamps; 4B: increase rows to 200k; 4C: BTC regime features         | Medium           | Broader regime coverage           |
+| **Month 2**              | 5A: LSTM/RecurrentPPO; 5B: Portfolio simplex; 5C: Volume features; 5D: Multi-timeframe | High             | Architectural alpha uplift        |
+| **Ongoing**              | 6A: Walk-forward split; 6B: VecEnv parallel; 6C: Sharpe-checkpoint                     | Medium           | Robust evaluation and training    |
+
 
 ---
+
+
 
 ## 5. Key Open Questions
 
 1. **What market regime was the training data in?** `state.json` shows `buy_hold_baseline=$98.38` (BTC down ~1.6% in the eval window). If training also covered a bear/choppy period, the sell-heavy policy is a direct consequence of regime fitting, not a general failure. Knowing the date range of the 60k-row training window would clarify this.
-
 2. **GPU availability?** The current SAC with a 615-dim obs and `[128, 128]` network is fast on CPU. Priority 5 changes (LSTM, larger nets) would benefit significantly from GPU training.
-
 3. **Target deployment?** If this is for live Binance Spot trading:
-   - The simulated fee rate (`0.001` = 0.1%) is **2× the real taker fee** (0.05%). This makes the agent overly conservative about trading — consider switching to 0.0005.
-   - Slippage is not modeled at all. For small positions (<$10k), 1-min close execution is a reasonable approximation. For larger positions, bid-ask spread and market impact need to be added.
-
+  - The simulated fee rate (`0.001` = 0.1%) is **2× the real taker fee** (0.05%). This makes the agent overly conservative about trading — consider switching to 0.0005.
+  - Slippage is not modeled at all. For small positions (<$10k), 1-min close execution is a reasonable approximation. For larger positions, bid-ask spread and market impact need to be added.
 4. **Acceptable drawdown and Sharpe threshold?** The eval episodes show max drawdowns of 4.8% to 17.3% on ~6k-step windows (~4.5 days). What is the acceptable max drawdown for a live deployment? This determines the appropriate `hold_cost_rate` and whether a stop-loss mechanism is needed.
 
 ---
+
+
 
 ## 6. Quick Wins (Ship Today)
 
@@ -420,3 +474,4 @@ python main.py \
 # Success signal: HOLD% > 0 in any eval episode.
 # Failure signal: HOLD% still = 0% → implement Priority 1B (widen dead zone in code).
 ```
+

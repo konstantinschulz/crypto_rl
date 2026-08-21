@@ -1,5 +1,5 @@
-from crypto_rl.experiment import run_experiment
 from crypto_rl.cli import build_parser
+from crypto_rl.experiment import run_experiment
 
 
 def main():

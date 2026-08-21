@@ -54,25 +54,26 @@ class MinimalCryptoEnv(gym.Env):
         prices_arr: np.ndarray,
         static_obs: np.ndarray,
         asset_names: list[str],
-        window_size: int = 10,
-        run_id: str = "default",
-        fee_rate: float = 0.0007,
-        reward_type: str = "excess_return",
-        is_eval: bool = False,
-        hold_cost_rate: float = 0.0001,
+        action_dead_zone: float = 0.15,
+        action_space_type: str = "continuous",
+        disable_logging: bool = False,  # <-- Set True during Optuna HPO!
+        drawdown_penalty_coef: float = 5.0,
         empty_buy_penalty: float = 0.001,
         empty_sell_penalty: float = 0.001,
+        fee_rate: float = 0.0007,
+        hold_cost_rate: float = 0.0001,
+        hold_incentive: float = 0.0005,
         illegal_sell_penalty: float = 0.005,
         illegal_buy_penalty: float = 0.005,
-        trade_freq_incentive: float = 0.01,
-        profit_bonus: float = 0.15,
-        parquet_path: str | None = None,
-        n_rows: int = 0,
-        action_space_type: str = "continuous",
+        is_eval: bool = False,
         max_single_step_allocation: float = 0.5,
-        disable_logging: bool = False,  # <-- Set True during Optuna HPO!
-        action_dead_zone: float = 0.15,
-        hold_incentive: float = 0.0005,
+        n_rows: int = 0,
+        parquet_path: str | None = None,
+        profit_bonus: float = 0.15,
+        reward_type: str = "excess_return",
+        run_id: str = "default",
+        trade_freq_incentive: float = 0.01,
+        window_size: int = 10,
     ):
         super().__init__()
         # Preprocessed data supplied externally
@@ -97,7 +98,9 @@ class MinimalCryptoEnv(gym.Env):
         self.illegal_sell_penalty = illegal_sell_penalty
         self.illegal_buy_penalty = illegal_buy_penalty
         self.trade_freq_incentive = trade_freq_incentive
+        self.drawdown_penalty_coef = drawdown_penalty_coef
         self.profit_bonus = profit_bonus
+
         self.max_single_step_allocation = max_single_step_allocation
         self.disable_logging = disable_logging
         self.fees_paid_total = 0.0
@@ -265,6 +268,10 @@ class MinimalCryptoEnv(gym.Env):
         self.last_remap_note = None
 
         if self.action_space_type == "continuous":
+            # Snapshot old asset exposure fraction before rebalancing (for logging)
+            _pre_asset_value = np.sum(self.holdings * current_prices)
+            _pre_port = self.cash + _pre_asset_value
+            _old_asset_frac = (_pre_asset_value / _pre_port) if _pre_port > 1e-8 else 0.0
             # Continuous action processing moved to helper
             fee_paid, trade_units = apply_continuous_action(self, action)
         else:
@@ -319,9 +326,8 @@ class MinimalCryptoEnv(gym.Env):
             reward_components["market_alpha"] = alpha_diff
             # DIRECT DRAWDOWN PENALTY: Continuously bleed reward the deeper the drawdown gets
             # e.g., if drawdown is -10% (-0.10), it subtracts 0.5 points per step
-            drawdown_penalty_coef = 5.0
             reward_components["drawdown_penalty"] = (
-                current_drawdown * drawdown_penalty_coef
+                current_drawdown * self.drawdown_penalty_coef
             )
             if not done and current_asset_value > 0:
                 reward_components["hold_cost"] = -(
@@ -359,7 +365,26 @@ class MinimalCryptoEnv(gym.Env):
             if self.action_space_type == "continuous":
                 exp_act = np.exp(action - np.max(action))
                 weights = exp_act / np.sum(exp_act)
-                eff_action = np.array([0, np.argmax(weights[1:]), weights[0] * 100.0])
+                # Determine net direction of this rebalance for logging purposes.
+                # Compare new asset-exposure fraction to the pre-trade snapshot taken
+                # at the top of step().  Positive delta → buying assets (BUY=1),
+                # negative delta → reducing assets (SELL=2), flat → HOLD=0.
+                _new_asset_value = np.sum(self.holdings * next_prices)
+                _new_port = self.cash + _new_asset_value
+                _new_asset_frac = (
+                    _new_asset_value / _new_port if _new_port > 1e-8 else 0.0
+                )
+                _delta_frac = _new_asset_frac - _old_asset_frac
+                _turnover_threshold = 1e-4
+                if _delta_frac > _turnover_threshold:
+                    _log_action_type = 1  # BUY
+                elif _delta_frac < -_turnover_threshold:
+                    _log_action_type = 2  # SELL
+                else:
+                    _log_action_type = 0  # HOLD
+                eff_action = np.array(
+                    [_log_action_type, np.argmax(weights[1:]), weights[0] * 100.0]
+                )
                 log_action(
                     self,
                     self.current_step,
