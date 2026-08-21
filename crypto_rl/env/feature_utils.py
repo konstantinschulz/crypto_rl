@@ -2,6 +2,11 @@ import gc
 
 import numpy as np
 
+STATIC_PER_ASSET_DIM = (
+    7  # 7 statistical indicator features per asset in precalc_static_obs
+)
+MACRO_DIM = 5
+
 
 def precalculate_static_obs(env) -> None:
     """Pre-calculate static observation matrix and related arrays for the environment.
@@ -41,8 +46,8 @@ def precalculate_static_obs(env) -> None:
     W = env.window_size
 
     # Set static observation dimension metadata if missing
-    env.macro_dim = getattr(env, "macro_dim", 5)
-    env.static_per_asset_dim = 7  # Removed W + 78
+    env.macro_dim = getattr(env, "macro_dim", MACRO_DIM)
+    env.static_per_asset_dim = STATIC_PER_ASSET_DIM
     env.static_dim = env.macro_dim + (env.static_per_asset_dim * N)
     if T <= W:
         raise ValueError(
@@ -240,24 +245,33 @@ def _rolling_zscore(
 ) -> np.ndarray:
     """Row-wise rolling z-score with min_periods, result float32."""
     T, N = arr.shape
+    if T == 0:
+        return np.zeros((T, N), dtype=np.float32)
+
     arr32 = arr.astype(np.float32)
-    out = np.zeros((T, N), dtype=np.float32)
     cs = np.cumsum(arr32, axis=0)
     cs2 = np.cumsum(arr32**2, axis=0)
 
-    for t in range(T):
-        w_start = max(0, t - window + 1)
-        w_len = t - w_start + 1
-        if w_len < min_periods:
-            continue
-        s = cs[t] - (cs[w_start - 1] if w_start > 0 else 0)
-        s2 = cs2[t] - (cs2[w_start - 1] if w_start > 0 else 0)
-        mu = s / w_len
-        var = np.clip(s2 / w_len - mu**2, 0, None)
-        sig = np.sqrt(var)
-        safe_sig = np.where(sig > 1e-8, sig, 1.0)  # avoid div-by-zero in numpy where
-        out[t] = np.where(sig > 1e-8, (arr32[t] - mu) / safe_sig, 0.0)
-    return out
+    t_idx = np.arange(T)
+    w_start = np.maximum(0, t_idx - window + 1)
+    w_len = (t_idx - w_start + 1)[:, None]
+
+    cs_prev = np.zeros((T, N), dtype=np.float32)
+    cs2_prev = np.zeros((T, N), dtype=np.float32)
+    if window < T:
+        cs_prev[window:] = cs[:-window]
+        cs2_prev[window:] = cs2[:-window]
+
+    s = cs - cs_prev
+    s2 = cs2 - cs2_prev
+
+    mu = s / w_len
+    var = np.clip(s2 / w_len - mu**2, 0, None)
+    sig = np.sqrt(var)
+
+    valid = (w_len >= min_periods) & (sig > 1e-8)
+    safe_sig = np.where(sig > 1e-8, sig, 1.0)
+    return np.where(valid, (arr32 - mu) / safe_sig, 0.0).astype(np.float32)
 
 
 def _pct_change_lag(arr: np.ndarray, lag: int) -> np.ndarray:

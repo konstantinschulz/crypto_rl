@@ -28,6 +28,10 @@ def apply_continuous_action(env, action):
         old_weights[0] = 1.0
 
     turnover = np.sum(np.abs(target_weights - old_weights))
+    min_turnover_threshold = getattr(env, "min_turnover_threshold", 0.02)
+    if turnover < min_turnover_threshold:
+        return 0.0, 0.0
+
     rebalance_cost = env.fee_rate * turnover * curr_portfolio_val / 2.0
     new_portfolio_val = max(0.0, curr_portfolio_val - rebalance_cost)
 

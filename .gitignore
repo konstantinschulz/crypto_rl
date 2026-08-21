@@ -1,6 +1,7 @@
 .antigravitycli/
 .gemini/
 .idea/
+.obsidian/
 .vscode/
 .aider*
 .env

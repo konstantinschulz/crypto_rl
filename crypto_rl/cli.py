@@ -67,6 +67,12 @@ Examples:
         help="Clipping parameter for the PPO model, it can be a function of the current progress remaining (from 1 to 0).",
     )
     parser.add_argument(
+        "--cv-folds",
+        type=int,
+        default=3,
+        help="Number of walk-forward CV folds (default: 3). Set to 1 for standard single train/test split.",
+    )
+    parser.add_argument(
         "--dashboard",
         action="store_true",
         default=False,
@@ -156,6 +162,12 @@ Examples:
         help="Maximum amount of cash to be allocated within a single step (default 0.5)",
     )
     parser.add_argument(
+        "--min-turnover-threshold",
+        type=float,
+        default=0.02,
+        help="Minimum portfolio turnover required before executing continuous rebalance (default: 0.02)",
+    )
+    parser.add_argument(
         "--n-envs",
         type=int,
         default=4,
@@ -182,8 +194,8 @@ Examples:
     parser.add_argument(
         "--drawdown-penalty-coef",
         type=float,
-        default=5.0,
-        help="Coefficient for drawdown penalty term (default 5.0)",
+        default=0.5,
+        help="Coefficient for drawdown penalty term (default 0.5)",
     )
     parser.add_argument(
         "--reward-type",

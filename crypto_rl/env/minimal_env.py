@@ -9,7 +9,7 @@ from crypto_rl.env.action_processing import (
     apply_discrete_action,
 )
 from crypto_rl.env.data_utils import pivot_ohlcv
-from crypto_rl.env.feature_utils import precalculate_static_obs
+from crypto_rl.env.feature_utils import MACRO_DIM, STATIC_PER_ASSET_DIM, precalculate_static_obs
 from crypto_rl.env.logging_utils import flush_log_parquet, init_log, log_action
 from crypto_rl.env.observation import build_observation
 
@@ -57,7 +57,7 @@ class MinimalCryptoEnv(gym.Env):
         action_dead_zone: float = 0.15,
         action_space_type: str = "continuous",
         disable_logging: bool = False,  # <-- Set True during Optuna HPO!
-        drawdown_penalty_coef: float = 5.0,
+        drawdown_penalty_coef: float = 0.5,
         empty_buy_penalty: float = 0.001,
         empty_sell_penalty: float = 0.001,
         fee_rate: float = 0.0007,
@@ -67,6 +67,7 @@ class MinimalCryptoEnv(gym.Env):
         illegal_buy_penalty: float = 0.005,
         is_eval: bool = False,
         max_single_step_allocation: float = 0.5,
+        min_turnover_threshold: float = 0.02,
         n_rows: int = 0,
         parquet_path: str | None = None,
         profit_bonus: float = 0.15,
@@ -100,6 +101,7 @@ class MinimalCryptoEnv(gym.Env):
         self.trade_freq_incentive = trade_freq_incentive
         self.drawdown_penalty_coef = drawdown_penalty_coef
         self.profit_bonus = profit_bonus
+        self.min_turnover_threshold = min_turnover_threshold
 
         self.max_single_step_allocation = max_single_step_allocation
         self.disable_logging = disable_logging
@@ -119,17 +121,22 @@ class MinimalCryptoEnv(gym.Env):
             self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
 
         # Dimension breakdown:
-        # Static: prices_flat (W*N) + vol (N) + mom (N) + rsi (N) + macd (N) = (W + 4)*N
-        # Dynamic: cash_pct (1) + holdings_pct (N) + unrealised_pnl_pct (N) + has_position
-        # Macro / BTC Regime features:
-        # btc_mom_norm (1), btc_vol_norm (1), btc_trend_regime 1-hot: [bull, ranging, bear] (3) -> total 5 features at start of obs vector.
-        self.macro_dim = 5
-        self.static_per_asset_dim = (
-            window_size + 7 + 78
-        )  # Added multi‑timeframe price change windows: 1‑min 30, 5‑min 24, 60‑min 24
+        # 1. Macro features: btc_mom_norm (1), btc_vol_norm (1), btc_trend_regime 1-hot (3) -> 5
+        # 2. Base window price changes: window_size * num_assets
+        # 3. 1-min 30-bar price changes: 30 * num_assets
+        # 4. 5-min 24-bar price changes: 24 * num_assets
+        # 5. 60-min 24-bar price changes: 24 * num_assets
+        # 6. Statistical indicators: 7 * num_assets (vol_norm, intrabar_vol, vwap_dev, mom_norm, rsi, macd, rel_mom)
+        # 7. Portfolio features: cash_pct (1) + holdings_pct (N) + unrealised_pnl_pct (N) + has_position (N) + current_drawdown (1) = 2 + 3 * num_assets
+        self.macro_dim = MACRO_DIM
+        self.static_per_asset_dim = STATIC_PER_ASSET_DIM
         self.static_dim = self.macro_dim + (self.static_per_asset_dim * self.num_assets)
         self.has_position_dim = self.num_assets
-        obs_dim = self.static_dim + 1 + (3 * self.num_assets) + 1
+
+        # Dynamic windows calculated on the fly in observation.py: (W + 30 + 24 + 24) * N
+        dynamic_windows_dim = (window_size + 78) * self.num_assets
+        # Total observation dimension: macro(5) + dynamic_windows((W+78)*N) + indicators(7*N) + portfolio(2 + 3*N)
+        obs_dim = self.macro_dim + dynamic_windows_dim + (self.static_per_asset_dim * self.num_assets) + 2 + (3 * self.num_assets)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
@@ -301,21 +308,22 @@ class MinimalCryptoEnv(gym.Env):
             "terminal_return": 0.0,
         }
 
-        # Reward calculation (unchanged)
+        # Reward calculation
+        portfolio_return = (
+            (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value
+            if prev_portfolio_value > 0
+            else 0.0
+        )
+        asset_returns = np.divide(
+            next_prices - current_prices,
+            current_prices,
+            out=np.zeros_like(current_prices),
+            where=current_prices > 1e-8,
+        )
+        market_return = np.mean(asset_returns)
+
         if self.reward_type == "excess_return":
-            portfolio_return = (
-                (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value
-                if prev_portfolio_value > 0
-                else 0.0
-            )
-            asset_returns = np.divide(
-                next_prices - current_prices,
-                current_prices,
-                out=np.zeros_like(current_prices),
-                where=current_prices > 1e-8,
-            )
-            market_return = np.mean(asset_returns)
-            base_penalty = 10.0
+            base_penalty = 100.0
             # ASYMMETRIC SCALING: Punish losses 2x harder than gains are rewarded
             if portfolio_return < market_return:
                 alpha_diff = (portfolio_return - market_return) * (
@@ -344,7 +352,11 @@ class MinimalCryptoEnv(gym.Env):
                 if realised_pnl > hurdle:
                     reward_components["profit_bonus"] = self.profit_bonus
         else:
-            reward_components["profit_bonus"] = self.profit_bonus
+            # Only reward when portfolio genuinely beats market after fees:
+            if portfolio_return > market_return + (2 * self.fee_rate):
+                reward_components["profit_bonus"] = self.profit_bonus * (
+                    portfolio_return - market_return
+                )
             n_held = sum(
                 1
                 for i in range(self.num_assets)
@@ -354,7 +366,7 @@ class MinimalCryptoEnv(gym.Env):
 
         if done:
             terminal_return = (self.portfolio_value - BUDGET_INITIAL) / BUDGET_INITIAL
-            terminal_reward = terminal_return * 1.0
+            terminal_reward = terminal_return * 10.0
             reward_components["terminal_return"] = terminal_reward
 
         if step_penalty >= 0.1:

@@ -28,25 +28,27 @@ def objective(trial: optuna.trial.Trial):
     args.action_dead_zone = trial.suggest_float("action_dead_zone", 0.05, 0.30)
     args.batch_size = trial.suggest_categorical("batch_size", [128, 256, 512, 1024])
     args.clip_range = trial.suggest_float("clip", 0.01, 0.3)
-    args.drawdown_penalty_coef = trial.suggest_float("drawdown_penalty_coef", 5, 20)
+    args.drawdown_penalty_coef = trial.suggest_float("drawdown_penalty_coef", 0.1, 2.0)
     # args.empty_buy_penalty = trial.suggest_float("empty_buy_penalty", 1e-4, 1e-1)
     args.empty_sell_penalty = trial.suggest_float("empty_sell_penalty", 1e-5, 1e-2)
     args.ent_coef = trial.suggest_float("ent_coef", 6e-5, 6e-2, log=True)
-    args.gamma = trial.suggest_float("gamma", 0.98, 0.9999)
+    # args.gamma = trial.suggest_float("gamma", 0.98, 0.9999)
     args.hold_cost_rate = trial.suggest_float("hold_cost_rate", 1e-8, 1e-5, log=True)
     args.hold_incentive = trial.suggest_float("hold_incentive", 1e-10, 1e-7, log=True)
     args.illegal_buy_penalty = trial.suggest_float("illegal_buy_penalty", 1e-7, 1e-4)
     args.illegal_sell_penalty = trial.suggest_float("illegal_sell_penalty", 1e-4, 1e-1)
-    args.learning_rate = trial.suggest_float("learning_rate", 1e-10, 1e-7, log=True)
+    args.learning_rate = trial.suggest_float("learning_rate", 1e-5, 3e-4, log=True)
+    args.min_turnover_threshold = trial.suggest_float("min_turnover_threshold", 0.01, 0.4)
     args.n_envs = trial.suggest_int("n_envs", 5, 10)
     args.n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048, 4096])
-    args.profit_bonus = trial.suggest_float("profit_bonus", 0.25, 1.0)
+    args.profit_bonus = trial.suggest_float("profit_bonus", 0.0, 0.01)
     args.window_size = trial.suggest_categorical("window_size", [30, 60, 120, 240])
 
     # Scale up timesteps for Standard Tuning
-    args.n_rows = 160000  # 10000 / 20000  / 40000
-    args.timesteps = 500000  # 30000 / 50000 / 100000
+    args.n_rows = 400000  # 10000 / 20000  / 40000
+    args.timesteps = 1200000  # 30000 / 50000 / 100000
     args.dashboard = False
+    args.gamma = 0.999
 
     try:
         # Pass the trial object directly into Python memory!
@@ -56,7 +58,7 @@ def objective(trial: optuna.trial.Trial):
         raise
     except Exception as e:
         print(f"Trial failed with error: {e}")
-        return 100.0  # baseline fallback
+        return -float("inf")  # bad trial score for failed trials
 
 
 if __name__ == "__main__":
