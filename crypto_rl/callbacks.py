@@ -16,7 +16,10 @@ from typing import Optional
 
 import numpy as np
 import optuna
-from stable_baselines3.common.callbacks import EvalCallback
+from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from sb3_contrib.common.wrappers import ActionMasker
+
+from crypto_rl.env.metrics import calculate_calmar_ratio
 
 try:
     from stable_baselines3.common.callbacks import BaseCallback
@@ -166,11 +169,11 @@ class DashboardCallback(BaseCallback):
             if np.sum(np.abs(current_holdings)) > 1e-8:
                 self.current_trades += 1
 
-            # Win rate placeholder: assume a "win" if mean_ep_rew > 0
-            if mean_ep_rew > 0:
-                self.winning_trades += 1
-
-            win_rate = (self.winning_trades / max(1, self.current_trades)) * 100.0
+            winning_trades_list = self.training_env.get_attr("winning_trades_count")
+            total_closed_list = self.training_env.get_attr("total_closed_trades")
+            winning_trades = int(winning_trades_list[0]) if winning_trades_list else 0
+            total_closed = int(total_closed_list[0]) if total_closed_list else 0
+            win_rate = (winning_trades / max(1, total_closed)) * 100.0
 
             # Return and Drawdown
             total_return = (current_portfolio / BUDGET_INITIAL - 1.0) * 100.0
@@ -301,7 +304,7 @@ class DashboardCallback(BaseCallback):
             print(e)
 
 
-class TrialEvalCallback(EvalCallback):
+class TrialEvalCallback(MaskableEvalCallback):
     """Callback for evaluating a trial and reporting to Optuna, with pruning support."""
 
     def __init__(
@@ -338,17 +341,17 @@ class TrialEvalCallback(EvalCallback):
         return True
 
 
-# New checkpoint callback that saves model when Sharpe improves
+# New checkpoint callback that saves model when Calmar improves
 class CheckpointCallback(BaseCallback):
     """
-    Save model checkpoint whenever a new best Sharpe ratio is achieved on a test environment.
+    Save model checkpoint whenever a new best Calmar ratio is achieved on a test environment.
 
     Parameters
     ----------
     checkpoint_dir: Path
         Directory where checkpoint files will be saved.
     test_env: MinimalCryptoEnv
-        Environment used for evaluation to compute Sharpe.
+        Environment used for evaluation to compute Calmar.
     check_freq: int
         How often (in timesteps) to evaluate and possibly checkpoint.
     max_checkpoints: int
@@ -358,7 +361,7 @@ class CheckpointCallback(BaseCallback):
     def __init__(
         self,
         checkpoint_dir: Path,
-        test_env: MinimalCryptoEnv,
+        test_env: MinimalCryptoEnv | ActionMasker,
         check_freq: int = 500,
         max_checkpoints: int = 5,
     ):
@@ -367,19 +370,19 @@ class CheckpointCallback(BaseCallback):
         self.test_env = test_env
         self.check_freq = check_freq
         self.max_checkpoints = max_checkpoints
-        self.best_sharpe = -float("inf")
+        self.best_calmar = -float("inf")
         # Ensure directory exists
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.num_timesteps % self.check_freq == 0:
-            sharpe = self._evaluate_sharpe()
-            if sharpe > self.best_sharpe:
-                self.best_sharpe = sharpe
+            calmar = self._evaluate_calmar()
+            if calmar > self.best_calmar:
+                self.best_calmar = calmar
                 timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
                 ckpt_path = (
                     self.checkpoint_dir
-                    / f"checkpoint_{self.num_timesteps}_sharpe_{sharpe:.4f}_{timestamp}.zip"
+                    / f"checkpoint_{self.num_timesteps}_calmar_{calmar:.4f}_{timestamp}.zip"
                 )
                 self.model.save(str(ckpt_path))
                 # Enforce max checkpoints globally
@@ -396,21 +399,25 @@ class CheckpointCallback(BaseCallback):
 
         return True
 
-    def _evaluate_sharpe(self) -> float:
-        """Run a full evaluation on the test environment and compute Sharpe ratio."""
+    def _evaluate_calmar(self) -> float:
+        """Run a full evaluation on the test environment and compute Calmar ratio."""
         obs, _ = self.test_env.reset()
         done = False
-        portfolio_values = [{"step": 0, "value": float(self.test_env.portfolio_value)}]
+        # USE .unwrapped TO ACCESS BASE ENVIRONMENT ATTRIBUTES
+        base_env: MinimalCryptoEnv = self.test_env.unwrapped
+        portfolio_values = [{"step": 0, "value": float(base_env.portfolio_value)}]
         while not done:
-            action, _ = self.model.predict(obs, deterministic=True)
+            # EXTRACT MASKS AND EXPAND TO 2D FOR PREDICTION
+            current_masks = np.array([self.test_env.action_masks()])
+            action, _ = self.model.predict(
+                obs, action_masks=current_masks, deterministic=True
+            )
             obs, _, done, _, _ = self.test_env.step(action)
             portfolio_values.append(
                 {
                     "step": len(portfolio_values),
-                    "value": float(self.test_env.portfolio_value),
+                    "value": float(base_env.portfolio_value),
                 }
             )
-        pv_series = np.array([v["value"] for v in portfolio_values])
-        returns = np.diff(pv_series) / pv_series[:-1]
-        sharpe = returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
-        return sharpe
+        calmar = calculate_calmar_ratio(portfolio_values)
+        return calmar

@@ -3,25 +3,30 @@ import inspect
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import optuna
 import pandas as pd
 import torch
-from sb3_contrib import RecurrentPPO
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl import MinimalCryptoEnv, read_last_n
 from crypto_rl.callbacks import CheckpointCallback, DashboardCallback, TrialEvalCallback
-from crypto_rl.data import get_walk_forward_splits, read_n_rows, read_train_test
+from crypto_rl.data import get_walk_forward_splits, read_n_rows
+from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import compute_static_obs_from_long_df
+from crypto_rl.env.metrics import calculate_calmar_ratio
 from scripts.eval_log_action_counter import eval_log_action_counter
 from scripts.eval_report import eval_report
 
 # Global budget variable required by other parts of the package
 global BUDGET_INITIAL
+CLIP_OBS = 10.0  # Clamps normalized inputs to [-10.0, 10.0]
 
 
 def print_if_not_trial(trial: optuna.trial.Trial | None = None, msg: str = ""):
@@ -60,7 +65,7 @@ def _to_datetime(ts):
 
 def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     """Run training and evaluation with walk-forward CV.
-    Returns the mean test Sharpe across folds (or multi-seed portfolio value) for Optuna.
+    Returns the mean test Calmar across folds (or multi-seed portfolio value) for Optuna.
     """
     # Seed for reproducibility of dataset split
     np.random.seed(args.data_seed)
@@ -133,9 +138,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             .strftime("%Y-%m-%d %H:%M:%S %Z")
         )
         training_end_str = (
-            _to_datetime(end_ts_raw)
-            .tz_localize("UTC")
-            .strftime("%Y-%m-%d %H:%M:%S %Z")
+            _to_datetime(end_ts_raw).tz_localize("UTC").strftime("%Y-%m-%d %H:%M:%S %Z")
         )
         last_training_start_str = training_start_str
         last_training_end_str = training_end_str
@@ -147,26 +150,29 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         last_asset_names = asset_names
 
         print_if_not_trial(trial, "2. Setting up environment...")
-        env_fns = []
-        for _ in range(args.n_envs):
-            env_fns.append(
-                lambda: MinimalCryptoEnv(
-                    prices_arr=prices_arr,
-                    static_obs=static_obs,
-                    asset_names=asset_names,
-                    run_id=run_id,
-                    disable_logging=trial is not None,
-                    **env_args,
-                )
+
+        def make_env():
+            e = MinimalCryptoEnv(
+                prices_arr=prices_arr,
+                static_obs=static_obs,
+                asset_names=asset_names,
+                run_id=run_id,
+                disable_logging=trial is not None,
+                **env_args,
             )
+            # Apply ActionMasker directly to the base gym environment
+            return ActionMasker(e, get_action_mask)
+
+        env_fns = [make_env for _ in range(args.n_envs)]
+        # Vectorize and Normalize AFTER masking
         train_env = VecNormalize(
             DummyVecEnv(env_fns),
             norm_reward=True,
-            norm_obs=False,  # obs already normalized manually
+            norm_obs=False,
             gamma=args.gamma,
+            clip_obs=CLIP_OBS,
             clip_reward=5.0,
         )
-
         callback = None
         checkpoint_callback = None
         _TARGET_CHECKPOINTS = 300
@@ -216,19 +222,20 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
 
         checkpoint_dir = run_dir / f"checkpoints_fold_{fold_idx + 1}"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        shard_env_args = {
+            "prices_arr": shared_test_prices,
+            "static_obs": shared_test_static,
+            "asset_names": shared_test_names,
+            "run_id": run_id,
+            "is_eval": True,
+            "disable_logging": True,
+            **env_args,
+        }
         if args.checkpoint:
-            checkpoint_test_env = MinimalCryptoEnv(
-                prices_arr=shared_test_prices,
-                static_obs=shared_test_static,
-                asset_names=shared_test_names,
-                is_eval=True,
-                disable_logging=True,
-                run_id=run_id,
-                **env_args,
-            )
+            checkpoint_test_env = MinimalCryptoEnv(**shard_env_args)
             checkpoint_callback = CheckpointCallback(
                 checkpoint_dir=checkpoint_dir,
-                test_env=checkpoint_test_env,
+                test_env=ActionMasker(checkpoint_test_env, get_action_mask),
                 check_freq=safe_check_freq,
                 max_checkpoints=args.max_checkpoints,
             )
@@ -236,21 +243,17 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         eval_callback = None
         eval_env = None
         if trial is not None:
-            raw_env = MinimalCryptoEnv(
-                prices_arr=shared_test_prices,
-                static_obs=shared_test_static,
-                asset_names=shared_test_names,
-                run_id=run_id,
-                is_eval=True,
-                disable_logging=True,
-                **env_args,
-            )
+            raw_env = MinimalCryptoEnv(**shard_env_args)
+            masked_eval_env = ActionMasker(raw_env, get_action_mask)
             eval_env = VecNormalize(
-                DummyVecEnv([lambda: Monitor(raw_env)]),
+                DummyVecEnv([lambda: Monitor(masked_eval_env)]),
                 norm_reward=False,
-                norm_obs=False,
+                norm_obs=True,
+                clip_obs=CLIP_OBS,
                 training=False,
             )
+            # Sync the statistics from the training environment
+            eval_env.obs_rms = train_env.obs_rms
             eval_freq = max(1000, args.timesteps // 5)
             eval_callback = TrialEvalCallback(
                 eval_env=eval_env,
@@ -274,37 +277,37 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
             "normalize_images": False,
         }
         n_steps = args.n_steps
-
+        sb3_args_common: dict[str, Any] = {
+            "device": device,
+            "verbose": verbose,
+            "seed": seed,
+            "n_steps": n_steps,
+            "batch_size": batch_size,
+            "learning_rate": learning_rate,
+        }
         if args.algorithm == "SAC":
-            print_if_not_trial(trial, f"3. Training SAC model for Fold {fold_idx + 1}...")
+            print_if_not_trial(
+                trial, f"3. Training SAC model for Fold {fold_idx + 1}..."
+            )
             model = SAC(
-                "MlpPolicy",
-                train_env,
-                device=device,
-                verbose=verbose,
-                seed=seed,
+                env=train_env,
+                policy="MlpPolicy",
                 ent_coef="auto",
-                n_steps=n_steps,
-                batch_size=batch_size,
                 gamma=gamma,
-                learning_rate=learning_rate,
                 policy_kwargs=policy_kwargs,
+                **sb3_args_common,
             )
         else:
-            print_if_not_trial(trial, f"3. Training PPO model for Fold {fold_idx + 1}...")
-            model = RecurrentPPO(
-                "MlpLstmPolicy",
-                train_env,
-                device=device,
-                verbose=verbose,
-                seed=seed,
+            print_if_not_trial(
+                trial, f"3. Training PPO model for Fold {fold_idx + 1}..."
+            )
+            model = MaskablePPO(
+                env=train_env,
+                policy="MlpPolicy",
                 ent_coef=ent_coef,
-                n_steps=n_steps,
-                batch_size=batch_size,
-                learning_rate=learning_rate,
                 clip_range=args.clip_range,
-                policy_kwargs=policy_kwargs
-                | {"lstm_hidden_size": 128, "n_lstm_layers": 1},
+                policy_kwargs=policy_kwargs,
+                **sb3_args_common,
             )
 
         callbacks = []
@@ -327,26 +330,41 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 train_env.close()
                 raise optuna.exceptions.TrialPruned()
 
-        print_if_not_trial(trial, f"4. Testing trained model for Fold {fold_idx + 1}...")
-        test_env = MinimalCryptoEnv(
-            prices_arr=shared_test_prices,
-            static_obs=shared_test_static,
-            asset_names=shared_test_names,
-            run_id=run_id,
-            is_eval=True,
-            **env_args,
+        print_if_not_trial(
+            trial, f"4. Testing trained model for Fold {fold_idx + 1}..."
         )
+        shard_env_args_with_logging: dict[str, Any] = shard_env_args | {
+            "disable_logging": False
+        }
+        test_env_raw = ActionMasker(
+            MinimalCryptoEnv(**shard_env_args_with_logging), get_action_mask
+        )
+        test_env = VecNormalize(
+            DummyVecEnv([lambda: test_env_raw]),
+            norm_reward=False,
+            norm_obs=True,
+            training=False,
+            clip_obs=CLIP_OBS,
+        )
+        # Inherit the trained reality
+        test_env.obs_rms = train_env.obs_rms
         obs, _ = test_env.reset()
         done = False
         eval_steps = 0
-        eval_initial_portfolio_value = test_env.portfolio_value
-        eval_portfolio_values = [{"step": 0, "value": float(test_env.portfolio_value)}]
+        base_test_env: MinimalCryptoEnv = test_env.unwrapped
+        eval_initial_portfolio_value = base_test_env.portfolio_value
+        eval_portfolio_values = [
+            {"step": 0, "value": float(eval_initial_portfolio_value)}
+        ]
         eval_realized_pnl = [{"step": 0, "value": 0.0}]
         eval_closed_trades = 0
         eval_winning_trades = 0
         eval_reward_totals = {}
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            action_masks = np.expand_dims(test_env.action_masks(), axis=0)
+            action, _ = model.predict(
+                obs, action_masks=action_masks, deterministic=True
+            )
             obs, reward, done, _, info = test_env.step(action)
             if "reward_components" in info:
                 for k, v in info["reward_components"].items():
@@ -357,25 +375,20 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                     eval_winning_trades += 1
             eval_steps += 1
             eval_portfolio_values.append(
-                {"step": eval_steps, "value": float(test_env.portfolio_value)}
+                {"step": eval_steps, "value": float(base_test_env.portfolio_value)}
             )
             eval_realized_pnl.append(
                 {
                     "step": eval_steps,
                     "value": float(
-                        test_env.portfolio_value - eval_initial_portfolio_value
+                        base_test_env.portfolio_value - eval_initial_portfolio_value
                     ),
                 }
             )
 
-        eval_trades_count = test_env.trades_count
+        eval_trades_count = base_test_env.trades_count
 
-        # Compute Fold Sharpe
-        pv_series = np.array([v["value"] for v in eval_portfolio_values])
-        returns = np.diff(pv_series) / pv_series[:-1]
-        fold_sharpe = (
-            returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
-        )  # 1-min annualized
+        fold_calmar = calculate_calmar_ratio(eval_portfolio_values)
 
         eval_win_rate_pct = (
             (eval_winning_trades / eval_closed_trades * 100.0)
@@ -386,24 +399,26 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         fold_results.append(
             {
                 "fold": fold_idx + 1,
-                "final_portfolio_value": float(test_env.portfolio_value),
-                "pnl": float(test_env.portfolio_value - eval_initial_portfolio_value),
-                "sharpe": float(fold_sharpe),
+                "final_portfolio_value": float(base_test_env.portfolio_value),
+                "pnl": float(
+                    base_test_env.portfolio_value - eval_initial_portfolio_value
+                ),
+                "calmar": float(fold_calmar),
                 "trades": int(eval_trades_count),
                 "closed_trades": int(eval_closed_trades),
                 "win_rate_pct": float(eval_win_rate_pct),
-                "fees_paid": float(test_env.fees_paid_total),
+                "fees_paid": float(base_test_env.fees_paid_total),
             }
         )
 
         print_if_not_trial(trial, f"Fold {fold_idx + 1} Results:")
         print_if_not_trial(
             trial,
-            f"  Final PV: ${test_env.portfolio_value:.2f} | PnL: ${test_env.portfolio_value - eval_initial_portfolio_value:.2f} | Sharpe: {fold_sharpe:.2f}",
+            f"  Final PV: ${base_test_env.portfolio_value:.2f} | PnL: ${base_test_env.portfolio_value - eval_initial_portfolio_value:.2f} | Calmar: {fold_calmar:.2f}",
         )
         print_if_not_trial(
             trial,
-            f"  Trades: {eval_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${test_env.fees_paid_total:.4f}",
+            f"  Trades: {eval_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${base_test_env.fees_paid_total:.4f}",
         )
 
         last_model = model
@@ -423,7 +438,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     # Aggregate Walk-Forward CV Results
     cv_mean_pv = float(np.mean([r["final_portfolio_value"] for r in fold_results]))
     cv_mean_pnl = float(np.mean([r["pnl"] for r in fold_results]))
-    cv_mean_sharpe = float(np.mean([r["sharpe"] for r in fold_results]))
+    cv_mean_calmar = float(np.mean([r["calmar"] for r in fold_results]))
     cv_mean_win_rate = float(np.mean([r["win_rate_pct"] for r in fold_results]))
     cv_total_trades = sum([r["trades"] for r in fold_results])
     cv_total_fees = sum([r["fees_paid"] for r in fold_results])
@@ -432,10 +447,10 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
     print_if_not_trial(trial, f"WALK-FORWARD CV SUMMARY ({n_splits} Folds):")
     print_if_not_trial(trial, f"Mean Test Portfolio Value: ${cv_mean_pv:.2f}")
     print_if_not_trial(trial, f"Mean Test PnL:             ${cv_mean_pnl:.2f}")
-    print_if_not_trial(trial, f"Mean Test Sharpe:          {cv_mean_sharpe:.2f}")
+    print_if_not_trial(trial, f"Mean Test Calmar:          {cv_mean_calmar:.2f}")
     print_if_not_trial(trial, f"Mean Test Win Rate:        {cv_mean_win_rate:.1f}%")
     print_if_not_trial(trial, f"Total CV Trades:           {cv_total_trades}")
-    print_if_not_trial(trial, f"Total Fees Paid:           ${cv_total_fees:.4f}")
+    print_if_not_trial(trial, f"Total Test Fees Paid:           ${cv_total_fees:.4f}")
     print_if_not_trial(trial, "=" * 40 + "\n")
 
     # Select BTCUSDT if present, otherwise locate the first symbol with start_price > 0
@@ -494,7 +509,7 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 ms_prices_arr, ms_static_obs, ms_asset_names = (
                     compute_static_obs_from_long_df(ms_test, args.window_size)
                 )
-                ms_env = MinimalCryptoEnv(
+                raw_ms_env = MinimalCryptoEnv(
                     prices_arr=ms_prices_arr,
                     static_obs=ms_static_obs,
                     asset_names=ms_asset_names,
@@ -503,12 +518,17 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                     disable_logging=True,
                     **env_args,
                 )
+                ms_env = ActionMasker(raw_ms_env, get_action_mask)
                 ms_obs, _ = ms_env.reset()
                 ms_done = False
                 while not ms_done:
-                    ms_action, _ = last_model.predict(ms_obs, deterministic=True)
+                    # Add an explicit batch dimension for the single environment
+                    action_masks = np.expand_dims(ms_env.action_masks(), axis=0)
+                    ms_action, _ = last_model.predict(
+                        ms_obs, action_masks=action_masks, deterministic=True
+                    )
                     ms_obs, _, ms_done, _, _ = ms_env.step(ms_action)
-                multi_seed_pv.append(ms_env.portfolio_value)
+                multi_seed_pv.append(raw_ms_env.portfolio_value)
                 ms_env.close()
             except Exception as exc:
                 print_if_not_trial(trial, f"  seed {mseed} failed: {exc}")
@@ -541,19 +561,13 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
                 "total_fees_paid": float(cv_total_fees),
                 "cv_folds": fold_results,
             }
-            # Add CV mean Sharpe ratio to finance section for dashboard display
-            state["finance"]["sharpe"] = float(cv_mean_sharpe)
+            # Add CV mean Calmar ratio to finance section for dashboard display
+            state["finance"]["calmar"] = float(cv_mean_calmar)
             state["explainability"] = {
                 "cumulative_rewards": {
                     k: float(v) for k, v in last_eval_reward_totals.items()
                 },
-                "hyperparameters": {
-                    "hold_cost_rate": args.hold_cost_rate,
-                    "action_dead_zone": args.action_dead_zone,
-                    "profit_bonus": args.profit_bonus,
-                    "drawdown_penalty_coef": args.drawdown_penalty_coef,
-                    "cv_folds": cv_folds,
-                },
+                "hyperparameters": all_args,
             }
             if "series" not in state:
                 state["series"] = {}
@@ -572,4 +586,4 @@ def run_experiment(args, trial: optuna.trial.Trial | None = None) -> float:
         eval_log_action_counter()
         eval_report()
 
-    return float(cv_mean_sharpe)
+    return float(cv_mean_calmar)  # Return mean Calmar ratio for Optuna optimization

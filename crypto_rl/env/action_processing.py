@@ -1,3 +1,4 @@
+import gymnasium
 import numpy as np
 
 def apply_continuous_action(env, action):
@@ -165,3 +166,25 @@ def apply_discrete_action(env, action):
     # Store penalty for caller
     env._step_penalty = step_penalty
     return fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price
+
+def get_action_mask(env: gymnasium.Env) -> np.ndarray:
+    """
+    Evaluates the base environment state and returns a flat boolean array 
+    validating which actions are currently legal.
+    """
+    # Drill down through wrappers to get the actual env attributes
+    base_env = env.unwrapped
+    
+    # Dimension 0: Action Type [Hold, Buy, Sell]
+    can_buy = float(base_env.cash) > 1e-8
+    can_sell = float(np.sum(base_env.holdings)) > 1e-8
+    mask_action_type = np.array([True, can_buy, can_sell], dtype=bool)
+    
+    # Dimension 1: Asset Index (Cannot conditionally mask in MultiDiscrete)
+    mask_asset_idx = np.ones(base_env.num_assets, dtype=bool)
+    
+    # Dimension 2: Amount Pct (0 to 100)
+    mask_amount_pct = np.ones(101, dtype=bool)
+    
+    # Concatenate all dimensions into the flat mask expected by sb3-contrib
+    return np.concatenate([mask_action_type, mask_asset_idx, mask_amount_pct])

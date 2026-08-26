@@ -58,7 +58,7 @@ Examples:
         "--checkpoint",
         action="store_true",
         default=False,
-        help="Enable checkpointing of best Sharpe model",
+        help="Enable checkpointing of best Calmar model",
     )
     parser.add_argument(
         "--clip-range",
@@ -69,8 +69,8 @@ Examples:
     parser.add_argument(
         "--cv-folds",
         type=int,
-        default=3,
-        help="Number of walk-forward CV folds (default: 3). Set to 1 for standard single train/test split.",
+        default=1,
+        help="Number of walk-forward CV folds (default: 1). Set to 1 for standard single train/test split.",
     )
     parser.add_argument(
         "--dashboard",

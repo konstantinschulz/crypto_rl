@@ -22,7 +22,7 @@ def pivot_ohlcv(prices_df: pd.DataFrame):
 
         # Destroy the column in the original long_df immediately to prevent memory doubling
         if val_col in prices_df.columns:
-            prices_df.drop(columns=[val_col], inplace=True)
+            del prices_df[val_col] # prices_df.drop(columns=[val_col])
             gc.collect()
 
         # Forward-fill / back-fill missing values, then cast to float32
@@ -35,7 +35,8 @@ def pivot_ohlcv(prices_df: pd.DataFrame):
     volume_df = _pivot_and_align("volume")
 
     # Destroy the remaining skeleton of the source DataFrame (symbol, open_time)
-    prices_df.drop(columns=prices_df.columns, inplace=True)
+    # prices_df.drop(columns=prices_df.columns)
+    del prices_df
     gc.collect()
 
     return close_df, open_df, high_df, low_df, volume_df

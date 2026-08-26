@@ -1,6 +1,7 @@
 """Compute finance metrics from a saved Parquet action log."""
 
 import glob
+import json
 import numpy as np
 import pandas as pd
 
@@ -19,9 +20,13 @@ def eval_report():
         where=denom > 1e-8,
     )
 
-    sharpe = (
-        returns.mean() / (returns.std() + 1e-8) * np.sqrt(1440)
-    )  # annualised at 1-min
+    # 1-min annualized return
+    annualized_return = returns.mean() * 525600
+    # Calculate Max Drawdown
+    running_max = np.maximum.accumulate(pv_series)
+    drawdowns = (running_max - pv_series) / running_max
+    max_drawdown = np.max(drawdowns)
+    calmar = annualized_return / max(max_drawdown, 1e-8)
 
     downside = returns[returns < 0]
     sortino = returns.mean() / (downside.std() + 1e-8) * np.sqrt(1440)
@@ -37,12 +42,19 @@ def eval_report():
     )
 
     print(
-        f"Sharpe={sharpe:.2f}  Sortino={sortino:.2f}  MaxDD={dd.min() * 100:.1f}%  FinalPV={pv_series[-1]:.2f}"
+        f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd.min() * 100:.1f}%  FinalPV={pv_series[-1]:.2f}"
     )
     traded_symbols: set[str] = set(df["symbol"].tolist())
     print(
         f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}"
     )
+    f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
+    with open(f2) as f3:
+        state = json.load(f3)
+        keys = ["technical", "finance", "explainability"]
+        for key in keys:
+            if key in state:
+                print(f"{key}: {state[key]}")
 
 
 if __name__ == "__main__":
