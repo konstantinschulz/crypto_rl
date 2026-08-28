@@ -7,6 +7,14 @@ import pandas as pd
 
 
 def eval_report():
+    f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
+    with open(f2) as f3:
+        state = json.load(f3)
+        keys = ["technical", "finance", "explainability"]
+        for key in keys:
+            if key in state:
+                print(f"{key}: {json.dumps(state[key], indent=2)}")
+
     f = sorted(glob.glob("logs/run-*/actions_eval_*.parquet"))[-1]
     df = pd.read_parquet(f)
     pv_series = df["portfolio"].to_numpy()
@@ -48,13 +56,6 @@ def eval_report():
     print(
         f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}"
     )
-    f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
-    with open(f2) as f3:
-        state = json.load(f3)
-        keys = ["technical", "finance", "explainability"]
-        for key in keys:
-            if key in state:
-                print(f"{key}: {state[key]}")
 
 
 if __name__ == "__main__":

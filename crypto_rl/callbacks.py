@@ -19,7 +19,9 @@ import optuna
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.wrappers import ActionMasker
 
+from crypto_rl.config import RLConfig
 from crypto_rl.env.metrics import calculate_calmar_ratio
+from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 try:
     from stable_baselines3.common.callbacks import BaseCallback
@@ -34,9 +36,6 @@ except ImportError:  # pragma: no cover
         def __getattr__(self, name):
             # Return a dummy callable for any attribute used in the code
             return lambda *a, **k: None
-
-
-from .env import BUDGET_INITIAL, MinimalCryptoEnv
 
 
 class DashboardCallback(BaseCallback):
@@ -63,27 +62,26 @@ class DashboardCallback(BaseCallback):
 
     def __init__(
         self,
+        config: RLConfig,
         state_path: Path,
-        window_size: int,
-        reward_type: str,
         run_id: str,
         total_timesteps: int,
         num_data_rows: int,
-        check_freq: int = 500,
         training_start_str: str | None = None,
         training_end_str: str | None = None,
     ):
         super().__init__()
         self.state_path = state_path
-        self.window_size = window_size
-        self.reward_type = reward_type
+        self.config = config
+        self.window_size = config.window_size
+        self.reward_type = config.reward_type
         self.run_id = run_id
         self.total_timesteps = total_timesteps
         self.num_data_rows = num_data_rows
-        self.check_freq = check_freq
+        self.check_freq = config.check_freq
         # Always store started_at in UTC so _parse_dashboard_ts can parse it reliably.
         self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-        self.last_portfolio_value = BUDGET_INITIAL
+        self.last_portfolio_value = config.budget_initial
         self.training_start_str = training_start_str
         self.training_end_str = training_end_str
         # Maximum data-points kept in memory per series to avoid unbounded RAM growth
@@ -114,7 +112,7 @@ class DashboardCallback(BaseCallback):
 
         self.current_trades = 0
         self.winning_trades = 0
-        self.peak_portfolio_value = BUDGET_INITIAL
+        self.peak_portfolio_value = config.budget_initial
 
         try:
             import psutil
@@ -158,7 +156,7 @@ class DashboardCallback(BaseCallback):
             # Always get the real current portfolio value from the environment
             portfolio_values = self.training_env.get_attr("portfolio_value")
             current_portfolio = (
-                float(portfolio_values[0]) if portfolio_values else BUDGET_INITIAL
+                float(portfolio_values[0]) if portfolio_values else self.config.budget_initial
             )
             episode_counts = self.training_env.get_attr("episode_count")
             current_episode = int(episode_counts[0]) if episode_counts else 1
@@ -176,7 +174,7 @@ class DashboardCallback(BaseCallback):
             win_rate = (winning_trades / max(1, total_closed)) * 100.0
 
             # Return and Drawdown
-            total_return = (current_portfolio / BUDGET_INITIAL - 1.0) * 100.0
+            total_return = (current_portfolio / self.config.budget_initial - 1.0) * 100.0
             self.peak_portfolio_value = max(
                 self.peak_portfolio_value, current_portfolio
             )
@@ -360,16 +358,15 @@ class CheckpointCallback(BaseCallback):
 
     def __init__(
         self,
+        config: RLConfig,
         checkpoint_dir: Path,
         test_env: MinimalCryptoEnv | ActionMasker,
-        check_freq: int = 500,
-        max_checkpoints: int = 5,
     ):
         super().__init__()
         self.checkpoint_dir = checkpoint_dir
         self.test_env = test_env
-        self.check_freq = check_freq
-        self.max_checkpoints = max_checkpoints
+        self.check_freq = config.check_freq
+        self.max_checkpoints = config.max_checkpoints
         self.best_calmar = -float("inf")
         # Ensure directory exists
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)

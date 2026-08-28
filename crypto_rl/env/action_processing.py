@@ -96,12 +96,12 @@ def apply_discrete_action(env, action):
 
     if action_type == 1:  # BUY
         if amount_pct == 0.0:
-            step_penalty += env.empty_buy_penalty * env.portfolio_value
+            step_penalty += env.empty_buy_penalty
             action_type = 0
             env.last_remap_note = "empty BUY remapped to HOLD"
         elif asset_idx < env.num_assets:
             if env.cash <= 1e-9:
-                step_penalty += env.illegal_buy_penalty * env.portfolio_value
+                step_penalty += env.illegal_buy_penalty
                 action_type = 0
                 env.last_remap_note = (
                     f"illegal action (BUY, {env.asset_names[asset_idx]}, {amount_pct * 100:.0f}%): no cash, remapped to HOLD"
@@ -126,7 +126,7 @@ def apply_discrete_action(env, action):
                     )
     elif action_type == 2:  # SELL
         if amount_pct == 0.0:
-            step_penalty += env.empty_sell_penalty * env.portfolio_value
+            step_penalty += env.empty_sell_penalty
             action_type = 0
             env.last_remap_note = "empty SELL remapped to HOLD"
         elif asset_idx < env.num_assets:
@@ -146,13 +146,15 @@ def apply_discrete_action(env, action):
                     if env.holdings[asset_idx] <= 1e-9:
                         env.avg_entry_price[asset_idx] = 0.0
                         env.total_cost_basis[asset_idx] = 0.0
+                        # Add this to physically destroy the micro-dust
+                        env.holdings[asset_idx] = 0.0
                     else:
                         env.total_cost_basis[asset_idx] *= env.holdings[asset_idx] / (
                             env.holdings[asset_idx] + units_to_sell
                         )
                     realised_pnl = proceeds - (trade_units * env.avg_entry_price[asset_idx])
             else:
-                step_penalty += env.illegal_sell_penalty * env.portfolio_value
+                step_penalty += env.illegal_sell_penalty
                 action_type = 0
                 env.last_remap_note = (
                     f"illegal action (SELL, {env.asset_names[asset_idx]}, {amount_pct * 100:.0f}%) remapped to HOLD"

@@ -1,11 +1,11 @@
 from crypto_rl.cli import build_parser
+from crypto_rl.config import RLConfig
 from crypto_rl.experiment import run_experiment
 
 
 def main():
-    parser = build_parser()
-    args = parser.parse_args()
-    run_experiment(args)
+    config: RLConfig = build_parser()
+    run_experiment(config)
 
 
 if __name__ == "__main__":

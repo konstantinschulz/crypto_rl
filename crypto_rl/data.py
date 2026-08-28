@@ -161,7 +161,7 @@ def get_valid_start_timestamps(
         .column("open_time")
         .to_numpy()
     )
-
+    valid_open_times = np.sort(np.unique(valid_open_times))  # Sort & deduplicate
     if len(valid_open_times) == 0:
         raise ValueError(f"Anchor symbol '{anchor_symbol}' returned 0 timestamps!")
 
@@ -263,9 +263,7 @@ def read_n_rows(path: str, n_rows: int) -> pd.DataFrame:
         df = df.iloc[-n_rows:]
 
     except Exception as e:
-        print(
-            f"PyArrow optimized read failed ({e}), falling back to pandas read..."
-        )
+        print(f"PyArrow optimized read failed ({e}), falling back to pandas read...")
         df = pd.read_parquet(path, columns=cols).dropna()
         symbols = _pick_symbols(list(df["symbol"].unique()))
         df = df[df["symbol"].isin(symbols)]
@@ -311,9 +309,7 @@ def get_walk_forward_splits(
     for fold in range(n_folds):
         train_end_idx = (fold + 1) * chunk_len
         test_start_idx = train_end_idx
-        test_end_idx = (
-            (fold + 2) * chunk_len if fold < (n_folds - 1) else n_unique
-        )
+        test_end_idx = (fold + 2) * chunk_len if fold < (n_folds - 1) else n_unique
 
         t_train_max = unique_times[train_end_idx - 1]
         t_test_min = unique_times[test_start_idx]
