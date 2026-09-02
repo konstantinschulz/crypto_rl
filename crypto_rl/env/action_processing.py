@@ -1,6 +1,7 @@
 import gymnasium
 import numpy as np
 
+
 def apply_continuous_action(env, action):
     """Process continuous actions.
 
@@ -103,9 +104,7 @@ def apply_discrete_action(env, action):
             if env.cash <= 1e-9:
                 step_penalty += env.illegal_buy_penalty
                 action_type = 0
-                env.last_remap_note = (
-                    f"illegal action (BUY, {env.asset_names[asset_idx]}, {amount_pct * 100:.0f}%): no cash, remapped to HOLD"
-                )
+                env.last_remap_note = f"illegal action (BUY, {env.asset_names[asset_idx]}, {amount_pct * 100:.0f}%): no cash, remapped to HOLD"
                 amount_pct = 0.0
             else:
                 buy_amount_usd = env.cash * amount_pct
@@ -152,13 +151,13 @@ def apply_discrete_action(env, action):
                         env.total_cost_basis[asset_idx] *= env.holdings[asset_idx] / (
                             env.holdings[asset_idx] + units_to_sell
                         )
-                    realised_pnl = proceeds - (trade_units * env.avg_entry_price[asset_idx])
+                    realised_pnl = proceeds - (
+                        trade_units * env.avg_entry_price[asset_idx]
+                    )
             else:
                 step_penalty += env.illegal_sell_penalty
                 action_type = 0
-                env.last_remap_note = (
-                    f"illegal action (SELL, {env.asset_names[asset_idx]}, {amount_pct * 100:.0f}%) remapped to HOLD"
-                )
+                env.last_remap_note = f"illegal action (SELL, {env.asset_names[asset_idx]}, {amount_pct * 100:.0f}%) remapped to HOLD"
                 amount_pct = 0.0
         else:
             action_type = 0
@@ -169,24 +168,30 @@ def apply_discrete_action(env, action):
     env._step_penalty = step_penalty
     return fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price
 
-def get_action_mask(env: gymnasium.Env) -> np.ndarray:
+
+def get_action_mask(env):
     """
-    Evaluates the base environment state and returns a flat boolean array 
-    validating which actions are currently legal.
+    Action mask for MultiDiscrete([3, num_assets, 101])
+    Returns a flat boolean array of size (3 + num_assets + 101).
     """
-    # Drill down through wrappers to get the actual env attributes
-    base_env = env.unwrapped
-    
-    # Dimension 0: Action Type [Hold, Buy, Sell]
-    can_buy = float(base_env.cash) > 1e-8
-    can_sell = float(np.sum(base_env.holdings)) > 1e-8
-    mask_action_type = np.array([True, can_buy, can_sell], dtype=bool)
-    
-    # Dimension 1: Asset Index (Cannot conditionally mask in MultiDiscrete)
-    mask_asset_idx = np.ones(base_env.num_assets, dtype=bool)
-    
-    # Dimension 2: Amount Pct (0 to 100)
-    mask_amount_pct = np.ones(101, dtype=bool)
-    
-    # Concatenate all dimensions into the flat mask expected by sb3-contrib
-    return np.concatenate([mask_action_type, mask_asset_idx, mask_amount_pct])
+    # 1. Action Type Mask (Size: 3) -> [HOLD, BUY, SELL]
+    action_type_mask = np.ones(3, dtype=bool)
+
+    # Block BUY globally if cash is exhausted
+    if env.cash <= 1e-8:
+        action_type_mask[1] = False
+
+    # Block SELL globally if we hold absolutely no assets
+    if np.sum(env.holdings) <= 1e-8:
+        action_type_mask[2] = False
+
+    # 2. Asset Index Mask (Size: num_assets)
+    # All assets MUST remain True. If we mask an empty asset to prevent a SELL,
+    # we accidentally prevent the agent from BUYING it.
+    asset_mask = np.ones(env.num_assets, dtype=bool)
+
+    # 3. Amount Mask (Size: 101)
+    amount_mask = np.ones(101, dtype=bool)
+
+    # Concatenate for sb3-contrib ActionMasker
+    return np.concatenate([action_type_mask, asset_mask, amount_mask])

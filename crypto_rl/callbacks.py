@@ -78,7 +78,7 @@ class DashboardCallback(BaseCallback):
         self.run_id = run_id
         self.total_timesteps = total_timesteps
         self.num_data_rows = num_data_rows
-        self.check_freq = config.check_freq
+        self.check_freq = config.dashboard_freq
         # Always store started_at in UTC so _parse_dashboard_ts can parse it reliably.
         self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         self.last_portfolio_value = config.budget_initial
@@ -156,7 +156,9 @@ class DashboardCallback(BaseCallback):
             # Always get the real current portfolio value from the environment
             portfolio_values = self.training_env.get_attr("portfolio_value")
             current_portfolio = (
-                float(portfolio_values[0]) if portfolio_values else self.config.budget_initial
+                float(portfolio_values[0])
+                if portfolio_values
+                else self.config.budget_initial
             )
             episode_counts = self.training_env.get_attr("episode_count")
             current_episode = int(episode_counts[0]) if episode_counts else 1
@@ -174,7 +176,9 @@ class DashboardCallback(BaseCallback):
             win_rate = (winning_trades / max(1, total_closed)) * 100.0
 
             # Return and Drawdown
-            total_return = (current_portfolio / self.config.budget_initial - 1.0) * 100.0
+            total_return = (
+                current_portfolio / self.config.budget_initial - 1.0
+            ) * 100.0
             self.peak_portfolio_value = max(
                 self.peak_portfolio_value, current_portfolio
             )
@@ -302,119 +306,112 @@ class DashboardCallback(BaseCallback):
             print(e)
 
 
-class TrialEvalCallback(MaskableEvalCallback):
-    """Callback for evaluating a trial and reporting to Optuna, with pruning support."""
-
-    def __init__(
-        self,
-        eval_env: MinimalCryptoEnv,
-        trial: optuna.trial.Trial,
-        n_eval_episodes: int = 1,
-        eval_freq: int = 10000,
-        deterministic: bool = True,
-        verbose: int = 0,
-    ):
-        super().__init__(
-            eval_env=eval_env,
-            n_eval_episodes=n_eval_episodes,
-            eval_freq=eval_freq,
-            deterministic=deterministic,
-            verbose=verbose,
-        )
-        self.trial = trial
-        self.eval_idx = 0
-        self.is_pruned = False
-
-    def _on_step(self) -> bool:
-        # Run evaluation at the specified frequency
-        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            super()._on_step()
-            self.eval_idx += 1
-            # Report mean reward to Optuna
-            self.trial.report(self.last_mean_reward, self.eval_idx)
-            # Prune if Optuna decides
-            if self.trial.should_prune():
-                self.is_pruned = True
-                return False
-        return True
-
-
-# New checkpoint callback that saves model when Calmar improves
-class CheckpointCallback(BaseCallback):
+class UnifiedEvalCallback(BaseCallback):
     """
-    Save model checkpoint whenever a new best Calmar ratio is achieved on a test environment.
-
-    Parameters
-    ----------
-    checkpoint_dir: Path
-        Directory where checkpoint files will be saved.
-    test_env: MinimalCryptoEnv
-        Environment used for evaluation to compute Calmar.
-    check_freq: int
-        How often (in timesteps) to evaluate and possibly checkpoint.
-    max_checkpoints: int
-        Maximum number of checkpoint files to retain globally. Older ones are deleted.
+    Evaluates the model, reports the mean reward to Optuna for pruning,
+    and saves a checkpoint if the Calmar ratio achieves a new high.
     """
 
     def __init__(
         self,
         config: RLConfig,
+        eval_env: MinimalCryptoEnv | ActionMasker,
+        trial: optuna.trial.Trial,
         checkpoint_dir: Path,
-        test_env: MinimalCryptoEnv | ActionMasker,
     ):
-        super().__init__()
+        super().__init__(verbose=0)
+        self.config = config
+        self.eval_env = eval_env
+        self.trial = trial
         self.checkpoint_dir = checkpoint_dir
-        self.test_env = test_env
-        self.check_freq = config.check_freq
+
+        # Pull parameters from the SSOT config
+        self.eval_freq = config.eval_freq
         self.max_checkpoints = config.max_checkpoints
+
+        self.eval_idx = 0
+        self.is_pruned = False
         self.best_calmar = -float("inf")
-        # Ensure directory exists
+
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_step(self) -> bool:
-        if self.num_timesteps % self.check_freq == 0:
-            calmar = self._evaluate_calmar()
+        # Run evaluation at the specified heavy frequency
+        if self.eval_freq > 0 and self.num_timesteps % self.eval_freq == 0:
+            self.eval_idx += 1
+
+            # 1. Run a single unified evaluation episode
+            episode_reward, calmar = self._run_evaluation()
+            if self.trial is not None:
+                # 2. Report mean reward to Optuna for pruning
+                self.trial.report(episode_reward, self.eval_idx)
+                if self.trial.should_prune():
+                    self.is_pruned = True
+                    return False  # Returning False completely stops SB3 training
+
+            # 3. Save checkpoint if Calmar ratio improved
             if calmar > self.best_calmar:
                 self.best_calmar = calmar
-                timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-                ckpt_path = (
-                    self.checkpoint_dir
-                    / f"checkpoint_{self.num_timesteps}_calmar_{calmar:.4f}_{timestamp}.zip"
-                )
-                self.model.save(str(ckpt_path))
-                # Enforce max checkpoints globally
-                all_ckpts = sorted(
-                    self.checkpoint_dir.parent.parent.glob("**/*.zip"),
-                    key=lambda p: p.stat().st_mtime,
-                )
-                if len(all_ckpts) > self.max_checkpoints:
-                    for old_ckpt in all_ckpts[: -self.max_checkpoints]:
-                        try:
-                            old_ckpt.unlink()
-                        except Exception as e:
-                            print(e)
+                if self.config.checkpoint:
+                    self._save_checkpoint(calmar)
 
         return True
 
-    def _evaluate_calmar(self) -> float:
-        """Run a full evaluation on the test environment and compute Calmar ratio."""
-        obs, _ = self.test_env.reset()
+    def _run_evaluation(self) -> tuple[float, float]:
+        """Runs one episode to extract both total reward and Calmar ratio."""
+        # 1. VecEnv reset returns only obs (no info tuple)
+        obs = self.eval_env.reset()
         done = False
-        # USE .unwrapped TO ACCESS BASE ENVIRONMENT ATTRIBUTES
-        base_env: MinimalCryptoEnv = self.test_env.unwrapped
-        portfolio_values = [{"step": 0, "value": float(base_env.portfolio_value)}]
+        episode_reward = 0.0
+        
+        # 2. Use get_attr() to fetch variables from inside the VecEnv
+        initial_pv = self.eval_env.get_attr("portfolio_value")[0]
+        portfolio_values = [{"step": 0, "value": float(initial_pv)}]
+        
         while not done:
-            # EXTRACT MASKS AND EXPAND TO 2D FOR PREDICTION
-            current_masks = np.array([self.test_env.action_masks()])
+            # 3. Use env_method() to call functions on the underlying environment
+            masks = self.eval_env.env_method("action_masks")[0]
+            current_masks = np.array([masks])
+            
             action, _ = self.model.predict(
                 obs, action_masks=current_masks, deterministic=True
             )
-            obs, _, done, _, _ = self.test_env.step(action)
+            
+            # 4. VecEnv step returns 4 array values, not 5
+            obs, reward, done_array, infos = self.eval_env.step(action)
+            done = done_array[0]
+            
+            episode_reward += float(reward[0])
+                
+            current_pv = self.eval_env.get_attr("portfolio_value")[0]
             portfolio_values.append(
                 {
                     "step": len(portfolio_values),
-                    "value": float(base_env.portfolio_value),
+                    "value": float(current_pv),
                 }
             )
+            
         calmar = calculate_calmar_ratio(portfolio_values)
-        return calmar
+        return episode_reward, calmar
+
+    def _save_checkpoint(self, calmar: float) -> None:
+        """Saves the model and trims old checkpoints."""
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        ckpt_path = (
+            self.checkpoint_dir
+            / f"checkpoint_{self.num_timesteps}_calmar_{calmar:.4f}_{timestamp}.zip"
+        )
+        self.model.save(str(ckpt_path))
+
+        # Enforce max checkpoints globally
+        all_ckpts = sorted(
+            self.checkpoint_dir.parent.parent.glob("**/*.zip"),
+            key=lambda p: p.stat().st_mtime,
+        )
+
+        if len(all_ckpts) > self.max_checkpoints:
+            for old_ckpt in all_ckpts[: -self.max_checkpoints]:
+                try:
+                    old_ckpt.unlink()
+                except Exception as e:
+                    print(f"Failed to delete old checkpoint: {e}")

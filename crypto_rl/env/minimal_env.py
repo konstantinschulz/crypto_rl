@@ -369,6 +369,27 @@ class MinimalCryptoEnv(gym.Env):
         delta_drawdown = min(0.0, current_drawdown - self.previous_drawdown)
         # Update previous drawdown for the next step
         self.previous_drawdown = current_drawdown
+        # ==========================================
+        # NEW: 1. Hold Cost / Inactivity Penalty
+        # ==========================================
+        underwater_penalty = 0.0
+        for i in range(self.num_assets):
+            if self.holdings[i] > 1e-8 and self.avg_entry_price[i] > 1e-8:
+                unrealized_pnl_pct = (
+                    next_prices[i] - self.avg_entry_price[i]
+                ) / self.avg_entry_price[i]
+                # If position is down more than 5%, apply the hold_cost_rate as a recurring penalty
+                if unrealized_pnl_pct < -0.05:
+                    underwater_penalty += self.hold_cost_rate
+        reward_components["hold_cost"] = -underwater_penalty
+        # ==========================================
+        # NEW: 2. Explicit Fee Penalty in Reward
+        # ==========================================
+        # Normalize fee relative to portfolio size so it scales correctly with returns
+        fee_penalty_pct = (
+            (fee_paid / prev_portfolio_value) if prev_portfolio_value > 1e-8 else 0.0
+        )
+        reward_components["fee_penalty"] = -fee_penalty_pct  # Alpha = 1.0 multiplier
         # Reward calculation
         portfolio_return = (
             (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value
@@ -392,16 +413,8 @@ class MinimalCryptoEnv(gym.Env):
             reward_components["drawdown_penalty"] = (
                 delta_drawdown * self.drawdown_penalty_coef
             )
-            # Scale hold cost by the initial budget to keep it relative
-            if not done and current_asset_value > 0:
-                reward_components["hold_cost"] = (
-                    -(current_asset_value / self.config.budget_initial)
-                    * self.hold_cost_rate
-                )
         else:
-            reward_components["market_alpha"] = (
-                self.portfolio_value - prev_portfolio_value
-            )
+            reward_components["market_alpha"] = portfolio_return
         # --- ACTION-SPECIFIC INCENTIVES (Optional) ---
         if self.action_space_type == "continuous":
             n_held = sum(
@@ -412,6 +425,38 @@ class MinimalCryptoEnv(gym.Env):
             reward_components["hold_incentive"] = n_held * self.hold_incentive
         info: dict[str, Any] = {}
         if done:
+            liquidation_revenue = 0.0
+            liquidation_fees = 0.0
+            for i in range(self.num_assets):
+                if self.holdings[i] > 1e-8:
+                    amount_sold = self.holdings[i]
+                    # Calculate liquidation revenue and fees
+                    revenue = amount_sold * next_prices[i] * (1.0 - self.fee_rate)
+                    fee = amount_sold * next_prices[i] * self.fee_rate
+                    cost_basis = amount_sold * self.avg_entry_price[i]
+
+                    # Distribute PnL stats
+                    trade_margin = (revenue - cost_basis) / cost_basis if cost_basis > 1e-8 else 0.0
+                    allocation = cost_basis / prev_portfolio_value if prev_portfolio_value > 1e-8 else 0.0
+                    
+                    self.per_asset_realized_pnl[i] += (trade_margin * allocation * prev_portfolio_value)
+                    self.per_asset_fees[i] += fee
+                    liquidation_revenue += revenue
+                    liquidation_fees += fee
+                    self.total_closed_trades += 1
+                    self.per_asset_trades[i] += 1
+                    if revenue > cost_basis:
+                        self.winning_trades_count += 1
+                        self.per_asset_wins[i] += 1
+
+                    # Wipe assets from state
+                    self.holdings[i] = 0.0
+                    self.avg_entry_price[i] = 0.0
+            # Convert portfolio entirely to cash based on liquidation
+            self.cash += liquidation_revenue
+            self.fees_paid_total += liquidation_fees
+            self.portfolio_value = self.cash  # Holdings are 0, PV is just cash
+            
             terminal_return = (
                 self.portfolio_value - self.config.budget_initial
             ) / self.config.budget_initial

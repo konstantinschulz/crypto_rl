@@ -1,6 +1,4 @@
 import dataclasses
-import gc
-import inspect
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +14,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from crypto_rl.callbacks import CheckpointCallback, DashboardCallback, TrialEvalCallback
+from crypto_rl.callbacks import DashboardCallback, UnifiedEvalCallback
 from crypto_rl.config import RLConfig
 from crypto_rl.data import get_walk_forward_splits, read_n_rows
 from crypto_rl.env.action_processing import get_action_mask
@@ -26,8 +24,6 @@ from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from scripts.eval_log_action_counter import eval_log_action_counter
 from scripts.eval_report import eval_report
 
-# Global budget variable required by other parts of the package
-global BUDGET_INITIAL
 CLIP_OBS = 10.0  # Clamps normalized inputs to [-10.0, 10.0]
 per_asset_stats: dict[str, dict[str, float]] = {}
 dummy_vec_env_args: dict[str, Any] = {
@@ -79,8 +75,6 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
     # Seed for reproducibility of dataset split
     np.random.seed(config.data_seed)
 
-    global BUDGET_INITIAL
-    BUDGET_INITIAL = config.budget_initial
     print_if_not_trial(trial, "1. Loading raw data...")
     raw_df = read_n_rows(str(config.parquet_path), config.n_rows)
 
@@ -166,8 +160,6 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
         )
         callback = None
         checkpoint_callback = None
-        _TARGET_CHECKPOINTS = 300
-        safe_check_freq = max(500, config.timesteps // _TARGET_CHECKPOINTS)
 
         if config.dashboard and fold_idx == 0:
             try:
@@ -217,34 +209,21 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             "is_eval": True,
             "config": shared_env_config,
         }
-        if config.checkpoint:
-            checkpoint_test_env = MinimalCryptoEnv(**shared_env_args)
-            checkpoint_callback = CheckpointCallback(
-                config=config,
-                checkpoint_dir=checkpoint_dir,
-                test_env=ActionMasker(checkpoint_test_env, get_action_mask),
-            )
-
         eval_callback = None
         eval_env = None
-        if trial is not None:
-            raw_env = MinimalCryptoEnv(**shared_env_args)
-            masked_eval_env = ActionMasker(raw_env, get_action_mask)
+        if config.checkpoint or trial is not None:
+            raw_eval_env = MinimalCryptoEnv(**shared_env_args)
+            masked_eval_env = ActionMasker(raw_eval_env, get_action_mask)
             eval_env = VecNormalize(
                 DummyVecEnv([lambda: Monitor(masked_eval_env)]), **dummy_vec_env_args
             )
-            # Sync the statistics from the training environment
             eval_env.obs_rms = train_env.obs_rms
-            eval_freq = max(1000, config.timesteps // 5)
-            eval_callback = TrialEvalCallback(
+            eval_callback = UnifiedEvalCallback(
+                config=config,
+                checkpoint_dir=checkpoint_dir,
                 eval_env=eval_env,
                 trial=trial,
-                n_eval_episodes=1,
-                eval_freq=eval_freq,
-                deterministic=True,
-                verbose=0,
             )
-
         device = "cuda" if torch.cuda.is_available() else "cpu"
         verbose = 1 if trial is None else 0
         seed = (
@@ -472,7 +451,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
     else:
         buy_hold_return = 0.0
 
-    buy_hold_final = BUDGET_INITIAL * (1 + buy_hold_return)
+    buy_hold_final = config.budget_initial * (1 + buy_hold_return)
 
     # Multi-seed evaluation on the final model
     # Caveat: this should actually rather be used with multiple models (1 per seed), non-deterministic predictions (i.e., sampling from the whole probability distribution), and a non-deterministic environment (e.g., random slippage, partial order filling, randomized latency).
@@ -553,8 +532,19 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             }
             if "series" not in state:
                 state["series"] = {}
-            state["series"]["test_portfolio_value"] = last_eval_portfolio_values
-            state["series"]["test_realized_pnl"] = last_eval_realized_pnl
+            
+            # Downsample eval series to max 1000 points to keep state.json lightweight and responsive
+            def _downsample(series_list, max_pts=1000):
+                if not series_list or len(series_list) <= max_pts:
+                    return series_list
+                step_sz = len(series_list) / max_pts
+                res = [series_list[int(i * step_sz)] for i in range(max_pts)]
+                if res[-1] != series_list[-1]:
+                    res[-1] = series_list[-1]
+                return res
+
+            state["series"]["test_portfolio_value"] = _downsample(last_eval_portfolio_values)
+            state["series"]["test_realized_pnl"] = _downsample(last_eval_realized_pnl)
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
             print_if_not_trial(

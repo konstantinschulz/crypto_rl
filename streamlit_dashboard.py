@@ -26,6 +26,17 @@ if "selected_run_id" not in st.session_state:
     st.session_state.selected_run_id = None
 
 
+def _decimate_series(series_list, max_points=1000):
+    """Downsample large series list of dicts to max_points for fast visualization."""
+    if not isinstance(series_list, list) or len(series_list) <= max_points:
+        return series_list
+    step = len(series_list) / max_points
+    res = [series_list[int(i * step)] for i in range(max_points)]
+    if res[-1] != series_list[-1]:
+        res[-1] = series_list[-1]
+    return res
+
+
 def load_index():
     """Load index file with file modification time tracking for auto-refresh."""
     index_file = Path("rl_dashboard_index.json")
@@ -42,14 +53,21 @@ def load_index():
 
 
 def load_run(state_file):
-    """Load run state file without caching to ensure fresh data on run selection change."""
+    """Load run state file and downsample heavy series for high UI responsiveness."""
     state_path = Path(state_file)
     if state_path.exists():
         try:
             # Update mtime tracking
             st.session_state.last_run_mtime = state_path.stat().st_mtime
             with open(state_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            
+            # Ensure large series do not exceed 1000 points to keep charts smooth and responsive
+            if isinstance(data, dict) and "series" in data and isinstance(data["series"], dict):
+                for k, v in data["series"].items():
+                    if isinstance(v, list) and len(v) > 1000:
+                        data["series"][k] = _decimate_series(v, max_points=1000)
+            return data
         except Exception:
             pass
     return {}
@@ -550,8 +568,16 @@ if portfolio_series:
             
             y_domain_train = _empirical_y_domain(raw_train_df[["value_norm"]])
             
+            # When Overlay Episodes is off, x-axis (Global Step) should start at 0
+            if overlay_episodes:
+                x_scale = alt.Scale(zero=True)
+            else:
+                total_steps = int(_to_float(run.get("total_timesteps", 0), 0))
+                max_step = max(int(raw_train_df["step"].max()), total_steps) if not raw_train_df.empty else total_steps
+                x_scale = alt.Scale(domain=[0, max(max_step, 1)], zero=True)
+
             train_chart = alt.Chart(raw_train_df).mark_line(opacity=0.8, strokeWidth=1.5).encode(
-                x=alt.X(f"{x_col}:Q", title=x_title),
+                x=alt.X(f"{x_col}:Q", title=x_title, scale=x_scale),
                 y=alt.Y("value_norm:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
                 color=alt.Color("episode:O", title="Episode", scale=alt.Scale(scheme="viridis")),
                 detail="episode:O",

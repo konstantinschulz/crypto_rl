@@ -6,23 +6,27 @@ RULE_PENALTY = 0.0005  # This is one central value for empty_buy_penalty, empty_
 
 @dataclass
 class RLConfig:
+    timesteps: int = 1200000
     action_dead_zone: float = 0.50
     action_space_type: str = "multidiscrete"
     algorithm: str = "PPO"
     base_run_dir: str = "logs"
     batch_size: int = 128
     budget_initial: float = 100.0
-    check_freq: int = 500
     checkpoint: bool = True
     clip_range: float = 0.11
     cv_folds: int = 1
     dashboard: bool = True
+    dashboard_freq: int = 500  # Fast: Write JSON state
     data_seed: int | None = None
     disable_logging: bool = False
     drawdown_penalty_coef: float = 0.1
     empty_buy_penalty: float = RULE_PENALTY
     empty_sell_penalty: float = RULE_PENALTY
     ent_coef: float = 0.01
+    eval_freq: int = max(
+        500, timesteps // 12
+    )  # Heavy: Run full episode for Calmar
     fee_rate: float = 0.001
     gamma: float = 0.99
     hold_cost_rate: float = 0.0
@@ -40,7 +44,6 @@ class RLConfig:
     profit_bonus: float = 0.0
     reward_type: str = "excess_return"
     skip_multi_seed_eval: bool = True
-    timesteps: int = 1200000
     window_size: int = 120
 
     def to_dict(self):
