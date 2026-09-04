@@ -28,25 +28,31 @@ def objective(trial: optuna.trial.Trial):
     # Let Optuna overwrite specific targets
     trial_config: RLConfig = replace(
         base_config,
+        action_dead_zone=trial.suggest_float("action_dead_zone", 0.50, 0.75, step=0.05),
         batch_size=trial.suggest_categorical(
             "batch_size", [64, 128, 256]
         ),  # , 512, 1024
         clip_range=trial.suggest_float("clip", 0.10, 0.30),
         dashboard=False,
-        drawdown_penalty_coef=trial.suggest_float("drawdown_penalty_coef", 0.2, 0.8),
+        drawdown_penalty_coef=trial.suggest_float("drawdown_penalty_coef", 0.05, 0.35),
         empty_buy_penalty=rule_penalty,
         empty_sell_penalty=rule_penalty,
-        ent_coef=trial.suggest_float("ent_coef", 0.008, 0.03, log=True),
+        ent_coef_initial=trial.suggest_float("ent_coef_initial", 0.02, 0.08, log=True),
+        ent_coef_final=trial.suggest_float("ent_coef_final", 0.0005, 0.005, log=True),
         gamma=trial.suggest_float("gamma", 0.985, 0.998),
         illegal_buy_penalty=rule_penalty,
         illegal_sell_penalty=rule_penalty,
         learning_rate=trial.suggest_float("learning_rate", 1e-5, 1e-4, log=True),
-        min_turnover_threshold=trial.suggest_float("min_turnover_threshold", 0.05, 0.15),
+        # min_turnover_threshold=trial.suggest_float(
+        #     "min_turnover_threshold", 0.05, 0.15
+        # ), # NOT APPLICABLE TO MULTIDISCRETE MODE
         n_envs=trial.suggest_int("n_envs", 5, 10),
         n_rows=400000,  # 10000 / 20000  / 40000
-        n_steps=trial.suggest_categorical("n_steps", [512, 1024]),  # 256, 2048, 4096
-        profit_bonus=trial.suggest_float("profit_bonus", 0.0, 0.01),
-        timesteps=1200000,  # 30000 / 50000 / 100000
+        n_steps=trial.suggest_categorical("n_steps", [256, 512, 1024]),  # 256, 2048, 4096
+        profit_bonus=trial.suggest_float("profit_bonus", 0.0, 0.15),
+        timesteps=1500000,  # 30000 / 50000 / 100000 / 1200000
+        turnover_penalty=trial.suggest_float("turnover_penalty", 0.01, 0.15),
+        turnover_penalty_steps_threshold=trial.suggest_int("turnover_penalty_steps_threshold", 5, 30),
         window_size=trial.suggest_categorical("window_size", [30, 60, 120, 240]),
     )
 

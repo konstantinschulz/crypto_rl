@@ -1,11 +1,34 @@
 import gc
 
 import numpy as np
+import pandas as pd
 
 STATIC_PER_ASSET_DIM = (
-    7  # 7 statistical indicator features per asset in precalc_static_obs
+    10  # 7 base statistical indicator features + 3 HTF indicators per asset in precalc_static_obs
 )
 MACRO_DIM = 5
+
+
+def add_volatility_normalized_features(
+    df: pd.DataFrame, window: int = 14
+) -> pd.DataFrame:
+    # Calculate True Range (TR)
+    high_low = df["high"] - df["low"]
+    high_close = (df["high"] - df["close"].shift(1)).abs()
+    low_close = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+
+    # 14-period ATR
+    atr = tr.rolling(window=window).mean()
+
+    # Relative ATR (ATR as percentage of price)
+    df["norm_volatility"] = atr / df["close"]
+
+    # Volatility-normalized log returns
+    log_ret = np.log(df["close"] / df["close"].shift(1))
+    df["norm_return"] = log_ret / (df["norm_volatility"] + 1e-8)
+
+    return df
 
 
 def precalculate_static_obs(env) -> None:
@@ -13,6 +36,7 @@ def precalculate_static_obs(env) -> None:
 
     Mutates the given env instance, setting attributes:
     - prices_arr, open_arr, high_arr, low_arr, volume_arr
+    - htf_slope_15m_arr, htf_slope_1h_arr, htf_regime_24h_arr
     - static_dim, macro_dim, static_per_asset_dim, obs_buf, unrealised_pnl_buf
     - precalc_static_obs
 
@@ -20,7 +44,6 @@ def precalculate_static_obs(env) -> None:
     deleted from the env to free the memory they occupied; only the derived
     numpy arrays are retained.
     """
-    # if "prices_arr" not in env.__dict__:
     # ------------------------------------------------------------------
     # Convert DataFrames → float32 numpy arrays (half the memory of float64)
     # ------------------------------------------------------------------
@@ -29,6 +52,24 @@ def precalculate_static_obs(env) -> None:
     env.high_arr = env.high_df.values.astype(np.float32)
     env.low_arr = env.low_df.values.astype(np.float32)
     env.volume_arr = env.volume_df.values.astype(np.float32)
+
+    # HTF indicators
+    env.htf_slope_15m_arr = (
+        env.htf_slope_15m_df.values.astype(np.float32)
+        if getattr(env, "htf_slope_15m_df", None) is not None
+        else np.zeros_like(env.prices_arr)
+    )
+    env.htf_slope_1h_arr = (
+        env.htf_slope_1h_df.values.astype(np.float32)
+        if getattr(env, "htf_slope_1h_df", None) is not None
+        else np.zeros_like(env.prices_arr)
+    )
+    env.htf_regime_24h_arr = (
+        env.htf_regime_24h_df.values.astype(np.float32)
+        if getattr(env, "htf_regime_24h_df", None) is not None
+        else np.zeros_like(env.prices_arr)
+    )
+
     # Keep column names before freeing the DataFrame
     env.asset_cols = list(env.prices_df.columns)
 
@@ -40,6 +81,9 @@ def precalculate_static_obs(env) -> None:
     env.high_df = None
     env.low_df = None
     env.volume_df = None
+    env.htf_slope_15m_df = None
+    env.htf_slope_1h_df = None
+    env.htf_regime_24h_df = None
     gc.collect()  # Force memory release before allocating precalc_static_obs
 
     T, N = env.prices_arr.shape
@@ -62,6 +106,9 @@ def precalculate_static_obs(env) -> None:
     volume = env.volume_arr  # (T, N) float32
     high = env.high_arr  # (T, N) float32
     low = env.low_arr  # (T, N) float32
+    htf_slope_15m = env.htf_slope_15m_arr  # (T, N) float32
+    htf_slope_1h = env.htf_slope_1h_arr  # (T, N) float32
+    htf_regime_24h = env.htf_regime_24h_arr  # (T, N) float32
 
     # --- returns: pct_change -------------------------------------------
     # returns[t] = (prices[t] - prices[t-1]) / prices[t-1]
@@ -73,7 +120,7 @@ def precalculate_static_obs(env) -> None:
     # --- rolling volatility (std of returns over W bars) ---------------
     # Uses a vectorised O(T*N) cumsum approach
     vol_norm_arr = _rolling_std(returns, W)  # (T, N) float32
-
+    env.asset_volatility = vol_norm_arr
     # --- momentum: prices[t]/prices[t-W] - 1 --------------------------
     momentum = np.zeros_like(prices)  # (T, N)
     for t in range(W, T):
@@ -179,6 +226,12 @@ def precalculate_static_obs(env) -> None:
         env.precalc_static_obs[t, idx : idx + N] = macd_raw[t]
         idx += N
         env.precalc_static_obs[t, idx : idx + N] = rel_mom_norm[t]
+        idx += N
+        env.precalc_static_obs[t, idx : idx + N] = htf_slope_15m[t]
+        idx += N
+        env.precalc_static_obs[t, idx : idx + N] = htf_slope_1h[t]
+        idx += N
+        env.precalc_static_obs[t, idx : idx + N] = htf_regime_24h[t]
         idx += N
 
     env.precalc_static_obs[T] = env.precalc_static_obs[T - 1]

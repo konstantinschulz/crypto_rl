@@ -14,7 +14,11 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from crypto_rl.callbacks import DashboardCallback, UnifiedEvalCallback
+from crypto_rl.callbacks import (
+    DashboardCallback,
+    EntropyDecayCallback,
+    UnifiedEvalCallback,
+)
 from crypto_rl.config import RLConfig
 from crypto_rl.data import get_walk_forward_splits, read_n_rows
 from crypto_rl.env.action_processing import get_action_mask
@@ -25,6 +29,7 @@ from scripts.eval_log_action_counter import eval_log_action_counter
 from scripts.eval_report import eval_report
 
 CLIP_OBS = 10.0  # Clamps normalized inputs to [-10.0, 10.0]
+TEST_FRACTION: float = 0.2
 per_asset_stats: dict[str, dict[str, float]] = {}
 dummy_vec_env_args: dict[str, Any] = {
     "norm_reward": False,
@@ -81,7 +86,6 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
     if config.cv_folds > 1:
         splits = get_walk_forward_splits(raw_df, n_folds=config.cv_folds)
     else:
-        TEST_FRACTION: float = 0.2
         n_test = round(len(raw_df) * TEST_FRACTION)
         n_train = len(raw_df) - n_test
         splits = [(raw_df.iloc[:n_train], raw_df.iloc[n_train:])]
@@ -126,10 +130,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
         training_end_str = (
             _to_datetime(end_ts_raw).tz_localize("UTC").strftime("%Y-%m-%d %H:%M:%S %Z")
         )
-        last_training_start_str = training_start_str
-        last_training_end_str = training_end_str
-
-        prices_arr, static_obs, asset_names = compute_static_obs_from_long_df(
+        prices_arr, static_obs, norm_vol_arr, asset_names = compute_static_obs_from_long_df(
             train_prices_df, config.window_size
         )
         last_prices_arr = prices_arr
@@ -142,6 +143,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
                 config=env_config,
                 prices_arr=prices_arr,
                 static_obs=static_obs,
+                norm_vol_arr=norm_vol_arr,
                 asset_names=asset_names,
                 run_id=run_id,
             )
@@ -158,7 +160,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             clip_obs=CLIP_OBS,
             clip_reward=5.0,
         )
-        callback = None
+        dashboard_callback = None
         checkpoint_callback = None
 
         if config.dashboard and fold_idx == 0:
@@ -184,7 +186,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
                 pass
 
         if config.dashboard:
-            callback = DashboardCallback(
+            dashboard_callback = DashboardCallback(
                 state_path=state_file,
                 config=config,
                 run_id=run_id,
@@ -195,7 +197,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             )
 
         print_if_not_trial(trial, "Computing test observations...")
-        shared_test_prices, shared_test_static, shared_test_names = (
+        shared_test_prices, shared_test_static, shared_test_norm_vol, shared_test_names = (
             compute_static_obs_from_long_df(test_prices_df, config.window_size)
         )
 
@@ -204,6 +206,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
         shared_env_args = {
             "prices_arr": shared_test_prices,
             "static_obs": shared_test_static,
+            "norm_vol_arr": shared_test_norm_vol,
             "asset_names": shared_test_names,
             "run_id": run_id,
             "is_eval": True,
@@ -231,23 +234,18 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             if config.data_seed is not None
             else None
         )
-        ent_coef = config.ent_coef
-        batch_size = config.batch_size
-        gamma = config.gamma
-        learning_rate = config.learning_rate
         policy_kwargs = {
             "net_arch": dict(pi=[128, 128], qf=[128, 128]),
             "activation_fn": torch.nn.ReLU,
             "normalize_images": False,
         }
-        n_steps = config.n_steps
         sb3_args_common: dict[str, Any] = {
             "device": device,
             "verbose": verbose,
             "seed": seed,
-            "n_steps": n_steps,
-            "batch_size": batch_size,
-            "learning_rate": learning_rate,
+            "n_steps": config.n_steps,
+            "batch_size": config.batch_size,
+            "learning_rate": config.learning_rate,
         }
         if config.algorithm == "SAC":
             print_if_not_trial(
@@ -257,7 +255,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
                 env=train_env,
                 policy="MlpPolicy",
                 ent_coef="auto",
-                gamma=gamma,
+                gamma=config.gamma,
                 policy_kwargs=policy_kwargs,
                 **sb3_args_common,
             )
@@ -268,15 +266,22 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             model = MaskablePPO(
                 env=train_env,
                 policy="MlpPolicy",
-                ent_coef=ent_coef,
+                ent_coef=config.ent_coef_initial,
                 clip_range=config.clip_range,
                 policy_kwargs=policy_kwargs,
                 **sb3_args_common,
             )
+        total_training_steps: int = int(config.timesteps * (1.0 - TEST_FRACTION))
+        entropy_callback = EntropyDecayCallback(
+            ent_coef_initial=config.ent_coef_initial, # High initial exploration
+            ent_coef_final=config.ent_coef_final, # Fine-tuned deterministic policy at convergence
+            total_timesteps=total_training_steps,
+            verbose=1,
+        )
 
-        callbacks = []
-        if callback is not None:
-            callbacks.append(callback)
+        callbacks = [entropy_callback]
+        if dashboard_callback is not None:
+            callbacks.append(dashboard_callback)
         if eval_callback is not None:
             callbacks.append(eval_callback)
         if checkpoint_callback is not None:
@@ -412,8 +417,10 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
                 f"{sym:<10} | ${stats['realized_pnl']:<12.2f} | ${stats['total_pnl']:<10.2f} | "
                 f"{stats['trades']:<8} | {stats['win_rate_pct']:<9.1f}% | ${stats['fees_paid']:<7.4f}",
             )
+
         last_test_prices = shared_test_prices
         last_test_static = shared_test_static
+        last_test_norm_vol = shared_test_norm_vol
         last_test_names = shared_test_names
 
         test_env.close()
@@ -463,6 +470,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             raw_ms_env = MinimalCryptoEnv(
                 prices_arr=last_test_prices,
                 static_obs=last_test_static,
+                norm_vol_arr=last_test_norm_vol,
                 asset_names=last_test_names,
                 run_id=run_id,
                 is_eval=True,
@@ -532,7 +540,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             }
             if "series" not in state:
                 state["series"] = {}
-            
+
             # Downsample eval series to max 1000 points to keep state.json lightweight and responsive
             def _downsample(series_list, max_pts=1000):
                 if not series_list or len(series_list) <= max_pts:
@@ -543,7 +551,9 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
                     res[-1] = series_list[-1]
                 return res
 
-            state["series"]["test_portfolio_value"] = _downsample(last_eval_portfolio_values)
+            state["series"]["test_portfolio_value"] = _downsample(
+                last_eval_portfolio_values
+            )
             state["series"]["test_realized_pnl"] = _downsample(last_eval_realized_pnl)
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)

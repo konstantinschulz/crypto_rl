@@ -114,10 +114,16 @@ Examples:
         help=f"Penalty multiplier for empty SELL actions (default {default_config.empty_sell_penalty})",
     )
     parser.add_argument(
-        "--ent-coef",
+        "--ent-coef-final",
         type=float,
-        default=default_config.ent_coef,
-        help="Entropy coefficient for the loss calculation of the PPO model",
+        default=default_config.ent_coef_final,
+        help="Final entropy coefficient for the loss calculation of the PPO model",
+    )
+    parser.add_argument(
+        "--ent-coef-initial",
+        type=float,
+        default=default_config.ent_coef_initial,
+        help="Initial entropy coefficient for the loss calculation of the PPO model",
     )
     parser.add_argument(
         "--eval-freq",
@@ -173,6 +179,12 @@ Examples:
         help="Learning rate for the PPO model",
     )
     parser.add_argument(
+        "--max-asset-allocation",
+        type=float,
+        default=default_config.max_asset_allocation,
+        help=f"Maximum fraction of total portfolio value that can be allocated to a single asset (default {default_config.max_asset_allocation})",
+    )
+    parser.add_argument(
         "--max-checkpoints",
         type=int,
         default=default_config.max_checkpoints,
@@ -188,7 +200,7 @@ Examples:
         "--min-turnover-threshold",
         type=float,
         default=default_config.min_turnover_threshold,
-        help=f"Minimum portfolio turnover required before executing continuous rebalance (default: {default_config.min_turnover_threshold})",
+        help=f"Minimum portfolio turnover required before executing a continuous rebalance (default: {default_config.min_turnover_threshold}). Not applicable to multidiscrete action space.",
     )
     parser.add_argument(
         "--n-envs",
@@ -246,6 +258,24 @@ Examples:
         action="store_true",
         default=default_config.skip_multi_seed_eval,
         help="Skip the slow multi-seed evaluation loop after training (useful for fast smoke tests)",
+    )
+    parser.add_argument(
+        "--target-volatility",
+        type=float,
+        default=default_config.target_volatility,
+        help=f"Target volatility for excess return reward calculation (default {default_config.target_volatility})",
+    )
+    parser.add_argument(
+        "--turnover-penalty",
+        type=float,
+        default=default_config.turnover_penalty,
+        help=f"Penalty for excessive/overly quick turnover (default {default_config.turnover_penalty})",
+    )
+    parser.add_argument(
+        "--turnover-penalty-steps-threshold",
+        type=int,
+        default=default_config.turnover_penalty_steps_threshold,
+        help=f"Number of steps below which a closed position will incur a turnover penalty (default: {default_config.turnover_penalty_steps_threshold})",
     )
     parser.add_argument(
         "--window-size",

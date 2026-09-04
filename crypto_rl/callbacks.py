@@ -306,6 +306,40 @@ class DashboardCallback(BaseCallback):
             print(e)
 
 
+class EntropyDecayCallback(BaseCallback):
+    """
+    Linearly decays PPO ent_coef from initial_ent to final_ent over total_timesteps.
+    """
+
+    def __init__(
+        self,
+        ent_coef_initial: float,
+        ent_coef_final: float,
+        total_timesteps: int,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.ent_coef_initial = ent_coef_initial
+        self.ent_coef_final = ent_coef_final
+        self.total_timesteps = total_timesteps
+
+    def _on_step(self) -> bool:
+        # Calculate linear progress (0.0 to 1.0)
+        progress = min(1.0, self.num_timesteps / float(self.total_timesteps))
+        current_ent = self.ent_coef_initial + progress * (self.ent_coef_final - self.ent_coef_initial)
+
+        # Update ent_coef in the PPO model
+        self.model.ent_coef = current_ent
+
+        if self.verbose > 0 and self.num_timesteps % 10000 == 0:
+            print(
+                f"Step {self.num_timesteps}/{self.total_timesteps} - Updated ent_coef: {current_ent:.6f}"
+
+            )
+
+        return True
+
+
 class UnifiedEvalCallback(BaseCallback):
     """
     Evaluates the model, reports the mean reward to Optuna for pruning,
@@ -363,26 +397,26 @@ class UnifiedEvalCallback(BaseCallback):
         obs = self.eval_env.reset()
         done = False
         episode_reward = 0.0
-        
+
         # 2. Use get_attr() to fetch variables from inside the VecEnv
         initial_pv = self.eval_env.get_attr("portfolio_value")[0]
         portfolio_values = [{"step": 0, "value": float(initial_pv)}]
-        
+
         while not done:
             # 3. Use env_method() to call functions on the underlying environment
             masks = self.eval_env.env_method("action_masks")[0]
             current_masks = np.array([masks])
-            
+
             action, _ = self.model.predict(
                 obs, action_masks=current_masks, deterministic=True
             )
-            
+
             # 4. VecEnv step returns 4 array values, not 5
             obs, reward, done_array, infos = self.eval_env.step(action)
             done = done_array[0]
-            
+
             episode_reward += float(reward[0])
-                
+
             current_pv = self.eval_env.get_attr("portfolio_value")[0]
             portfolio_values.append(
                 {
@@ -390,7 +424,7 @@ class UnifiedEvalCallback(BaseCallback):
                     "value": float(current_pv),
                 }
             )
-            
+
         calmar = calculate_calmar_ratio(portfolio_values)
         return episode_reward, calmar
 

@@ -38,6 +38,22 @@ DEFAULT_SYMBOLS = [
 ]
 
 
+HTF_COLS = ["htf_slope_15m", "htf_slope_1h", "htf_regime_24h"]
+
+
+def _get_read_cols(path: str) -> list[str]:
+    """Return OHLCV columns augmented with HTF indicator columns if present."""
+    base_cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
+    try:
+        if pq is not None:
+            schema_names = pq.ParquetFile(path).schema.names
+            available_htf = [c for c in HTF_COLS if c in schema_names]
+            return base_cols + available_htf
+    except Exception:
+        pass
+    return base_cols
+
+
 def read_last_n(path: str, n: int = 10000) -> pd.DataFrame:
     """Load a random contiguous time window of price data.
 
@@ -57,7 +73,7 @@ def read_last_n(path: str, n: int = 10000) -> pd.DataFrame:
         Long-format DataFrame with columns ``[symbol, open_time, close]``,
         sorted by ``open_time`` then ``symbol``, with no NaN values.
     """
-    cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
+    cols = _get_read_cols(path)
 
     if ds is None or pq is None:
         return _read_last_n_pandas(path, n, cols)
@@ -177,7 +193,7 @@ def read_window_from_timestamps(
 ) -> pd.DataFrame:
     """Load a random window given pre-loaded valid start timestamps and metadata."""
     if cols is None:
-        cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
+        cols = _get_read_cols(path)
 
     t_start, t_end = _random_window(valid_open_times, k)
 
@@ -224,7 +240,7 @@ def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def read_n_rows(path: str, n_rows: int) -> pd.DataFrame:
     """Load the most recent n_rows sorted chronologically with memory-efficient PyArrow reads."""
-    cols = ["symbol", "open_time", "close", "open", "high", "low", "volume"]
+    cols = _get_read_cols(path)
 
     try:
         dataset = ds.dataset(path, format="parquet")
@@ -326,7 +342,16 @@ def get_walk_forward_splits(
     return splits
 
 
-_OHLCV_NUMERIC_COLS = ["close", "open", "high", "low", "volume"]
+_OHLCV_NUMERIC_COLS = [
+    "close",
+    "open",
+    "high",
+    "low",
+    "volume",
+    "htf_slope_15m",
+    "htf_slope_1h",
+    "htf_regime_24h",
+]
 
 
 def _downcast_ohlcv(df: pd.DataFrame) -> pd.DataFrame:

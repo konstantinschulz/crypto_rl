@@ -25,12 +25,21 @@ def build_observation(env) -> np.ndarray:
 
     # Avoid division by zero when calculating relative changes
     safe_last = np.where(last_price > 0, last_price, 1e-8)
+    # --- NEW: Extract current step's volatility for normalization ---
+    current_vol = env.norm_vol_arr[t]
+    safe_vol = np.where(current_vol > 1e-8, current_vol, 1e-8)
+    # ----------------------------------------------------------------
 
     def calc_rel_change(window_arr: np.ndarray) -> np.ndarray:
         """Fast vectorized relative change using broadcasting."""
         res = (window_arr / safe_last) - 1.0
         # If the reference price was <= 0, zero out that asset's history
         res[:, last_price <= 0] = 0.0
+        # --- NEW: Normalize the price changes by the asset's current volatility ---
+        # window_arr is shape (seq_len, N). safe_vol is shape (N,). 
+        # Numpy broadcasting automatically divides per-asset.
+        res = res / safe_vol
+        # --------------------------------------------------------------------------
         return res.ravel()
 
     idx = 0
@@ -74,9 +83,9 @@ def build_observation(env) -> np.ndarray:
     idx += 24 * N
 
     # ------------------------------------------------------------------
-    # 6. Statistical indicators (stored after macro in new precalc_static_obs)
+    # 6. Statistical & HTF indicators (stored after macro in precalc_static_obs)
     # ------------------------------------------------------------------
-    ind_dim = 7 * N
+    ind_dim = env.static_per_asset_dim * N
     env.obs_buf[idx : idx + ind_dim] = env.precalc_static_obs[
         t, env.macro_dim : env.macro_dim + ind_dim
     ]
@@ -114,7 +123,9 @@ def build_observation(env) -> np.ndarray:
     env.obs_buf[idx : idx + N] = has_pos
     idx += N
 
-    current_drawdown = (env.portfolio_value - env.peak_portfolio_value) / max(env.peak_portfolio_value, 1e-8)
+    current_drawdown = (env.portfolio_value - env.peak_portfolio_value) / max(
+        env.peak_portfolio_value, 1e-8
+    )
     env.obs_buf[idx] = current_drawdown
     idx += 1
 

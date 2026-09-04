@@ -37,8 +37,13 @@ def eval_report():
     calmar = annualized_return / max(max_drawdown, 1e-8)
 
     downside = returns[returns < 0]
-    sortino = returns.mean() / (downside.std() + 1e-8) * np.sqrt(1440)
-
+    sortino = 0.0
+    # 1. Check for insufficient data (Degrees of freedom <= 0)
+    if len(returns) > 1 and len(downside) > 1:
+        # 2. Check for zero variance (Invalid value encountered in divide)
+        std_dev = np.std(returns, ddof=1)
+        if std_dev >= 1e-8:
+            sortino = returns.mean() / (downside.std() + 1e-8) * np.sqrt(1440)
     peak = np.maximum.accumulate(pv_series)
 
     # Safe drawdown calculation

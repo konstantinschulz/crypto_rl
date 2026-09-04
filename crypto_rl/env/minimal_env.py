@@ -1,24 +1,16 @@
-import logging
-from typing import Any
-
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
 from crypto_rl.config import RLConfig
-from crypto_rl.env.action_processing import (
-    apply_continuous_action,
-    apply_discrete_action,
-)
-from crypto_rl.env.data_utils import pivot_ohlcv
 from crypto_rl.env.feature_utils import (
     MACRO_DIM,
     STATIC_PER_ASSET_DIM,
-    precalculate_static_obs,
 )
-from crypto_rl.env.logging_utils import flush_log_parquet, init_log, log_action
-from crypto_rl.env.metrics import get_per_asset_summary
+from crypto_rl.env.logging_utils import flush_log_parquet
 from crypto_rl.env.observation import build_observation
+from crypto_rl.env.reset import reset_env
+from crypto_rl.env.step import step_env
 
 
 class MinimalCryptoEnv(gym.Env):
@@ -58,6 +50,7 @@ class MinimalCryptoEnv(gym.Env):
         self,
         prices_arr: np.ndarray,
         static_obs: np.ndarray,
+        norm_vol_arr: np.ndarray,
         asset_names: list[str],
         config: RLConfig,
         run_id: str = "default",
@@ -67,14 +60,17 @@ class MinimalCryptoEnv(gym.Env):
         # Preprocessed data supplied externally
         self.prices_arr: np.ndarray = prices_arr
         self.precalc_static_obs: np.ndarray = static_obs
+        self.norm_vol_arr: np.ndarray = norm_vol_arr
         self.asset_names: list[str] = asset_names
         self.num_assets: int = len(asset_names)
-        # Preserve DataFrame attributes for compatibility when resetting from parquet
         self.prices_df = None
         self.open_df = None
         self.high_df = None
         self.low_df = None
         self.volume_df = None
+        self.htf_slope_15m_df = None
+        self.htf_slope_1h_df = None
+        self.htf_regime_24h_df = None
         self.config = config
         self.window_size = config.window_size
         self.run_id = run_id
@@ -86,9 +82,11 @@ class MinimalCryptoEnv(gym.Env):
         self.empty_sell_penalty = config.empty_sell_penalty
         self.illegal_sell_penalty = config.illegal_sell_penalty
         self.illegal_buy_penalty = config.illegal_buy_penalty
+        self.max_asset_allocation = config.max_asset_allocation
         self.drawdown_penalty_coef = config.drawdown_penalty_coef
         self.profit_bonus = config.profit_bonus
         self.min_turnover_threshold = config.min_turnover_threshold
+        self.target_volatility = config.target_volatility
         # Per-asset performance metrics
         self.per_asset_realized_pnl = np.zeros(self.num_assets, dtype=np.float32)
         self.per_asset_trades = np.zeros(self.num_assets, dtype=np.int32)
@@ -153,7 +151,8 @@ class MinimalCryptoEnv(gym.Env):
         self.log_file_path = None
         self.last_remap_note = None
         self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
-        # New counters for tracking wins
+        # --- NEW: Track entry steps for holding period calculations ---
+        self.entry_step = np.zeros(self.num_assets, dtype=np.int32)
         self.winning_trades_count = 0
         self.total_closed_trades = 0
         self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
@@ -177,79 +176,7 @@ class MinimalCryptoEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-
-        if not self.disable_logging and self.log_buffer:
-            flush_log_parquet(self)
-
-        self.episode_count += 1
-
-        if self.parquet_path is not None:
-            from crypto_rl.data import (
-                get_valid_start_timestamps,
-                read_window_from_timestamps,
-            )
-
-            if self._cached_valid_open_times is None:
-                (
-                    self._cached_valid_open_times,
-                    self._cached_symbols,
-                    self._cached_k,
-                ) = get_valid_start_timestamps(self.parquet_path, n=self.n_rows)
-
-            new_df = read_window_from_timestamps(
-                self.parquet_path,
-                self._cached_valid_open_times,
-                self._cached_symbols,
-                self._cached_k,
-            )
-
-            # Pivot the OHLCV data
-            prices_piv, open_piv, high_piv, low_piv, volume_piv = pivot_ohlcv(new_df)
-
-            # Ensure a fixed asset universe by reindexing to match original self.asset_names
-            self.prices_df = (
-                prices_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
-            )
-            self.open_df = (
-                open_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
-            )
-            self.high_df = (
-                high_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
-            )
-            self.low_df = (
-                low_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
-            )
-            self.volume_df = (
-                volume_piv.reindex(columns=self.asset_names).ffill().bfill().fillna(0.0)
-            )
-
-            assert self.prices_df.shape[1] == self.num_assets, (
-                f"Asset count mismatch! Expected {self.num_assets} coins, "
-                f"but sampled window only contained {self.prices_df.shape[1]}."
-            )
-            precalculate_static_obs(self)
-
-        if not self.disable_logging:
-            init_log(self, run_id=self.run_id)
-
-        self.current_step = self.window_size
-        self.cash = self.config.budget_initial
-        self.holdings = np.zeros(self.num_assets, dtype=np.float32)
-        self.portfolio_value = self.config.budget_initial
-        self.fees_paid_total = 0.0
-        self.trades_count = 0
-        self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
-        self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
-        # Reset new counters
-        self.winning_trades_count = 0
-        self.total_closed_trades = 0
-        self.peak_portfolio_value = self.config.budget_initial
-        self.per_asset_realized_pnl.fill(0.0)
-        self.per_asset_trades.fill(0)
-        self.per_asset_wins.fill(0)
-        self.per_asset_fees.fill(0.0)
-        self.previous_drawdown = 0.0
-        return self._get_obs(), {"fees_paid": 0.0}
+        return reset_env(self, seed=seed, options=options)
 
     def close(self) -> None:
         """Cleanly close resources and flush pending logs."""
@@ -262,279 +189,9 @@ class MinimalCryptoEnv(gym.Env):
         return build_observation(self)
 
     def step(self, action):
-        """Refactored step method delegating action handling to helper functions."""
-        prev_portfolio_value = self.portfolio_value
-        current_prices = self.prices_arr[self.current_step - 1]
-        next_prices = self.prices_arr[self.current_step]
-
-        fee_paid = 0.0
-        # Retrieve any step penalty set by discrete action processing
-        step_penalty = getattr(self, "_step_penalty", 0.0)
-        realised_pnl = 0.0
-
-        is_valid_sell = False
-        self.last_remap_note = None
-        # --- SNAPSHOT HOLDINGS BEFORE ACTION ---
-        old_holdings = np.copy(self.holdings)
-        if self.action_space_type == "continuous":
-            # Snapshot old asset exposure fraction before rebalancing (for logging)
-            _pre_asset_value = np.sum(self.holdings * current_prices)
-            _pre_port = self.cash + _pre_asset_value
-            _old_asset_frac = (
-                (_pre_asset_value / _pre_port) if _pre_port > 1e-8 else 0.0
-            )
-            # Continuous action processing moved to helper
-            fee_paid, trade_units = apply_continuous_action(self, action)
-        elif self.action_space_type == "multidiscrete":
-            # Discrete action processing moved to helper
-            fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price = (
-                apply_discrete_action(self, action)
-            )
-            asset_idx = action[1]
-            if fee_paid > 0:
-                self.per_asset_fees[asset_idx] += fee_paid
-        # 1. Initialize a decomposition tracker
-        reward_components = {
-            "market_alpha": 0.0,
-            "hold_cost": 0.0,
-            "profit_bonus": 0.0,
-            "drawdown_penalty": 0.0,
-            "rule_penalties": -step_penalty,  # From invalid buys/sells
-            "hold_incentive": 0.0,
-            "terminal_return": 0.0,
-        }
-        # --- CALCULATE PER-ASSET MULTI-TRADE METRICS ---
-        deltas = self.holdings - old_holdings
-        for i, delta in enumerate(deltas):
-            # 1. BOUGHT (Scaled in)
-            if delta > 1e-8:
-                # Value of existing units AT INITIAL COST BASIS
-                value_of_existing = old_holdings[i] * self.avg_entry_price[i]
-
-                # Cost of newly acquired units (Delta is the number of units)
-                cost_of_new = delta * current_prices[i]
-                cost_of_new_with_fees = cost_of_new * (1.0 + self.fee_rate)
-
-                # Update weighted average entry price
-                self.avg_entry_price[i] = (
-                    value_of_existing + cost_of_new_with_fees
-                ) / self.holdings[i]
-
-            # 2. SOLD (Scaled out)
-            elif delta < -1e-8:
-                self.total_closed_trades += 1
-                self.per_asset_trades[i] += 1
-                # SAFEGUARD: Clamp amount sold to what we actually owned to kill phantom PnL
-                amount_sold = min(abs(delta), old_holdings[i])
-                # Real revenue generated minus fees
-                revenue = amount_sold * current_prices[i] * (1.0 - self.fee_rate)
-                # Cost basis of what was just sold
-                cost_basis = amount_sold * self.avg_entry_price[i]
-                # Instead of a flat bonus, scale it by the profit margin
-                trade_margin = (
-                    (revenue - cost_basis) / cost_basis if cost_basis > 1e-8 else 0.0
-                )
-                allocation = (
-                    cost_basis / prev_portfolio_value
-                    if prev_portfolio_value > 1e-8
-                    else 0.0
-                )
-                # The net equity contribution of this specific trade to the total portfolio
-                adjusted_pnl = trade_margin * allocation * prev_portfolio_value
-                self.per_asset_realized_pnl[i] += adjusted_pnl
-                # A win requires net revenue to exceed the exact cost we paid for those units
-                if revenue > cost_basis:
-                    self.winning_trades_count += 1
-                    self.per_asset_wins[i] += 1
-                    reward_components["profit_bonus"] += (
-                        self.profit_bonus * trade_margin
-                    )
-                # If we fully closed out, reset cost basis to 0
-                if self.holdings[i] < 1e-8:
-                    self.avg_entry_price[i] = 0.0
-                    # SAFEGUARD: Snap negative holdings to 0 to kill the short-selling exploit
-                    self.holdings[i] = 0.0
-        # Advance step
-        self.current_step += 1
-        done = self.current_step >= self.prices_arr.shape[0]
-        current_asset_value = np.sum(self.holdings * next_prices)
-        self.portfolio_value = self.cash + current_asset_value
-        self.peak_portfolio_value = max(self.peak_portfolio_value, self.portfolio_value)
-        # Range: 0.0 (at peak) down to -1.0 (-100% loss)
-        current_drawdown = (
-            self.portfolio_value - self.peak_portfolio_value
-        ) / self.peak_portfolio_value
-        # Calculate delta. If current (-0.10) is worse than previous (-0.05), delta is -0.05.
-        # We use min(0, ...) to ensure we ONLY capture worsening drawdowns, ignoring recoveries.
-        delta_drawdown = min(0.0, current_drawdown - self.previous_drawdown)
-        # Update previous drawdown for the next step
-        self.previous_drawdown = current_drawdown
-        # ==========================================
-        # NEW: 1. Hold Cost / Inactivity Penalty
-        # ==========================================
-        underwater_penalty = 0.0
-        for i in range(self.num_assets):
-            if self.holdings[i] > 1e-8 and self.avg_entry_price[i] > 1e-8:
-                unrealized_pnl_pct = (
-                    next_prices[i] - self.avg_entry_price[i]
-                ) / self.avg_entry_price[i]
-                # If position is down more than 5%, apply the hold_cost_rate as a recurring penalty
-                if unrealized_pnl_pct < -0.05:
-                    underwater_penalty += self.hold_cost_rate
-        reward_components["hold_cost"] = -underwater_penalty
-        # ==========================================
-        # NEW: 2. Explicit Fee Penalty in Reward
-        # ==========================================
-        # Normalize fee relative to portfolio size so it scales correctly with returns
-        fee_penalty_pct = (
-            (fee_paid / prev_portfolio_value) if prev_portfolio_value > 1e-8 else 0.0
-        )
-        reward_components["fee_penalty"] = -fee_penalty_pct  # Alpha = 1.0 multiplier
-        # Reward calculation
-        portfolio_return = (
-            (self.portfolio_value - prev_portfolio_value) / prev_portfolio_value
-            if prev_portfolio_value > 0
-            else 0.0
-        )
-        asset_returns = np.divide(
-            next_prices - current_prices,
-            current_prices,
-            out=np.zeros_like(current_prices),
-            where=current_prices > 1e-8,
-        )
-        market_return = np.mean(asset_returns)
-
-        if self.reward_type == "excess_return":
-            alpha_diff = portfolio_return - market_return
-            # Slightly penalize underperformance, but avoid the 200x asymmetric distortion
-            if alpha_diff < 0:
-                alpha_diff *= 1.2
-            reward_components["market_alpha"] = alpha_diff
-            reward_components["drawdown_penalty"] = (
-                delta_drawdown * self.drawdown_penalty_coef
-            )
-        else:
-            reward_components["market_alpha"] = portfolio_return
-        # --- ACTION-SPECIFIC INCENTIVES (Optional) ---
-        if self.action_space_type == "continuous":
-            n_held = sum(
-                1
-                for i in range(self.num_assets)
-                if abs(action[i]) <= self.action_dead_zone
-            )
-            reward_components["hold_incentive"] = n_held * self.hold_incentive
-        info: dict[str, Any] = {}
-        if done:
-            liquidation_revenue = 0.0
-            liquidation_fees = 0.0
-            for i in range(self.num_assets):
-                if self.holdings[i] > 1e-8:
-                    amount_sold = self.holdings[i]
-                    # Calculate liquidation revenue and fees
-                    revenue = amount_sold * next_prices[i] * (1.0 - self.fee_rate)
-                    fee = amount_sold * next_prices[i] * self.fee_rate
-                    cost_basis = amount_sold * self.avg_entry_price[i]
-
-                    # Distribute PnL stats
-                    trade_margin = (revenue - cost_basis) / cost_basis if cost_basis > 1e-8 else 0.0
-                    allocation = cost_basis / prev_portfolio_value if prev_portfolio_value > 1e-8 else 0.0
-                    
-                    self.per_asset_realized_pnl[i] += (trade_margin * allocation * prev_portfolio_value)
-                    self.per_asset_fees[i] += fee
-                    liquidation_revenue += revenue
-                    liquidation_fees += fee
-                    self.total_closed_trades += 1
-                    self.per_asset_trades[i] += 1
-                    if revenue > cost_basis:
-                        self.winning_trades_count += 1
-                        self.per_asset_wins[i] += 1
-
-                    # Wipe assets from state
-                    self.holdings[i] = 0.0
-                    self.avg_entry_price[i] = 0.0
-            # Convert portfolio entirely to cash based on liquidation
-            self.cash += liquidation_revenue
-            self.fees_paid_total += liquidation_fees
-            self.portfolio_value = self.cash  # Holdings are 0, PV is just cash
-            
-            terminal_return = (
-                self.portfolio_value - self.config.budget_initial
-            ) / self.config.budget_initial
-            reward_components["terminal_return"] = terminal_return
-            # Capture the final state right before the auto-reset
-            info["per_asset_stats"] = get_per_asset_summary(self)
-            info["final_portfolio_value"] = self.portfolio_value
-            info["final_trades_count"] = self.trades_count
-            info["final_fees_paid"] = self.fees_paid_total
-
-        if step_penalty >= 0.1:
-            logging.debug(f"High step penalty value (>= 0.1): {step_penalty}")
-
-        # Explicitly clip raw rewards at the source to prevent variance explosion
-        reward = np.clip(sum(reward_components.values()), -1.0, 1.0)
-        if not self.disable_logging:
-            if self.action_space_type == "continuous":
-                exp_act = np.exp(action - np.max(action))
-                weights = exp_act / np.sum(exp_act)
-                # Determine net direction of this rebalance for logging purposes.
-                # Compare new asset-exposure fraction to the pre-trade snapshot taken
-                # at the top of step().  Positive delta → buying assets (BUY=1),
-                # negative delta → reducing assets (SELL=2), flat → HOLD=0.
-                _new_asset_value = np.sum(self.holdings * next_prices)
-                _new_port = self.cash + _new_asset_value
-                _new_asset_frac = (
-                    _new_asset_value / _new_port if _new_port > 1e-8 else 0.0
-                )
-                _delta_frac = _new_asset_frac - _old_asset_frac
-                _turnover_threshold = 1e-4
-                if _delta_frac > _turnover_threshold:
-                    _log_action_type = 1  # BUY
-                elif _delta_frac < -_turnover_threshold:
-                    _log_action_type = 2  # SELL
-                else:
-                    _log_action_type = 0  # HOLD
-                eff_action = np.array(
-                    [_log_action_type, np.argmax(weights[1:]), weights[0] * 100.0]
-                )
-                log_action(
-                    self,
-                    self.current_step,
-                    eff_action,
-                    reward,
-                    prev_portfolio_value,
-                    fee=fee_paid,
-                    reward_components=reward_components,
-                )
-            elif self.action_space_type == "multidiscrete":
-                # Discrete action logging remains unchanged (action variables are updated inside helper)
-                log_action(
-                    self,
-                    self.current_step,
-                    action,
-                    reward,
-                    prev_portfolio_value,
-                    trade_price=trade_price,
-                    trade_units=trade_units,
-                    fee=fee_paid,
-                    reward_components=reward_components,
-                )
-        info |= {
-            "fees_paid": self.fees_paid_total,
-            "trades_count": self.trades_count,
-            "total_closed_trades": self.total_closed_trades,
-            "winning_trades_count": self.winning_trades_count,
-            "realised_pnl": realised_pnl,
-            "is_valid_sell": is_valid_sell,
-            "episode_count": self.episode_count,
-            "reward_components": reward_components,
-        }
-        return (
-            self._get_obs(),
-            float(reward),
-            done,
-            False,
-            info,
-        )
+        """Delegate step execution and reward logic to the step module."""
+        return step_env(self, action)
 
     def render(self):
         pass
+
