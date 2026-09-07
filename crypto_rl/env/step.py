@@ -30,9 +30,7 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
         # Snapshot old asset exposure fraction before rebalancing (for logging)
         _pre_asset_value = np.sum(env.holdings * current_prices)
         _pre_port = env.cash + _pre_asset_value
-        _old_asset_frac = (
-            (_pre_asset_value / _pre_port) if _pre_port > 1e-8 else 0.0
-        )
+        _old_asset_frac = (_pre_asset_value / _pre_port) if _pre_port > 1e-8 else 0.0
         # Continuous action processing moved to helper
         fee_paid, trade_units = apply_continuous_action(env, action)
     elif env.action_space_type == "multidiscrete":
@@ -68,13 +66,17 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     for i, delta in enumerate(deltas):
         # 1. BOUGHT (Scaled in)
         if delta > 1e-8:
-            # --- NEW: Record entry step if establishing a new position ---
+            # --- PATCH: Volume-Weighted Entry Step to prevent age-laundering ---
             if old_holdings[i] < 1e-8:
                 env.entry_step[i] = env.current_step
+            else:
+                old_weight = old_holdings[i] / env.holdings[i]
+                new_weight = delta / env.holdings[i]
+                env.entry_step[i] = int(
+                    (env.entry_step[i] * old_weight) + (env.current_step * new_weight)
+                )
             # Cost of newly acquired units (Delta is the number of units)
-            cost_of_new_with_fees = (
-                delta * current_prices[i] * (1.0 + env.fee_rate)
-            )
+            cost_of_new_with_fees = delta * current_prices[i] * (1.0 + env.fee_rate)
             # Value of existing units AT INITIAL COST BASIS
             value_of_existing = old_holdings[i] * env.avg_entry_price[i]
             # Update weighted average entry price
@@ -96,12 +98,18 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
             env.per_asset_realized_pnl[i] += adjusted_pnl
             if cost_basis > 1e-8:
                 trade_return = (revenue - cost_basis) / cost_basis
+                # --- PATCH: Capital Scaling factor for the reward ---
+                trade_weight = (
+                    cost_basis / prev_portfolio_value
+                    if prev_portfolio_value > 1e-8
+                    else 0.0
+                )
                 # --- NEW: Excessive Turnover Penalty Logic ---
                 holding_period = env.current_step - env.entry_step[i]
                 # Penalize positions closed in under 15 minutes (or steps)
                 if holding_period < env.config.turnover_penalty_steps_threshold:
                     reward_components["turnover_penalty"] -= (
-                        env.config.turnover_penalty
+                        env.config.turnover_penalty * trade_weight
                     )
                 # A win requires net revenue to exceed the exact cost we paid for those units
                 if revenue > cost_basis:
@@ -118,10 +126,11 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
                     slope_mag = abs(env.htf_slope_1h_df.iat[env.current_step, i])
                 # Multiply by an arbitrary scalar (10.0) to make the slope meaningful in the equation
                 slope_mult = 1.0 + (slope_mag * 10.0)
+                # Apply the dynamic profit bonus
                 scaled_profit_bonus = env.profit_bonus * time_mult * slope_mult
                 # Symmetric scaling: rewards profits, penalizes losses proportionally
                 reward_components["profit_bonus"] += (
-                    scaled_profit_bonus * trade_return
+                    scaled_profit_bonus * trade_return * trade_weight
                 )
             # If we fully closed out, reset cost basis to 0
             if env.holdings[i] < 1e-8:
@@ -193,13 +202,13 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     # --- ACTION-SPECIFIC INCENTIVES (Optional) ---
     if env.action_space_type == "continuous":
         n_held = sum(
-            1
-            for i in range(env.num_assets)
-            if abs(action[i]) <= env.action_dead_zone
+            1 for i in range(env.num_assets) if abs(action[i]) <= env.action_dead_zone
         )
         reward_components["hold_incentive"] = n_held * env.hold_incentive
     info: dict[str, Any] = {}
-    if done:  # this episode has finished, so we need to liquidate all remaining holdings
+    if (
+        done
+    ):  # this episode has finished, so we need to liquidate all remaining holdings
         liquidation_revenue = 0.0
         liquidation_fees = 0.0
         for i in range(env.num_assets):
@@ -208,10 +217,8 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
                 # Calculate liquidation revenue and fees
                 revenue = amount_sold * next_prices[i] * (1.0 - env.fee_rate)
                 fee = amount_sold * next_prices[i] * env.fee_rate
-                # Apply the corrected cost basis with entry drag
-                cost_basis = (
-                    amount_sold * env.avg_entry_price[i] * (1.0 + env.fee_rate)
-                )
+                # Apply the corrected cost basis
+                cost_basis = amount_sold * env.avg_entry_price[i]
                 adjusted_pnl = revenue - cost_basis
                 env.per_asset_realized_pnl[i] += adjusted_pnl
                 env.per_asset_fees[i] += fee
@@ -266,9 +273,7 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
             # negative delta → reducing assets (SELL=2), flat → HOLD=0.
             _new_asset_value = np.sum(env.holdings * next_prices)
             _new_port = env.cash + _new_asset_value
-            _new_asset_frac = (
-                _new_asset_value / _new_port if _new_port > 1e-8 else 0.0
-            )
+            _new_asset_frac = _new_asset_value / _new_port if _new_port > 1e-8 else 0.0
             _delta_frac = _new_asset_frac - _old_asset_frac
             _turnover_threshold = 1e-4
             if _delta_frac > _turnover_threshold:

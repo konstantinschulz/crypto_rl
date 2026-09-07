@@ -1,7 +1,7 @@
 """
 Automated hyper-parameter search using Optuna.
 Usage:
-    python scripts/optuna_search.py --n-trials 20 --n-rows 10000 --timesteps 30000
+    python scripts/optuna_search.py --n-trials 20
 """
 
 import argparse
