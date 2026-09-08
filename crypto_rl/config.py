@@ -1,5 +1,4 @@
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 RULE_PENALTY = 0.0005  # This is one central value for empty_buy_penalty, empty_sell_penalty, illegal_buy_penalty, illegal_sell_penalty
 

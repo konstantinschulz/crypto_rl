@@ -2,8 +2,11 @@
 
 import glob
 import json
+
 import numpy as np
 import pandas as pd
+
+from crypto_rl.env.metrics import get_calmar_from_returns
 
 
 def eval_report():
@@ -27,15 +30,7 @@ def eval_report():
         out=np.zeros_like(np.diff(pv_series), dtype=float),
         where=denom > 1e-8,
     )
-
-    # 1-min annualized return
-    annualized_return = returns.mean() * 525600
-    # Calculate Max Drawdown
-    running_max = np.maximum.accumulate(pv_series)
-    drawdowns = (running_max - pv_series) / running_max
-    max_drawdown = np.max(drawdowns)
-    calmar = annualized_return / max(max_drawdown, 1e-8)
-
+    calmar = get_calmar_from_returns(returns, pv_series)
     downside = returns[returns < 0]
     sortino = 0.0
     # 1. Check for insufficient data (Degrees of freedom <= 0)

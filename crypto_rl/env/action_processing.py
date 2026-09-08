@@ -1,6 +1,15 @@
 import numpy as np
 
 
+def _get_current_portfolio_value(env):
+    """Calculate the current portfolio value based on cash and holdings."""
+    current_prices = env.prices_arr[env.current_step - 1]
+    safe_prices = np.nan_to_num(current_prices, nan=0.0, posinf=0.0, neginf=0.0)
+    current_asset_values = env.holdings * safe_prices
+    curr_portfolio_val = env.cash + np.sum(current_asset_values)
+    return curr_portfolio_val, current_asset_values
+
+
 def apply_continuous_action(env, action):
     """Process continuous actions.
 
@@ -31,12 +40,7 @@ def apply_continuous_action(env, action):
     asset_weights = np.minimum(asset_weights, dynamic_caps)
     target_weights[0] += excess_weight
     target_weights[1:] = asset_weights
-
-    current_prices = env.prices_arr[env.current_step - 1]
-    safe_prices = np.nan_to_num(current_prices, nan=0.0, posinf=0.0, neginf=0.0)
-    current_asset_values = env.holdings * safe_prices
-    curr_portfolio_val = env.cash + np.sum(current_asset_values)
-
+    curr_portfolio_val, current_asset_values = _get_current_portfolio_value(env)
     old_weights = np.zeros(env.num_assets + 1, dtype=np.float32)
     if curr_portfolio_val > 1e-8:
         old_weights[0] = env.cash / curr_portfolio_val
@@ -102,13 +106,7 @@ def apply_discrete_action(env, action):
     trade_price = env.prices_arr[env.current_step - 1][asset_idx]
     step_penalty = 0.0
     env.last_remap_note = None
-
-    # Calculate portfolio value for concentration caps
-    current_prices = env.prices_arr[env.current_step - 1]
-    safe_prices = np.nan_to_num(current_prices, nan=0.0, posinf=0.0, neginf=0.0)
-    current_asset_values = env.holdings * safe_prices
-    curr_portfolio_val = env.cash + np.sum(current_asset_values)
-
+    curr_portfolio_val, _ = _get_current_portfolio_value(env)
     # 1. Catch and penalize invalid Sells
     if action_type == 2 and env.holdings[asset_idx] < 1e-8:
         env._step_penalty += env.illegal_sell_penalty

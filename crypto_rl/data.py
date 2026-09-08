@@ -13,14 +13,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pyarrow.dataset as ds
 
 # Try to use pyarrow for efficient, row-group-aware parquet reads so we
 # don't load the entire file into memory.  Fallback to pandas.read_parquet
 # if pyarrow is not available.
 try:
     import pyarrow.dataset as ds
-    import pyarrow.parquet as pq  # noqa: F401 – kept to mirror original guard
+    import pyarrow.parquet as pq  # noqa: F401
 except Exception:
     pq = None  # type: ignore
     ds = None  # type: ignore
@@ -74,10 +73,8 @@ def read_last_n(path: str, n: int = 10000) -> pd.DataFrame:
         sorted by ``open_time`` then ``symbol``, with no NaN values.
     """
     cols = _get_read_cols(path)
-
-    if ds is None or pq is None:
-        return _read_last_n_pandas(path, n, cols)
-    return _read_last_n_pyarrow(path, n, cols)
+    valid_open_times, symbols, k = get_valid_start_timestamps(path, n)
+    return read_window_from_timestamps(path, valid_open_times, symbols, k, cols)
 
 
 # ---------------------------------------------------------------------------
@@ -121,21 +118,6 @@ def _random_window(times: np.ndarray, k: int) -> tuple:
         return times[0], times[-1]
     start_idx = np.random.randint(0, len(times) - k)
     return times[start_idx], times[start_idx + k - 1]
-
-
-def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
-    """Fallback path used when PyArrow is unavailable."""
-    df = pd.read_parquet(path, columns=cols).dropna()
-    df = _downcast_ohlcv(df)
-    symbols = _pick_symbols(list(df["symbol"].unique()))
-    k = max(1, n // len(symbols))
-
-    df_sub = df[df["symbol"].isin(symbols)]
-    anchor_times = np.sort(df_sub[df_sub["symbol"] == symbols[0]]["open_time"].unique())
-    t_start, t_end = _random_window(anchor_times, k)
-
-    mask = (df_sub["open_time"] >= t_start) & (df_sub["open_time"] <= t_end)
-    return df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
 
 
 def get_valid_start_timestamps(
@@ -198,35 +180,26 @@ def read_window_from_timestamps(
     t_start, t_end = _random_window(valid_open_times, k)
 
     if ds is None or pq is None:
-        df = pd.read_parquet(path, columns=cols).dropna()
-        df = _downcast_ohlcv(df)
-        df_sub = df[df["symbol"].isin(symbols)]
-        mask = (df_sub["open_time"] >= t_start) & (df_sub["open_time"] <= t_end)
-        return (
-            df_sub[mask].sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+        df = pd.read_parquet(path, columns=cols)
+        mask = (
+            (df["symbol"].isin(symbols))
+            & (df["open_time"] >= t_start)
+            & (df["open_time"] <= t_end)
         )
+        df = df[mask]
+    else:
+        dataset = ds.dataset(path, format="parquet")
+        query_filter = (
+            ds.field("symbol").isin(symbols)
+            & (ds.field("open_time") >= t_start)
+            & (ds.field("open_time") <= t_end)
+        )
+        df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
 
-    dataset = ds.dataset(path, format="parquet")
-    query_filter = (
-        ds.field("symbol").isin(symbols)
-        & (ds.field("open_time") >= t_start)
-        & (ds.field("open_time") <= t_end)
-    )
-    df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
+    # Unified post-processing
+    df = df.dropna()
     df = _downcast_ohlcv(df)
-    return df.dropna().sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
-
-
-def _read_last_n_pandas(path: str, n: int, cols: list[str]) -> pd.DataFrame:
-    """Fallback path used when PyArrow is unavailable."""
-    anchor_times, symbols, k = get_valid_start_timestamps(path, n)
-    return read_window_from_timestamps(path, anchor_times, symbols, k, cols)
-
-
-def _read_last_n_pyarrow(path: str, n: int, cols: list[str]) -> pd.DataFrame:
-    """Memory-efficient path with dynamic, metadata-driven time anchoring."""
-    valid_open_times, symbols, k = get_valid_start_timestamps(path, n)
-    return read_window_from_timestamps(path, valid_open_times, symbols, k, cols)
+    return df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
 
 
 def read_train_test(path, n_train, n_test) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -274,21 +247,17 @@ def read_n_rows(path: str, n_rows: int) -> pd.DataFrame:
         query_filter = symbol_filter & (ds.field("open_time") >= cutoff_time)
         df = dataset.to_table(columns=cols, filter=query_filter).to_pandas()
 
-        # Ensure strict sorting and trim to exact row count
-        df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
-        df = df.iloc[-n_rows:]
-
     except Exception as e:
         print(f"PyArrow optimized read failed ({e}), falling back to pandas read...")
-        df = pd.read_parquet(path, columns=cols).dropna()
+        df = pd.read_parquet(path, columns=cols)
         symbols = _pick_symbols(list(df["symbol"].unique()))
         df = df[df["symbol"].isin(symbols)]
-        df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
-        df = df.iloc[-n_rows:]
 
+    # Unified post-processing
     df = df.dropna()
     df = _downcast_ohlcv(df)
-    return df
+    df = df.sort_values(by=["open_time", "symbol"]).reset_index(drop=True)
+    return df.iloc[-n_rows:]
 
 
 def get_walk_forward_splits(

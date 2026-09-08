@@ -18,21 +18,38 @@ def calculate_calmar_ratio(portfolio_values: list[dict]) -> float:
     """
     pv_series = np.array([v["value"] for v in portfolio_values])
     returns = np.diff(pv_series) / pv_series[:-1]
-    # 1-min annualized return
-    annualized_return = returns.mean() * 525600
-    # Calculate Max Drawdown
+    return get_calmar_from_returns(returns, pv_series)
+
+
+
+def get_calmar_from_returns(returns: np.ndarray, pv_series: np.ndarray) -> float:
+    """
+    Calculate the Calmar ratio from a series of returns.
+
+    Parameters
+    ----------
+    returns : np.ndarray
+        An array of returns.
+    pv_series : np.ndarray
+        An array of portfolio values.
+
+    Returns
+    -------
+    float
+        The Calmar ratio.
+    """
+    annualized_return = returns.mean() * 525600  # Assuming 1-min returns
     running_max = np.maximum.accumulate(pv_series)
     drawdowns = (running_max - pv_series) / running_max
     max_drawdown = np.max(drawdowns)
-    calmar = annualized_return / max(
-        max_drawdown, 1e-8
-    )  # returns.mean() / (returns.std() + 1e-8) * np.sqrt(525600)
+    calmar = annualized_return / max(max_drawdown, 1e-8)
     return calmar
 
 
 def get_per_asset_summary(env) -> dict[str, dict[str, float]]:
     """Returns detailed evaluation metrics broken down by asset symbol."""
     from crypto_rl.env.minimal_env import MinimalCryptoEnv
+
     mce: MinimalCryptoEnv = env
     last_prices = (
         mce.prices_arr[mce.current_step - 1]

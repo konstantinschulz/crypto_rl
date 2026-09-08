@@ -11,6 +11,97 @@ from crypto_rl.env.logging_utils import log_action
 from crypto_rl.env.metrics import get_per_asset_summary
 
 
+def _process_buy_accounting(
+    env,
+    asset_idx: int,
+    amount_bought: float,
+    trade_price: float,
+    old_holding: float,
+):
+    """
+    Core accounting logic for opening or scaling into positions.
+    Updates VWAP entry prices and volume-weighted entry steps.
+    """
+    if old_holding < 1e-8:
+        env.entry_step[asset_idx] = env.current_step
+    else:
+        old_weight = old_holding / env.holdings[asset_idx]
+        new_weight = amount_bought / env.holdings[asset_idx]
+        env.entry_step[asset_idx] = int(
+            (env.entry_step[asset_idx] * old_weight) + (env.current_step * new_weight)
+        )
+    cost_of_new_with_fees = amount_bought * trade_price * (1.0 + env.fee_rate)
+    value_of_existing = old_holding * env.avg_entry_price[asset_idx]
+
+    env.avg_entry_price[asset_idx] = (
+        value_of_existing + cost_of_new_with_fees
+    ) / env.holdings[asset_idx]
+
+
+def _process_sell_accounting(
+    env,
+    asset_idx: int,
+    amount_sold: float,
+    trade_price: float,
+    prev_portfolio_value: float,
+    reward_components: dict[str, float] | None = None,
+) -> tuple[float, float]:
+    """
+    Core accounting logic for closing positions.
+    Calculates PnL, updates win rates, and applies shaped rewards.
+    Used seamlessly during both in-episode sells and terminal liquidations.
+    """
+    env.total_closed_trades += 1
+    env.per_asset_trades[asset_idx] += 1
+
+    revenue = amount_sold * trade_price * (1.0 - env.fee_rate)
+    fee = amount_sold * trade_price * env.fee_rate
+
+    # Safely compute cost basis (entry drag is already baked into avg_entry_price)
+    cost_basis = amount_sold * env.avg_entry_price[asset_idx]
+
+    adjusted_pnl = revenue - cost_basis
+    env.per_asset_realized_pnl[asset_idx] += adjusted_pnl
+
+    if cost_basis > 1e-8:
+        trade_return = (revenue - cost_basis) / cost_basis
+        trade_weight = (
+            cost_basis / prev_portfolio_value if prev_portfolio_value > 1e-8 else 0.0
+        )
+
+        # A win requires net revenue to exceed the exact cost we paid for those units
+        if revenue > cost_basis:
+            env.winning_trades_count += 1
+            env.per_asset_wins[asset_idx] += 1
+
+        # Only calculate RL reward bonuses if we are actively stepping (not liquidating)
+        if reward_components is not None:
+            holding_period = env.current_step - env.entry_step[asset_idx]
+
+            # Turnover Penalty
+            if holding_period < env.config.turnover_penalty_steps_threshold:
+                reward_components["turnover_penalty"] -= (
+                    env.config.turnover_penalty * trade_weight
+                )
+
+            # Dynamic Profit Bonus Scaling
+            time_mult = 1.0 + min(1.0, holding_period / 240.0)
+            slope_mag = 0.0
+            if env.htf_slope_1h_df is not None and env.current_step < len(
+                env.htf_slope_1h_df
+            ):
+                slope_mag = abs(env.htf_slope_1h_df.iat[env.current_step, asset_idx])
+
+            slope_mult = 1.0 + (slope_mag * 10.0)
+            scaled_profit_bonus = env.profit_bonus * time_mult * slope_mult
+
+            reward_components["profit_bonus"] += (
+                scaled_profit_bonus * trade_return * trade_weight
+            )
+
+    return revenue, fee
+
+
 def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
     """Execute one environment step for MinimalCryptoEnv."""
     prev_portfolio_value = env.portfolio_value
@@ -50,6 +141,7 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
         asset_idx = action[1]
         if fee_paid > 0:
             env.per_asset_fees[asset_idx] += fee_paid
+
     # 1. Initialize a decomposition tracker
     reward_components = {
         "market_alpha": 0.0,
@@ -59,102 +151,50 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
         "rule_penalties": -step_penalty,  # From invalid buys/sells
         "hold_incentive": 0.0,
         "terminal_return": 0.0,
-        "turnover_penalty": 0.0,  # NEW: Excessive turnover penalty tracker
+        "turnover_penalty": 0.0,
     }
+
     # --- CALCULATE PER-ASSET MULTI-TRADE METRICS ---
     deltas = env.holdings - old_holdings
     for i, delta in enumerate(deltas):
         # 1. BOUGHT (Scaled in)
         if delta > 1e-8:
-            # --- PATCH: Volume-Weighted Entry Step to prevent age-laundering ---
-            if old_holdings[i] < 1e-8:
-                env.entry_step[i] = env.current_step
-            else:
-                old_weight = old_holdings[i] / env.holdings[i]
-                new_weight = delta / env.holdings[i]
-                env.entry_step[i] = int(
-                    (env.entry_step[i] * old_weight) + (env.current_step * new_weight)
-                )
-            # Cost of newly acquired units (Delta is the number of units)
-            cost_of_new_with_fees = delta * current_prices[i] * (1.0 + env.fee_rate)
-            # Value of existing units AT INITIAL COST BASIS
-            value_of_existing = old_holdings[i] * env.avg_entry_price[i]
-            # Update weighted average entry price
-            env.avg_entry_price[i] = (
-                value_of_existing + cost_of_new_with_fees
-            ) / env.holdings[i]
+            _process_buy_accounting(env, i, delta, current_prices[i], old_holdings[i])
 
         # 2. SOLD (Scaled out)
         elif delta < -1e-8:
-            env.total_closed_trades += 1
-            env.per_asset_trades[i] += 1
-            # SAFEGUARD: Clamp amount sold to what we actually owned to kill phantom PnL
             amount_sold = min(abs(delta), old_holdings[i])
-            # Real revenue generated minus fees
-            revenue = amount_sold * current_prices[i] * (1.0 - env.fee_rate)
-            # Cost basis (Do NOT multiply by 1 + fee_rate again; avg_entry_price already includes it)
-            cost_basis = amount_sold * env.avg_entry_price[i]
-            adjusted_pnl = revenue - cost_basis
-            env.per_asset_realized_pnl[i] += adjusted_pnl
-            if cost_basis > 1e-8:
-                trade_return = (revenue - cost_basis) / cost_basis
-                # --- PATCH: Capital Scaling factor for the reward ---
-                trade_weight = (
-                    cost_basis / prev_portfolio_value
-                    if prev_portfolio_value > 1e-8
-                    else 0.0
-                )
-                # --- NEW: Excessive Turnover Penalty Logic ---
-                holding_period = env.current_step - env.entry_step[i]
-                # Penalize positions closed in under 15 minutes (or steps)
-                if holding_period < env.config.turnover_penalty_steps_threshold:
-                    reward_components["turnover_penalty"] -= (
-                        env.config.turnover_penalty * trade_weight
-                    )
-                # A win requires net revenue to exceed the exact cost we paid for those units
-                if revenue > cost_basis:
-                    env.winning_trades_count += 1
-                    env.per_asset_wins[i] += 1
-                # --- NEW: Dynamic Profit Bonus Scaling ---
-                # 1. Time multiplier: Cap at 2.0x for holding 4 hours (240 steps)
-                time_mult = 1.0 + min(1.0, holding_period / 240.0)
-                # 2. HTF Slope multiplier: Scale up by 1h momentum magnitude
-                slope_mag = 0.0
-                if env.htf_slope_1h_df is not None and env.current_step < len(
-                    env.htf_slope_1h_df
-                ):
-                    slope_mag = abs(env.htf_slope_1h_df.iat[env.current_step, i])
-                # Multiply by an arbitrary scalar (10.0) to make the slope meaningful in the equation
-                slope_mult = 1.0 + (slope_mag * 10.0)
-                # Apply the dynamic profit bonus
-                scaled_profit_bonus = env.profit_bonus * time_mult * slope_mult
-                # Symmetric scaling: rewards profits, penalizes losses proportionally
-                reward_components["profit_bonus"] += (
-                    scaled_profit_bonus * trade_return * trade_weight
-                )
-            # If we fully closed out, reset cost basis to 0
+            _process_sell_accounting(
+                env,
+                i,
+                amount_sold,
+                current_prices[i],
+                prev_portfolio_value,
+                reward_components,
+            )
+
+            # If we fully closed out, cleanup state
             if env.holdings[i] < 1e-8:
                 env.avg_entry_price[i] = 0.0
-                # SAFEGUARD: Snap negative holdings to 0 to kill the short-selling exploit
                 env.holdings[i] = 0.0
-                env.entry_step[i] = 0  # Reset entry step tracker
+                env.entry_step[i] = 0
+
     # Advance step
     env.current_step += 1
     done = env.current_step >= env.prices_arr.shape[0]
     current_asset_value = np.sum(env.holdings * next_prices)
     env.portfolio_value = env.cash + current_asset_value
     env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)
+
     # Range: 0.0 (at peak) down to -1.0 (-100% loss)
     current_drawdown = (
         env.portfolio_value - env.peak_portfolio_value
     ) / env.peak_portfolio_value
-    # Calculate delta. If current (-0.10) is worse than previous (-0.05), delta is -0.05.
-    # We use min(0, ...) to ensure we ONLY capture worsening drawdowns, ignoring recoveries.
     delta_drawdown = min(0.0, current_drawdown - env.previous_drawdown)
-    # Update previous drawdown for the next step
     env.previous_drawdown = current_drawdown
+
     # ==========================================
-    # NEW: 1. Hold Cost / Inactivity Penalty
+    # 1. Hold Cost / Inactivity Penalty
     # ==========================================
     underwater_penalty = 0.0
     for i in range(env.num_assets):
@@ -162,18 +202,18 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
             unrealized_pnl_pct = (
                 next_prices[i] - env.avg_entry_price[i]
             ) / env.avg_entry_price[i]
-            # If position is down more than 5%, apply the hold_cost_rate as a recurring penalty
             if unrealized_pnl_pct < -0.05:
                 underwater_penalty += env.hold_cost_rate
     reward_components["hold_cost"] = -underwater_penalty
+
     # ==========================================
-    # NEW: 2. Explicit Fee Penalty in Reward
+    # 2. Explicit Fee Penalty in Reward
     # ==========================================
-    # Normalize fee relative to portfolio size so it scales correctly with returns
     fee_penalty_pct = (
         (fee_paid / prev_portfolio_value) if prev_portfolio_value > 1e-8 else 0.0
     )
-    reward_components["fee_penalty"] = -fee_penalty_pct  # Alpha = 1.0 multiplier
+    reward_components["fee_penalty"] = -fee_penalty_pct
+
     # Reward calculation
     portfolio_return = (
         (env.portfolio_value - prev_portfolio_value) / prev_portfolio_value
@@ -190,7 +230,6 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
 
     if env.reward_type == "excess_return":
         alpha_diff = portfolio_return - market_return
-        # Slightly penalize underperformance, but avoid the 200x asymmetric distortion
         if alpha_diff < 0:
             alpha_diff *= 1.2
         reward_components["market_alpha"] = alpha_diff
@@ -199,51 +238,55 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
         )
     else:
         reward_components["market_alpha"] = portfolio_return
+
     # --- ACTION-SPECIFIC INCENTIVES (Optional) ---
     if env.action_space_type == "continuous":
         n_held = sum(
             1 for i in range(env.num_assets) if abs(action[i]) <= env.action_dead_zone
         )
         reward_components["hold_incentive"] = n_held * env.hold_incentive
+
     info: dict[str, Any] = {}
-    if (
-        done
-    ):  # this episode has finished, so we need to liquidate all remaining holdings
+
+    # ==========================================
+    # TERMINAL LIQUIDATION BLOCK
+    # ==========================================
+    if done:
         liquidation_revenue = 0.0
         liquidation_fees = 0.0
         for i in range(env.num_assets):
             if env.holdings[i] > 1e-8:
                 amount_sold = env.holdings[i]
-                # Calculate liquidation revenue and fees
-                revenue = amount_sold * next_prices[i] * (1.0 - env.fee_rate)
-                fee = amount_sold * next_prices[i] * env.fee_rate
-                # Apply the corrected cost basis
-                cost_basis = amount_sold * env.avg_entry_price[i]
-                adjusted_pnl = revenue - cost_basis
-                env.per_asset_realized_pnl[i] += adjusted_pnl
+
+                # Execute terminal sell through the unified helper (no rewards applied)
+                revenue, fee = _process_sell_accounting(
+                    env,
+                    i,
+                    amount_sold,
+                    next_prices[i],
+                    prev_portfolio_value,
+                    reward_components=None,
+                )
+
                 env.per_asset_fees[i] += fee
                 liquidation_revenue += revenue
                 liquidation_fees += fee
-                env.total_closed_trades += 1
-                env.per_asset_trades[i] += 1
-                if cost_basis > 1e-8 and adjusted_pnl > 0:
-                    env.winning_trades_count += 1
-                    env.per_asset_wins[i] += 1
 
                 # Wipe assets from state
                 env.holdings[i] = 0.0
                 env.avg_entry_price[i] = 0.0
                 env.entry_step[i] = 0
+
         # Convert portfolio entirely to cash based on liquidation
         env.cash += liquidation_revenue
         env.fees_paid_total += liquidation_fees
-        env.portfolio_value = env.cash  # Holdings are 0, PV is just cash
+        env.portfolio_value = env.cash
 
         terminal_return = (
             env.portfolio_value - env.config.budget_initial
         ) / env.config.budget_initial
         reward_components["terminal_return"] = terminal_return
-        # Capture the final state right before the auto-reset
+
         info["per_asset_stats"] = get_per_asset_summary(env)
         info["final_portfolio_value"] = env.portfolio_value
         info["final_trades_count"] = env.trades_count
@@ -258,30 +301,28 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
                 f"PnL Mismatch Detected! Portfolio PnL: ${actual_pnl:.2f} vs "
                 f"Sum Per-Asset PnL: ${sum_per_asset_pnl:.2f}"
             )
+
     if step_penalty >= 0.1:
         logging.debug(f"High step penalty value (>= 0.1): {step_penalty}")
 
     # Explicitly clip raw rewards at the source to prevent variance explosion
     reward = np.clip(sum(reward_components.values()), -1.0, 1.0)
+
     if not env.disable_logging:
         if env.action_space_type == "continuous":
             exp_act = np.exp(action - np.max(action))
             weights = exp_act / np.sum(exp_act)
-            # Determine net direction of this rebalance for logging purposes.
-            # Compare new asset-exposure fraction to the pre-trade snapshot taken
-            # at the top of step().  Positive delta → buying assets (BUY=1),
-            # negative delta → reducing assets (SELL=2), flat → HOLD=0.
             _new_asset_value = np.sum(env.holdings * next_prices)
             _new_port = env.cash + _new_asset_value
             _new_asset_frac = _new_asset_value / _new_port if _new_port > 1e-8 else 0.0
             _delta_frac = _new_asset_frac - _old_asset_frac
             _turnover_threshold = 1e-4
             if _delta_frac > _turnover_threshold:
-                _log_action_type = 1  # BUY
+                _log_action_type = 1
             elif _delta_frac < -_turnover_threshold:
-                _log_action_type = 2  # SELL
+                _log_action_type = 2
             else:
-                _log_action_type = 0  # HOLD
+                _log_action_type = 0
             eff_action = np.array(
                 [_log_action_type, np.argmax(weights[1:]), weights[0] * 100.0]
             )
@@ -295,7 +336,6 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
                 reward_components=reward_components,
             )
         elif env.action_space_type == "multidiscrete":
-            # Discrete action logging remains unchanged (action variables are updated inside helper)
             log_action(
                 env,
                 env.current_step,
@@ -307,6 +347,7 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
                 fee=fee_paid,
                 reward_components=reward_components,
             )
+
     info |= {
         "fees_paid": env.fees_paid_total,
         "trades_count": env.trades_count,
@@ -317,6 +358,7 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
         "episode_count": env.episode_count,
         "reward_components": reward_components,
     }
+
     return (
         env._get_obs(),
         float(reward),

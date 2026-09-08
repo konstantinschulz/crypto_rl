@@ -61,9 +61,13 @@ def load_run(state_file):
             st.session_state.last_run_mtime = state_path.stat().st_mtime
             with open(state_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             # Ensure large series do not exceed 1000 points to keep charts smooth and responsive
-            if isinstance(data, dict) and "series" in data and isinstance(data["series"], dict):
+            if (
+                isinstance(data, dict)
+                and "series" in data
+                and isinstance(data["series"], dict)
+            ):
                 for k, v in data["series"].items():
                     if isinstance(v, list) and len(v) > 1000:
                         data["series"][k] = _decimate_series(v, max_points=1000)
@@ -145,27 +149,20 @@ def _elapsed_seconds_for_run(run_meta, now_dt=None):
     return max(0, int(_to_float(elapsed, 0)))
 
 
-def _latest_series_value(series_map, key, default=0.0):
+def _latest_series_value(series_map, key, default=0.0, nonzero_only=False):
     rows = series_map.get(key, []) if isinstance(series_map, dict) else []
     if not isinstance(rows, list):
         return float(default)
     for row in reversed(rows):
         if isinstance(row, dict):
-            value = row.get("value")
-            if value is not None:
-                return _to_float(value, default)
-    return float(default)
-
-
-def _latest_nonzero_series_value(series_map, key, default=0.0):
-    rows = series_map.get(key, []) if isinstance(series_map, dict) else []
-    if not isinstance(rows, list):
-        return float(default)
-    for row in reversed(rows):
-        if isinstance(row, dict):
-            value = _to_float(row.get("value"), 0.0)
-            if abs(value) > 1e-12:
-                return float(value)
+            if nonzero_only:
+                value = _to_float(row.get("value"), 0.0)
+                if abs(value) > 1e-12:
+                    return float(value)
+            else:
+                value = row.get("value")
+                if value is not None:
+                    return _to_float(value, default)
     return float(default)
 
 
@@ -194,15 +191,21 @@ def _resolve_dashboard_kpis(data):
     splits = data.get("splits", {}) if isinstance(data, dict) else {}
     series = data.get("series", {}) if isinstance(data, dict) else {}
 
-    final_summary = run.get("final_summary") if isinstance(run.get("final_summary"), dict) else {}
-    
+    final_summary = (
+        run.get("final_summary") if isinstance(run.get("final_summary"), dict) else {}
+    )
+
     finance_trades = int(_to_float(finance.get("trades", 0), 0))
     final_trades = int(_to_float(final_summary.get("trades", 0), 0))
-    
+
     series_trades_list = series.get("trades", [])
     max_series_trades = 0
     if isinstance(series_trades_list, list) and len(series_trades_list) > 0:
-        values = [int(_to_float(item.get("value", 0), 0)) for item in series_trades_list if isinstance(item, dict)]
+        values = [
+            int(_to_float(item.get("value", 0), 0))
+            for item in series_trades_list
+            if isinstance(item, dict)
+        ]
         max_series_trades = max(values) if values else 0
 
     trades = max(finance_trades, final_trades, max_series_trades)
@@ -210,7 +213,7 @@ def _resolve_dashboard_kpis(data):
     realized_pnl = _to_float(final_summary.get("realized_pnl", 0), 0)
     if realized_pnl == 0.0 and _to_float(finance.get("realized_pnl", 0), 0) != 0.0:
         realized_pnl = _to_float(finance.get("realized_pnl", 0), 0)
-    
+
     if realized_pnl == 0.0:
         realized_pnl = _latest_series_value(series, "realized_pnl", 0.0)
 
@@ -219,7 +222,7 @@ def _resolve_dashboard_kpis(data):
         win_rate_pct = _to_float(finance.get("win_rate_pct", 0), 0)
     if win_rate_pct == 0.0 and trades > 0:
         # Some runs append a terminal eval snapshot with win_rate=0; use latest non-zero historical value.
-        win_rate_pct = _latest_nonzero_series_value(series, "win_rate", 0.0)
+        win_rate_pct = _latest_series_value(series, "win_rate", 0.0, nonzero_only=True)
 
     portfolio_value = _to_float(final_summary.get("portfolio_value", 0), 0)
     if portfolio_value == 0.0 or portfolio_value == 100.0:
@@ -241,7 +244,7 @@ def _resolve_dashboard_kpis(data):
         "train_loss": _to_float(tech.get("loss", {}).get("train", 0.0), 0.0),
         "train_reward": _to_float(data.get("rewards", {}).get("train", 0.0), 0.0),
         "trades": trades,
-        "win_rate_pct": win_rate_pct, # Added for training
+        "win_rate_pct": win_rate_pct,  # Added for training
         "realized_pnl": realized_pnl,
         "unrealized_pnl": _to_float(finance.get("unrealized_pnl", 0.0), 0.0),
         "portfolio_value": portfolio_value,
@@ -250,16 +253,28 @@ def _resolve_dashboard_kpis(data):
         "train_realized_pnl": _latest_series_value(series, "realized_pnl", 0.0),
         "train_unrealized_pnl": _latest_series_value(series, "unrealized_pnl", 0.0),
         "train_portfolio_value": _latest_series_value(series, "portfolio_value", 0.0),
-        "train_trades": _latest_series_value(series, "trades", 0), # Added for training
-        "train_win_rate_pct": _latest_series_value(series, "win_rate", 0.0), # Added for training
+        "train_trades": _latest_series_value(series, "trades", 0),  # Added for training
+        "train_win_rate_pct": _latest_series_value(
+            series, "win_rate", 0.0
+        ),  # Added for training
         # Evaluation results
-        "eval_final_portfolio_value": _to_float(eval_results.get("final_portfolio_value", 0.0), 0.0),
+        "eval_final_portfolio_value": _to_float(
+            eval_results.get("final_portfolio_value", 0.0), 0.0
+        ),
         "eval_pnl": _to_float(eval_results.get("pnl", 0.0), 0.0),
         "eval_steps": int(_to_float(eval_results.get("evaluation_steps", 0), 0)),
-        "eval_time_in_market_pct": _to_float(eval_results.get("time_in_market_pct", 0.0), 0.0),
-        "eval_buy_hold_baseline": _to_float(eval_results.get("buy_hold_baseline", 0.0), 0.0),
-        "eval_trades": int(_to_float(eval_results.get("eval_trades", 0), 0)), # Added for evaluation
-        "eval_win_rate_pct": _to_float(eval_results.get("eval_win_rate_pct", 0.0), 0.0), # Added for evaluation
+        "eval_time_in_market_pct": _to_float(
+            eval_results.get("time_in_market_pct", 0.0), 0.0
+        ),
+        "eval_buy_hold_baseline": _to_float(
+            eval_results.get("buy_hold_baseline", 0.0), 0.0
+        ),
+        "eval_trades": int(
+            _to_float(eval_results.get("eval_trades", 0), 0)
+        ),  # Added for evaluation
+        "eval_win_rate_pct": _to_float(
+            eval_results.get("eval_win_rate_pct", 0.0), 0.0
+        ),  # Added for evaluation
         "training_start": training_start,
         "training_end": training_end,
     }
@@ -271,7 +286,11 @@ if not runs:
     st.warning("No runs found yet.")
     st.stop()
 
-runs = sorted(runs, key=lambda r: (_run_epoch_from_id(r.get("run_id", "")), str(r.get("run_id", ""))), reverse=True)
+runs = sorted(
+    runs,
+    key=lambda r: (_run_epoch_from_id(r.get("run_id", "")), str(r.get("run_id", ""))),
+    reverse=True,
+)
 runs_by_id = {r.get("run_id", "unknown"): r for r in runs}
 
 run_opts = [r.get("run_id", "unknown") for r in runs]
@@ -289,6 +308,7 @@ if st.session_state.selected_run_id in run_opts:
 else:
     selected_idx = default_idx
     st.session_state.selected_run_id = run_opts[selected_idx]
+
 
 def _run_label(run_id):
     run_meta = runs_by_id.get(run_id, {})
@@ -312,7 +332,9 @@ st.session_state.finance_view = st.sidebar.selectbox(
     if st.session_state.finance_view in {"Both", "Train", "Eval"}
     else 0,
 )
-st.session_state.auto_refresh_enabled = st.sidebar.checkbox("Auto-Refresh (5s)", value=st.session_state.auto_refresh_enabled)
+st.session_state.auto_refresh_enabled = st.sidebar.checkbox(
+    "Auto-Refresh (5s)", value=st.session_state.auto_refresh_enabled
+)
 
 # Minimal run launcher: start the provided `main.py` training in background
 st.sidebar.markdown("---")
@@ -342,7 +364,9 @@ with start_col:
         ]
         try:
             subprocess.Popen(cmd)
-            st.sidebar.success(f"Started minimal run via {python_exe}. It should appear in the run list shortly.")
+            st.sidebar.success(
+                f"Started minimal run via {python_exe}. It should appear in the run list shortly."
+            )
         except Exception as e:
             st.sidebar.error(f"Failed to start run: {e}")
 with stop_col:
@@ -396,21 +420,26 @@ col3.metric("Step", f"{int(kpis['step']):,}")
 col4.metric("Train Loss", f"{kpis['train_loss']:.5f}")
 col5.metric("Train Reward", f"{kpis['train_reward']:.4f}")
 col6.metric("Train Portfolio", f"${kpis['train_portfolio_value']:.2f}")
-col7.metric("Train PnL (R/U)", f"${kpis['train_realized_pnl']:.2f} / ${kpis['train_unrealized_pnl']:.2f}")
-col8.metric("Train Trades", f"{kpis['train_trades']:,}") # Added
-col9.metric("Train Win Rate", f"{kpis['train_win_rate_pct']:.1f}%") # Added
+col7.metric(
+    "Train PnL (R/U)",
+    f"${kpis['train_realized_pnl']:.2f} / ${kpis['train_unrealized_pnl']:.2f}",
+)
+col8.metric("Train Trades", f"{kpis['train_trades']:,}")  # Added
+col9.metric("Train Win Rate", f"{kpis['train_win_rate_pct']:.1f}%")  # Added
 
 st.subheader("Evaluation Results")
-eval_col1, eval_col2, eval_col3, eval_col4, eval_col5, eval_col6, eval_col7 = st.columns(7)
+eval_col1, eval_col2, eval_col3, eval_col4, eval_col5, eval_col6, eval_col7 = (
+    st.columns(7)
+)
 eval_col1.metric("Final Portfolio Value", f"${kpis['eval_final_portfolio_value']:.2f}")
 eval_col2.metric("PnL", f"${kpis['eval_pnl']:.2f}")
 eval_col3.metric("Evaluation Steps", f"{kpis['eval_steps']:,}")
 eval_col4.metric("Time in Market", f"{kpis['eval_time_in_market_pct']:.1f}%")
 eval_col5.metric("Buy/Hold Baseline", f"${kpis['eval_buy_hold_baseline']:.2f}")
-eval_col6.metric("Eval Trades", f"{kpis['eval_trades']:,}") # Added
-eval_col7.metric("Eval Win Rate", f"{kpis['eval_win_rate_pct']:.1f}%") # Added
+eval_col6.metric("Eval Trades", f"{kpis['eval_trades']:,}")  # Added
+eval_col7.metric("Eval Win Rate", f"{kpis['eval_win_rate_pct']:.1f}%")  # Added
 # Evaluation Metrics Chart
-if st.session_state.get('finance_view') == "Eval":
+if st.session_state.get("finance_view") == "Eval":
     eval_metrics = {
         "Final Portfolio": kpis["eval_final_portfolio_value"],
         "Eval PnL": kpis["eval_pnl"],
@@ -419,9 +448,10 @@ if st.session_state.get('finance_view') == "Eval":
         "Win Rate %": kpis["eval_win_rate_pct"],
     }
     df_eval = pd.DataFrame(list(eval_metrics.items()), columns=["Metric", "Value"])
-    chart = alt.Chart(df_eval).mark_bar().encode(
-        x=alt.X("Metric:N", sort=None),
-        y=alt.Y("Value:Q")
+    chart = (
+        alt.Chart(df_eval)
+        .mark_bar()
+        .encode(x=alt.X("Metric:N", sort=None), y=alt.Y("Value:Q"))
     )
     st.altair_chart(chart, width="stretch")
 # Explainability Section
@@ -431,7 +461,7 @@ cumulative_rewards = explainability.get("cumulative_rewards", {})
 if cumulative_rewards:
     st.markdown("---")
     st.subheader("Explainability: Reward Decomposition (Evaluation)")
-    
+
     # 1. Show the active hyperparameters that affect these rewards
     hyperparams = explainability.get("hyperparameters", {})
     if hyperparams:
@@ -439,26 +469,34 @@ if cumulative_rewards:
         st.markdown(f"> {hp_str}")
 
     # 2. Plot the cumulative reward components
-    df_components = pd.DataFrame(list(cumulative_rewards.items()), columns=["Component", "Cumulative Reward"])
-    
+    df_components = pd.DataFrame(
+        list(cumulative_rewards.items()), columns=["Component", "Cumulative Reward"]
+    )
+
     # Filter out absolute zeros for a cleaner chart
     df_components = df_components[df_components["Cumulative Reward"] != 0.0]
-    
+
     if not df_components.empty:
         # Create a diverging bar chart (Green for positive, Red for negative)
-        explain_chart = alt.Chart(df_components).mark_bar().encode(
-            x=alt.X("Cumulative Reward:Q", title="Total Accumulated Reward"),
-            y=alt.Y("Component:N", sort="-x", title="Reward Component"),
-            color=alt.condition(
-                alt.datum['Cumulative Reward'] > 0,
-                alt.value("#2ca02c"),  # Green for positive
-                alt.value("#d62728")   # Red for negative
-            ),
-            tooltip=["Component:N", alt.Tooltip("Cumulative Reward:Q", format=".4f")]
-        ).properties(
-            height=250
+        explain_chart = (
+            alt.Chart(df_components)
+            .mark_bar()
+            .encode(
+                x=alt.X("Cumulative Reward:Q", title="Total Accumulated Reward"),
+                y=alt.Y("Component:N", sort="-x", title="Reward Component"),
+                color=alt.condition(
+                    alt.datum["Cumulative Reward"] > 0,
+                    alt.value("#2ca02c"),  # Green for positive
+                    alt.value("#d62728"),  # Red for negative
+                ),
+                tooltip=[
+                    "Component:N",
+                    alt.Tooltip("Cumulative Reward:Q", format=".4f"),
+                ],
+            )
+            .properties(height=250)
         )
-        
+
         st.altair_chart(explain_chart, width="stretch")
     else:
         st.info("No reward components accumulated during this evaluation.")
@@ -494,20 +532,32 @@ if portfolio_series:
         if "train_reward" in series:
             df_reward = pd.DataFrame(series.get("train_reward", []))
             if not df_reward.empty and "step" in df_reward.columns:
-                df_reward = df_reward.drop_duplicates(subset=["step"], keep="last").set_index("step")
-                reward_chart = alt.Chart(df_reward.reset_index()).mark_line(color="orange").encode(
-                    x=alt.X("step:Q", title="Step"),
-                    y=alt.Y("value:Q", title="Mean Episode Reward")
+                df_reward = df_reward.drop_duplicates(
+                    subset=["step"], keep="last"
+                ).set_index("step")
+                reward_chart = (
+                    alt.Chart(df_reward.reset_index())
+                    .mark_line(color="orange")
+                    .encode(
+                        x=alt.X("step:Q", title="Step"),
+                        y=alt.Y("value:Q", title="Mean Episode Reward"),
+                    )
                 )
                 st.altair_chart(reward_chart, width="stretch")
         # Total Return %
         if "total_return_pct" in series:
             df_ret = pd.DataFrame(series.get("total_return_pct", []))
             if not df_ret.empty and "step" in df_ret.columns:
-                df_ret = df_ret.drop_duplicates(subset=["step"], keep="last").set_index("step")
-                ret_chart = alt.Chart(df_ret.reset_index()).mark_line(color="green").encode(
-                    x=alt.X("step:Q", title="Step"),
-                    y=alt.Y("value:Q", title="Total Return %")
+                df_ret = df_ret.drop_duplicates(subset=["step"], keep="last").set_index(
+                    "step"
+                )
+                ret_chart = (
+                    alt.Chart(df_ret.reset_index())
+                    .mark_line(color="green")
+                    .encode(
+                        x=alt.X("step:Q", title="Step"),
+                        y=alt.Y("value:Q", title="Total Return %"),
+                    )
                 )
                 st.altair_chart(ret_chart, width="stretch")
     elif view == "Eval":
@@ -516,11 +566,21 @@ if portfolio_series:
         plot_df = portfolio_df[keep_cols] if keep_cols else pd.DataFrame()
         if not plot_df.empty:
             y_domain = _empirical_y_domain(plot_df)
-            portfolio_long = plot_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
-            chart = alt.Chart(portfolio_long).mark_line().encode(
-                x=alt.X("step:Q", title="Step"),
-                y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain, zero=False, nice=False)),
-                color=alt.Color("Series:N", title="Series")
+            portfolio_long = plot_df.reset_index().melt(
+                id_vars=["step"], var_name="Series", value_name="value"
+            )
+            chart = (
+                alt.Chart(portfolio_long)
+                .mark_line()
+                .encode(
+                    x=alt.X("step:Q", title="Step"),
+                    y=alt.Y(
+                        "value:Q",
+                        title="Portfolio Value",
+                        scale=alt.Scale(domain=y_domain, zero=False, nice=False),
+                    ),
+                    color=alt.Color("Series:N", title="Series"),
+                )
             )
             st.altair_chart(chart, width="stretch")
 
@@ -539,51 +599,72 @@ if portfolio_series:
     if train_present:
         container = st if col_train is st else col_train
         container.markdown("### Portfolio Value (Train)")
-        
+
         # Load the raw series
         raw_train_df = pd.DataFrame(series.get("portfolio_value", []))
         # Ensure portfolio values are numeric
         if not raw_train_df.empty:
-            raw_train_df["value"] = pd.to_numeric(raw_train_df["value"], errors="coerce")
-        
+            raw_train_df["value"] = pd.to_numeric(
+                raw_train_df["value"], errors="coerce"
+            )
+
         if not raw_train_df.empty and "step" in raw_train_df.columns:
             # If the log is old and doesn't have our new "episode" key, fallback to the math chunk
             if "episode" not in raw_train_df.columns:
-                ep_length = 800 
+                ep_length = 800
                 raw_train_df["episode"] = ((raw_train_df["step"] - 1) // ep_length) + 1
 
             # Ensure episodes are integers for ordinal scaling
             raw_train_df["episode"] = raw_train_df["episode"].astype(int)
-            
+
             # Normalize each episode to start at 100
-            raw_train_df["value_norm"] = raw_train_df.groupby("episode")["value"].transform(lambda x: (x - x.iloc[0]) + 100.0)
-            
+            raw_train_df["value_norm"] = raw_train_df.groupby("episode")[
+                "value"
+            ].transform(lambda x: (x - x.iloc[0]) + 100.0)
+
             # Calculate an intra-episode step to align episodes for the overlay view
             raw_train_df["episode_step"] = raw_train_df.groupby("episode").cumcount()
-            
-            overlay_episodes = container.checkbox("Overlay Episodes", value=True, key="overlay_train_eps")
-            
+
+            overlay_episodes = container.checkbox(
+                "Overlay Episodes", value=True, key="overlay_train_eps"
+            )
+
             x_col = "episode_step" if overlay_episodes else "step"
             x_title = "Step (Within Episode)" if overlay_episodes else "Global Step"
-            
+
             y_domain_train = _empirical_y_domain(raw_train_df[["value_norm"]])
-            
+
             # When Overlay Episodes is off, x-axis (Global Step) should start at 0
             if overlay_episodes:
                 x_scale = alt.Scale(zero=True)
             else:
                 total_steps = int(_to_float(run.get("total_timesteps", 0), 0))
-                max_step = max(int(raw_train_df["step"].max()), total_steps) if not raw_train_df.empty else total_steps
+                max_step = (
+                    max(int(raw_train_df["step"].max()), total_steps)
+                    if not raw_train_df.empty
+                    else total_steps
+                )
                 x_scale = alt.Scale(domain=[0, max(max_step, 1)], zero=True)
 
-            train_chart = alt.Chart(raw_train_df).mark_line(opacity=0.8, strokeWidth=1.5).encode(
-                x=alt.X(f"{x_col}:Q", title=x_title, scale=x_scale),
-                y=alt.Y("value_norm:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_train, zero=False, nice=False)),
-                color=alt.Color("episode:O", title="Episode", scale=alt.Scale(scheme="viridis")),
-                detail="episode:O",
-                tooltip=["episode:O", "step:Q", "value:Q"]
-            ).interactive()
-            
+            train_chart = (
+                alt.Chart(raw_train_df)
+                .mark_line(opacity=0.8, strokeWidth=1.5)
+                .encode(
+                    x=alt.X(f"{x_col}:Q", title=x_title, scale=x_scale),
+                    y=alt.Y(
+                        "value_norm:Q",
+                        title="Portfolio Value",
+                        scale=alt.Scale(domain=y_domain_train, zero=False, nice=False),
+                    ),
+                    color=alt.Color(
+                        "episode:O", title="Episode", scale=alt.Scale(scheme="viridis")
+                    ),
+                    detail="episode:O",
+                    tooltip=["episode:O", "step:Q", "value:Q"],
+                )
+                .interactive()
+            )
+
             container.altair_chart(train_chart, width="stretch")
 
     # Eval chart (Dev/Test)
@@ -595,12 +676,22 @@ if portfolio_series:
             col_eval.markdown("### Portfolio Value (Evaluation)")
         eval_df = pd.DataFrame({eval_key: portfolio_series[eval_key]})
         eval_df = eval_df.interpolate(method="index").ffill().bfill()
-        eval_long = eval_df.reset_index().melt(id_vars=["step"], var_name="Series", value_name="value")
+        eval_long = eval_df.reset_index().melt(
+            id_vars=["step"], var_name="Series", value_name="value"
+        )
         y_domain_eval = _empirical_y_domain(eval_df)
-        eval_chart = alt.Chart(eval_long).mark_line().encode(
-            x=alt.X("step:Q", title="Step"),
-            y=alt.Y("value:Q", title="Portfolio Value", scale=alt.Scale(domain=y_domain_eval, zero=False, nice=False)),
-            color=alt.Color("Series:N", title="Series")
+        eval_chart = (
+            alt.Chart(eval_long)
+            .mark_line()
+            .encode(
+                x=alt.X("step:Q", title="Step"),
+                y=alt.Y(
+                    "value:Q",
+                    title="Portfolio Value",
+                    scale=alt.Scale(domain=y_domain_eval, zero=False, nice=False),
+                ),
+                color=alt.Color("Series:N", title="Series"),
+            )
         )
         if col_eval is st:
             st.altair_chart(eval_chart, width="stretch")
@@ -629,7 +720,7 @@ if not df_pnl_test.empty and "step" in df_pnl_test.columns:
 if pnl_series:
     pnl_df = pd.DataFrame(pnl_series).dropna(how="all")
     pnl_df = pnl_df.interpolate(method="index").ffill().bfill()
-    
+
     view = st.session_state.finance_view
     if view == "Train":
         keep_cols = [c for c in pnl_df.columns if c == "Train"]

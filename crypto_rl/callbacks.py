@@ -16,8 +16,6 @@ from typing import Optional
 
 import numpy as np
 import optuna
-from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
-from sb3_contrib.common.wrappers import ActionMasker
 
 from crypto_rl.config import RLConfig
 from crypto_rl.env.metrics import calculate_calmar_ratio
@@ -34,31 +32,11 @@ except ImportError:  # pragma: no cover
             pass
 
         def __getattr__(self, name):
-            # Return a dummy callable for any attribute used in the code
             return lambda *a, **k: None
 
 
 class DashboardCallback(BaseCallback):
-    """Write periodic ``state.json`` snapshots for the Streamlit dashboard.
-
-    Parameters
-    ----------
-    state_path:
-        Path where the JSON state file will be written on every checkpoint.
-    window_size:
-        Observation window size (passed through to the state file for
-        display purposes).
-    reward_type:
-        Reward function in use (passed through to the state file).
-    run_id:
-        Unique identifier for this training run.
-    total_timesteps:
-        Total number of training timesteps (used to compute progress %).
-    num_data_rows:
-        Number of data rows loaded (passed through for display).
-    check_freq:
-        How often (in environment steps) to write the state file.
-    """
+    """Write periodic ``state.json`` snapshots for the Streamlit dashboard."""
 
     def __init__(
         self,
@@ -79,18 +57,13 @@ class DashboardCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.num_data_rows = num_data_rows
         self.check_freq = config.dashboard_freq
-        # Always store started_at in UTC so _parse_dashboard_ts can parse it reliably.
         self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         self.last_portfolio_value = config.budget_initial
         self.training_start_str = training_start_str
         self.training_end_str = training_end_str
-        # Maximum data-points kept in memory per series to avoid unbounded RAM growth
-        # during very long experiments (e.g. 400 k rows / 1.2 M timesteps).
-        # The dashboard JSON is further trimmed to _MAX_JSON_POINTS at write time.
         self._MAX_SERIES_POINTS: int = 600
         self._MAX_JSON_POINTS: int = 300
 
-        # Series data
         self.series: dict[str, list] = {
             "train_reward": [],
             "portfolio_value": [],
@@ -121,15 +94,10 @@ class DashboardCallback(BaseCallback):
         except ImportError:
             self.psutil = None
 
-    # ------------------------------------------------------------------
-    # BaseCallback hooks
-    # ------------------------------------------------------------------
-
     def _on_training_start(self) -> None:
         self._write_state(status="initializing")
 
     def _on_step(self) -> bool:
-        # Periodically write state with current num_timesteps and real metrics
         if self.num_timesteps % self.check_freq == 0:
             self._collect_metrics()
             self._write_state(status="running")
@@ -139,21 +107,14 @@ class DashboardCallback(BaseCallback):
         self._collect_metrics()
         self._write_state(status="finished")
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _collect_metrics(self) -> None:
-        """Extract real portfolio value and reward from the training environment."""
         step = int(self.num_timesteps)
         try:
-            # Use ep_info_buffer for smooth finalized episode metrics
             mean_ep_rew = 0.0
             if len(self.model.ep_info_buffer) > 0:
                 mean_ep_rew = float(
                     np.mean([ep["r"] for ep in self.model.ep_info_buffer])
                 )
-            # Always get the real current portfolio value from the environment
             portfolio_values = self.training_env.get_attr("portfolio_value")
             current_portfolio = (
                 float(portfolio_values[0])
@@ -165,7 +126,6 @@ class DashboardCallback(BaseCallback):
             holdings_list = self.training_env.get_attr("holdings")
             current_holdings = holdings_list[0] if holdings_list else np.zeros(1)
 
-            # Simplified trade count
             if np.sum(np.abs(current_holdings)) > 1e-8:
                 self.current_trades += 1
 
@@ -175,7 +135,6 @@ class DashboardCallback(BaseCallback):
             total_closed = int(total_closed_list[0]) if total_closed_list else 0
             win_rate = (winning_trades / max(1, total_closed)) * 100.0
 
-            # Return and Drawdown
             total_return = (
                 current_portfolio / self.config.budget_initial - 1.0
             ) * 100.0
@@ -184,7 +143,6 @@ class DashboardCallback(BaseCallback):
             )
             drawdown = (1.0 - current_portfolio / self.peak_portfolio_value) * 100.0
 
-            # Append to series
             self.series["portfolio_value"].append(
                 {"step": step, "value": current_portfolio, "episode": current_episode}
             )
@@ -198,8 +156,6 @@ class DashboardCallback(BaseCallback):
             )
             self.series["drawdown_pct"].append({"step": step, "value": float(drawdown)})
 
-            # Technical metrics from SB3 logger
-            # SB3 uses '/' as separator, e.g., 'train/loss'
             logger_map = self.model.logger.name_to_value
             self.series["train_loss"].append(
                 {"step": step, "value": float(logger_map.get("train/loss", 0.0))}
@@ -223,7 +179,6 @@ class DashboardCallback(BaseCallback):
                 }
             )
 
-            # SAC-specific metrics from SB3 logger
             self.series["actor_loss"].append(
                 {"step": step, "value": float(logger_map.get("train/actor_loss", 0.0))}
             )
@@ -240,26 +195,21 @@ class DashboardCallback(BaseCallback):
                 {"step": step, "value": float(logger_map.get("train/ent_coef", 0.0))}
             )
 
-            # Memory usage
             if self.psutil:
                 ram = self.psutil.Process().memory_info().rss / (1024 * 1024)
                 self.series["ram_mb"].append({"step": step, "value": float(ram)})
 
             self.last_portfolio_value = current_portfolio
 
-            # Trim every series in-place to avoid unbounded RAM growth on long runs.
             cap = self._MAX_SERIES_POINTS
             for key in self.series:
                 if len(self.series[key]) > cap:
                     self.series[key] = self.series[key][-cap:]
         except Exception as e:
-            # Swallow metric-collection errors so training is never interrupted
             print(e)
 
     def _write_state(self, status: str = "running") -> None:
         try:
-            # Trim to the last _MAX_JSON_POINTS entries so the JSON file stays
-            # small and the browser renders charts without freezing.
             n = self._MAX_JSON_POINTS
             series_data = {key: data[-n:] for key, data in self.series.items()}
 
@@ -307,9 +257,7 @@ class DashboardCallback(BaseCallback):
 
 
 class EntropyDecayCallback(BaseCallback):
-    """
-    Linearly decays PPO ent_coef from initial_ent to final_ent over total_timesteps.
-    """
+    """Linearly decays PPO ent_coef from initial_ent to final_ent over total_timesteps."""
 
     def __init__(
         self,
@@ -324,17 +272,15 @@ class EntropyDecayCallback(BaseCallback):
         self.total_timesteps = total_timesteps
 
     def _on_step(self) -> bool:
-        # Calculate linear progress (0.0 to 1.0)
         progress = min(1.0, self.num_timesteps / float(self.total_timesteps))
-        current_ent = self.ent_coef_initial + progress * (self.ent_coef_final - self.ent_coef_initial)
-
-        # Update ent_coef in the PPO model
+        current_ent = self.ent_coef_initial + progress * (
+            self.ent_coef_final - self.ent_coef_initial
+        )
         self.model.ent_coef = current_ent
 
         if self.verbose > 0 and self.num_timesteps % 10000 == 0:
             print(
                 f"Step {self.num_timesteps}/{self.total_timesteps} - Updated ent_coef: {current_ent:.6f}"
-
             )
 
         return True
@@ -342,24 +288,27 @@ class EntropyDecayCallback(BaseCallback):
 
 class UnifiedEvalCallback(BaseCallback):
     """
-    Evaluates the model, reports the mean reward to Optuna for pruning,
-    and saves a checkpoint if the Calmar ratio achieves a new high.
+    Evaluates the model, reports metrics to Optuna monotonically across CV folds,
+    and saves checkpoints scored by Calmar ratio.
     """
 
     def __init__(
         self,
         config: RLConfig,
         eval_env: MinimalCryptoEnv | ActionMasker,
-        trial: optuna.trial.Trial,
+        trial: Optional[optuna.trial.Trial],
         checkpoint_dir: Path,
+        fold_idx: int = 0,
+        eval_step_offset: int = 0,
     ):
         super().__init__(verbose=0)
         self.config = config
         self.eval_env = eval_env
         self.trial = trial
         self.checkpoint_dir = checkpoint_dir
+        self.fold_idx = fold_idx
+        self.eval_step_offset = eval_step_offset
 
-        # Pull parameters from the SSOT config
         self.eval_freq = config.eval_freq
         self.max_checkpoints = config.max_checkpoints
 
@@ -370,20 +319,19 @@ class UnifiedEvalCallback(BaseCallback):
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_step(self) -> bool:
-        # Run evaluation at the specified heavy frequency
         if self.eval_freq > 0 and self.num_timesteps % self.eval_freq == 0:
             self.eval_idx += 1
-
-            # 1. Run a single unified evaluation episode
             episode_reward, calmar = self._run_evaluation()
+
             if self.trial is not None:
-                # 2. Report mean reward to Optuna for pruning
-                self.trial.report(episode_reward, self.eval_idx)
+                # Monotonically unique step across folds
+                report_step = self.eval_step_offset + self.eval_idx
+                self.trial.report(episode_reward, report_step)
+
                 if self.trial.should_prune():
                     self.is_pruned = True
-                    return False  # Returning False completely stops SB3 training
+                    return False
 
-            # 3. Save checkpoint if Calmar ratio improved
             if calmar > self.best_calmar:
                 self.best_calmar = calmar
                 if self.config.checkpoint:
@@ -393,17 +341,14 @@ class UnifiedEvalCallback(BaseCallback):
 
     def _run_evaluation(self) -> tuple[float, float]:
         """Runs one episode to extract both total reward and Calmar ratio."""
-        # 1. VecEnv reset returns only obs (no info tuple)
         obs = self.eval_env.reset()
         done = False
         episode_reward = 0.0
 
-        # 2. Use get_attr() to fetch variables from inside the VecEnv
         initial_pv = self.eval_env.get_attr("portfolio_value")[0]
         portfolio_values = [{"step": 0, "value": float(initial_pv)}]
 
         while not done:
-            # 3. Use env_method() to call functions on the underlying environment
             masks = self.eval_env.env_method("action_masks")[0]
             current_masks = np.array([masks])
 
@@ -411,7 +356,6 @@ class UnifiedEvalCallback(BaseCallback):
                 obs, action_masks=current_masks, deterministic=True
             )
 
-            # 4. VecEnv step returns 4 array values, not 5
             obs, reward, done_array, infos = self.eval_env.step(action)
             done = done_array[0]
 
@@ -429,15 +373,14 @@ class UnifiedEvalCallback(BaseCallback):
         return episode_reward, calmar
 
     def _save_checkpoint(self, calmar: float) -> None:
-        """Saves the model and trims old checkpoints."""
+        """Saves the model with fold metadata and trims old checkpoints."""
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         ckpt_path = (
             self.checkpoint_dir
-            / f"checkpoint_{self.num_timesteps}_calmar_{calmar:.4f}_{timestamp}.zip"
+            / f"fold_{self.fold_idx}_step_{self.num_timesteps}_calmar_{calmar:.4f}_{timestamp}.zip"
         )
         self.model.save(str(ckpt_path))
 
-        # Enforce max checkpoints globally
         all_ckpts = sorted(
             self.checkpoint_dir.parent.parent.glob("**/*.zip"),
             key=lambda p: p.stat().st_mtime,

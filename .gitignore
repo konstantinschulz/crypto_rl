@@ -5,6 +5,9 @@
 .vscode/
 .aider*
 .env
+.jscpd.json
+*.parquet
+*.profile
 __pycache__/
 artifacts/
 best_model/
@@ -15,7 +18,5 @@ rl_dashboard_runs/
 tb_logs/
 optuna.db
 profile.stats
-*.parquet
-*.profile
 rl_dashboard_index.json
 !subset.parquet

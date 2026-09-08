@@ -107,7 +107,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
     last_test_static = None
     last_test_names = None
     last_prices_arr = None
-    last_asset_names = None
+    last_asset_names: list[str] = []
     last_eval_reward_totals = {}
     last_eval_portfolio_values = []
     last_eval_realized_pnl = []
@@ -130,8 +130,8 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
         training_end_str = (
             _to_datetime(end_ts_raw).tz_localize("UTC").strftime("%Y-%m-%d %H:%M:%S %Z")
         )
-        prices_arr, static_obs, norm_vol_arr, asset_names = compute_static_obs_from_long_df(
-            train_prices_df, config.window_size
+        prices_arr, static_obs, norm_vol_arr, asset_names = (
+            compute_static_obs_from_long_df(train_prices_df, config.window_size)
         )
         last_prices_arr = prices_arr
         last_asset_names = asset_names
@@ -197,9 +197,12 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             )
 
         print_if_not_trial(trial, "Computing test observations...")
-        shared_test_prices, shared_test_static, shared_test_norm_vol, shared_test_names = (
-            compute_static_obs_from_long_df(test_prices_df, config.window_size)
-        )
+        (
+            shared_test_prices,
+            shared_test_static,
+            shared_test_norm_vol,
+            shared_test_names,
+        ) = compute_static_obs_from_long_df(test_prices_df, config.window_size)
 
         checkpoint_dir = run_dir / f"checkpoints_fold_{fold_idx + 1}"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -221,11 +224,15 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
                 DummyVecEnv([lambda: Monitor(masked_eval_env)]), **dummy_vec_env_args
             )
             eval_env.obs_rms = train_env.obs_rms
+            evals_per_fold = config.timesteps // config.eval_freq
+            eval_step_offset = fold_idx * evals_per_fold
             eval_callback = UnifiedEvalCallback(
                 config=config,
-                checkpoint_dir=checkpoint_dir,
                 eval_env=eval_env,
                 trial=trial,
+                checkpoint_dir=checkpoint_dir,
+                fold_idx=fold_idx,
+                eval_step_offset=eval_step_offset,
             )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         verbose = 1 if trial is None else 0
@@ -235,7 +242,7 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             else None
         )
         policy_kwargs = {
-            "net_arch": dict(pi=[128, 128], qf=[128, 128]),
+            "net_arch": {"pi": [128, 128], "qf": [128, 128]},
             "activation_fn": torch.nn.ReLU,
             "normalize_images": False,
         }
@@ -273,13 +280,15 @@ def run_experiment(config: RLConfig, trial: optuna.trial.Trial | None = None) ->
             )
         total_training_steps: int = int(config.timesteps * (1.0 - TEST_FRACTION))
         entropy_callback = EntropyDecayCallback(
-            ent_coef_initial=config.ent_coef_initial, # High initial exploration
-            ent_coef_final=config.ent_coef_final, # Fine-tuned deterministic policy at convergence
+            ent_coef_initial=config.ent_coef_initial,  # High initial exploration
+            ent_coef_final=config.ent_coef_final,  # Fine-tuned deterministic policy at convergence
             total_timesteps=total_training_steps,
-            verbose=1,
+            verbose=verbose,
         )
 
-        callbacks = [entropy_callback]
+        callbacks: list[
+            EntropyDecayCallback | DashboardCallback | UnifiedEvalCallback
+        ] = [entropy_callback]
         if dashboard_callback is not None:
             callbacks.append(dashboard_callback)
         if eval_callback is not None:
