@@ -8,12 +8,12 @@ from crypto_rl.env.logging_utils import flush_log_parquet, init_log
 def reset_env(env, seed=None, options=None):
     """Reset the MinimalCryptoEnv to its initial state."""
     # Note: caller or helper handles super().reset(seed=seed) if needed.
-    if not env.disable_logging and env.log_buffer:
+    if not env.config.disable_logging and env.log_buffer:
         flush_log_parquet(env)
 
     env.episode_count += 1
 
-    if env.parquet_path is not None:
+    if env.config.parquet_path is not None:
         from crypto_rl.data import (
             get_valid_start_timestamps,
             read_window_from_timestamps,
@@ -24,10 +24,10 @@ def reset_env(env, seed=None, options=None):
                 env._cached_valid_open_times,
                 env._cached_symbols,
                 env._cached_k,
-            ) = get_valid_start_timestamps(env.parquet_path, n=env.n_rows)
+            ) = get_valid_start_timestamps(env.config.parquet_path, n=env.config.n_rows)
 
         new_df = read_window_from_timestamps(
-            env.parquet_path,
+            env.config.parquet_path,
             env._cached_valid_open_times,
             env._cached_symbols,
             env._cached_k,
@@ -93,10 +93,10 @@ def reset_env(env, seed=None, options=None):
         )
         precalculate_static_obs(env)
 
-    if not env.disable_logging:
+    if not env.config.disable_logging:
         init_log(env, run_id=env.run_id)
 
-    env.current_step = env.window_size
+    env.current_step = env.config.window_size
     env.cash = env.config.budget_initial
     env.holdings = np.zeros(env.num_assets, dtype=np.float32)
     env.portfolio_value = env.config.budget_initial

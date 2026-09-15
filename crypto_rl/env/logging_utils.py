@@ -17,7 +17,7 @@ def init_log(env, run_id: str = "default") -> None:
 
 def flush_log_parquet(env) -> None:
     """Write buffered log entries to a single Parquet file at the end of an episode."""
-    if not env.disable_logging and env.log_buffer and env.log_file_path:
+    if not env.config.disable_logging and env.log_buffer and env.log_file_path:
         try:
             df_log = pd.DataFrame(env.log_buffer)
             df_log.to_parquet(env.log_file_path, index=False)
@@ -38,7 +38,7 @@ def log_action(
     reward_components: dict | None = None,
 ) -> None:
     """Record step details into the in-memory log buffer."""
-    if env.disable_logging:
+    if env.config.disable_logging:
         return
     action_type_idx = int(action[0])
     action_types = {0: "HOLD", 1: "BUY", 2: "SELL"}

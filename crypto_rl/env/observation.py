@@ -18,7 +18,7 @@ def build_observation(env) -> np.ndarray:
     t = min(env.current_step, len(env.prices_arr) - 1)
 
     N = env.num_assets
-    W = env.window_size
+    W = env.config.window_size
     prices = env.prices_arr
 
     last_price = prices[t - 1]

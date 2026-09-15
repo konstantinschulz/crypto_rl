@@ -72,41 +72,20 @@ class MinimalCryptoEnv(gym.Env):
         self.htf_slope_1h_df = None
         self.htf_regime_24h_df = None
         self.config = config
-        self.window_size = config.window_size
         self.run_id = run_id
         self.fee_rate = config.fee_rate
         self.is_eval = is_eval
-        self.reward_type = config.reward_type
-        self.hold_cost_rate = config.hold_cost_rate
-        self.empty_buy_penalty = config.empty_buy_penalty
-        self.empty_sell_penalty = config.empty_sell_penalty
-        self.illegal_sell_penalty = config.illegal_sell_penalty
-        self.illegal_buy_penalty = config.illegal_buy_penalty
-        self.max_asset_allocation = config.max_asset_allocation
-        self.drawdown_penalty_coef = config.drawdown_penalty_coef
-        self.profit_bonus = config.profit_bonus
-        self.min_turnover_threshold = config.min_turnover_threshold
-        self.target_volatility = config.target_volatility
         # Per-asset performance metrics
         self.per_asset_realized_pnl = np.zeros(self.num_assets, dtype=np.float32)
         self.per_asset_trades = np.zeros(self.num_assets, dtype=np.int32)
         self.per_asset_wins = np.zeros(self.num_assets, dtype=np.int32)
         self.per_asset_fees = np.zeros(self.num_assets, dtype=np.float32)
 
-        self.max_single_step_allocation = config.max_single_step_allocation
-        self.disable_logging = config.disable_logging
         self.fees_paid_total = 0.0
         self.previous_drawdown = 0.0
         self.last_invalid_sell = False
-        self.action_dead_zone = config.action_dead_zone
-        self.hold_incentive = config.hold_incentive
         self.peak_portfolio_value = config.budget_initial
-        self.action_space_type = config.action_space_type
-        if self.action_space_type == "continuous":
-            self.action_space = spaces.Box(
-                low=0.0, high=1.0, shape=(self.num_assets + 1,), dtype=np.float32
-            )
-        elif self.action_space_type == "multidiscrete":
+        if self.config.action_space_type == "multidiscrete":
             self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
 
         # Dimension breakdown:
@@ -141,7 +120,7 @@ class MinimalCryptoEnv(gym.Env):
         # Pre-allocate dynamic slice buffers
         self.unrealised_pnl_buf = np.zeros(self.num_assets, dtype=np.float32)
 
-        self.current_step = self.window_size
+        self.current_step = config.window_size
         self.cash = config.budget_initial
         self.holdings = np.zeros(self.num_assets, dtype=np.float32)
         self.portfolio_value = config.budget_initial
@@ -156,18 +135,18 @@ class MinimalCryptoEnv(gym.Env):
         self.winning_trades_count = 0
         self.total_closed_trades = 0
         self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
-        self.parquet_path: str | None = config.parquet_path
-        self.n_rows: int = config.n_rows
 
         self._cached_valid_open_times: np.ndarray | None = None
         self._cached_symbols: list[str] | None = None
         self._cached_k: int | None = None
 
-        if self.parquet_path is not None and self.n_rows > 0:
+        if self.config.parquet_path is not None and self.config.n_rows > 0:
             from crypto_rl.data import get_valid_start_timestamps
 
             self._cached_valid_open_times, self._cached_symbols, self._cached_k = (
-                get_valid_start_timestamps(self.parquet_path, n=self.n_rows)
+                get_valid_start_timestamps(
+                    self.config.parquet_path, n=self.config.n_rows
+                )
             )
 
     # ------------------------------------------------------------------
@@ -180,7 +159,7 @@ class MinimalCryptoEnv(gym.Env):
 
     def close(self) -> None:
         """Cleanly close resources and flush pending logs."""
-        if not self.disable_logging and self.log_buffer:
+        if not self.config.disable_logging and self.log_buffer:
             flush_log_parquet(self)
         super().close()
 
@@ -194,4 +173,3 @@ class MinimalCryptoEnv(gym.Env):
 
     def render(self):
         pass
-

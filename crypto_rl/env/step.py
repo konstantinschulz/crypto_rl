@@ -4,7 +4,6 @@ from typing import Any
 import numpy as np
 
 from crypto_rl.env.action_processing import (
-    apply_continuous_action,
     apply_discrete_action,
 )
 from crypto_rl.env.logging_utils import log_action
@@ -77,7 +76,12 @@ def _process_sell_accounting(
         # Only calculate RL reward bonuses if we are actively stepping (not liquidating)
         if reward_components is not None:
             holding_period = env.current_step - env.entry_step[asset_idx]
-
+            # Reward cutting losses early instead of holding to the bottom
+            if trade_return < 0 and holding_period > 15:
+                # Small positive reinforcement for taking the loss and freeing up cash
+                reward_components["loss_cut_bonus"] = (
+                    abs(trade_return) * env.config.loss_cut_bonus
+                )
             # Turnover Penalty
             if holding_period < env.config.turnover_penalty_steps_threshold:
                 reward_components["turnover_penalty"] -= (
@@ -93,7 +97,7 @@ def _process_sell_accounting(
                 slope_mag = abs(env.htf_slope_1h_df.iat[env.current_step, asset_idx])
 
             slope_mult = 1.0 + (slope_mag * 10.0)
-            scaled_profit_bonus = env.profit_bonus * time_mult * slope_mult
+            scaled_profit_bonus = env.config.profit_bonus * time_mult * slope_mult
 
             reward_components["profit_bonus"] += (
                 scaled_profit_bonus * trade_return * trade_weight
@@ -117,20 +121,13 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     env.last_remap_note = None
     # --- SNAPSHOT HOLDINGS BEFORE ACTION ---
     old_holdings = np.copy(env.holdings)
-    if env.action_space_type == "continuous":
-        # Snapshot old asset exposure fraction before rebalancing (for logging)
-        _pre_asset_value = np.sum(env.holdings * current_prices)
-        _pre_port = env.cash + _pre_asset_value
-        _old_asset_frac = (_pre_asset_value / _pre_port) if _pre_port > 1e-8 else 0.0
-        # Continuous action processing moved to helper
-        fee_paid, trade_units = apply_continuous_action(env, action)
-    elif env.action_space_type == "multidiscrete":
+    if env.config.action_space_type == "multidiscrete":
         # Safely copy the action so we don't mutate Gym's read-only array
         mod_action = np.copy(action)
         # action[2] is 0-100. Convert to a 0.0 - 1.0 fraction
         amount_pct = mod_action[2] / 100.0
         # Force a HOLD if the requested amount is lower than the dead zone
-        if amount_pct < env.action_dead_zone:
+        if amount_pct < env.config.action_dead_zone:
             mod_action[0] = 0  # 0 = Hold
         # Ensure we use mod_action for logging later
         action = mod_action
@@ -149,9 +146,9 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
         "profit_bonus": 0.0,
         "drawdown_penalty": 0.0,
         "rule_penalties": -step_penalty,  # From invalid buys/sells
-        "hold_incentive": 0.0,
         "terminal_return": 0.0,
         "turnover_penalty": 0.0,
+        "capital_preservation_bonus": 0.0,
     }
 
     # --- CALCULATE PER-ASSET MULTI-TRADE METRICS ---
@@ -192,19 +189,24 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     ) / env.peak_portfolio_value
     delta_drawdown = min(0.0, current_drawdown - env.previous_drawdown)
     env.previous_drawdown = current_drawdown
-
+    safe_port_val = max(env.portfolio_value, 1e-8)
     # ==========================================
     # 1. Hold Cost / Inactivity Penalty
     # ==========================================
-    underwater_penalty = 0.0
     for i in range(env.num_assets):
         if env.holdings[i] > 1e-8 and env.avg_entry_price[i] > 1e-8:
             unrealized_pnl_pct = (
                 next_prices[i] - env.avg_entry_price[i]
             ) / env.avg_entry_price[i]
-            if unrealized_pnl_pct < -0.05:
-                underwater_penalty += env.hold_cost_rate
-    reward_components["hold_cost"] = -underwater_penalty
+            if unrealized_pnl_pct < -abs(env.config.hold_penalty_threshold):
+                # Position weight relative to total portfolio
+                position_weight = (env.holdings[i] * next_prices[i]) / safe_port_val
+                # Penalty ramps up as drawdown deepens
+                loss_severity = abs(unrealized_pnl_pct)
+                hold_penalty = (
+                    loss_severity * env.config.hold_cost_rate * 100.0 * position_weight
+                )
+                reward_components["hold_cost"] -= hold_penalty
 
     # ==========================================
     # 2. Explicit Fee Penalty in Reward
@@ -229,22 +231,36 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     market_return = np.mean(asset_returns)
 
     if env.reward_type == "excess_return":
-        alpha_diff = portfolio_return - market_return
+        # Benchmark Floor: In bear markets (market_return < 0),
+        # the baseline switches to 0.0 (Cash), requiring non-negative return for positive alpha.
+        effective_benchmark = max(0.0, market_return)
+        alpha_diff = portfolio_return - effective_benchmark
         if alpha_diff < 0:
             alpha_diff *= 1.2
         reward_components["market_alpha"] = alpha_diff
         reward_components["drawdown_penalty"] = (
-            delta_drawdown * env.drawdown_penalty_coef
+            delta_drawdown * env.config.drawdown_penalty_coef
         )
     else:
         reward_components["market_alpha"] = portfolio_return
 
-    # --- ACTION-SPECIFIC INCENTIVES (Optional) ---
-    if env.action_space_type == "continuous":
-        n_held = sum(
-            1 for i in range(env.num_assets) if abs(action[i]) <= env.action_dead_zone
-        )
-        reward_components["hold_incentive"] = n_held * env.hold_incentive
+    # ==========================================
+    # 3. Macro Cash Preference in Bear Regimes
+    # ==========================================
+    # Fetch current timestep t bounded to valid precalc matrix bounds
+    t = min(env.current_step, len(env.precalc_static_obs) - 1)
+
+    # Safely retrieve the bear index using the mapping from feature_utils
+    bear_idx = getattr(env, "macro_idx", {}).get("btc_bear", 4)
+    btc_is_bear = env.precalc_static_obs[t, bear_idx] > 0.5
+
+    if btc_is_bear:
+        cash_ratio = env.cash / safe_port_val
+        # Grant micro-bonus for holding >75% in cash during macro bear regimes
+        if cash_ratio > 0.75:
+            reward_components["capital_preservation_bonus"] = (
+                env.config.capital_preservation_bonus
+            )
 
     info: dict[str, Any] = {}
 
@@ -308,45 +324,21 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     # Explicitly clip raw rewards at the source to prevent variance explosion
     reward = np.clip(sum(reward_components.values()), -1.0, 1.0)
 
-    if not env.disable_logging:
-        if env.action_space_type == "continuous":
-            exp_act = np.exp(action - np.max(action))
-            weights = exp_act / np.sum(exp_act)
-            _new_asset_value = np.sum(env.holdings * next_prices)
-            _new_port = env.cash + _new_asset_value
-            _new_asset_frac = _new_asset_value / _new_port if _new_port > 1e-8 else 0.0
-            _delta_frac = _new_asset_frac - _old_asset_frac
-            _turnover_threshold = 1e-4
-            if _delta_frac > _turnover_threshold:
-                _log_action_type = 1
-            elif _delta_frac < -_turnover_threshold:
-                _log_action_type = 2
-            else:
-                _log_action_type = 0
-            eff_action = np.array(
-                [_log_action_type, np.argmax(weights[1:]), weights[0] * 100.0]
-            )
-            log_action(
-                env,
-                env.current_step,
-                eff_action,
-                reward,
-                prev_portfolio_value,
-                fee=fee_paid,
-                reward_components=reward_components,
-            )
-        elif env.action_space_type == "multidiscrete":
-            log_action(
-                env,
-                env.current_step,
-                action,
-                reward,
-                prev_portfolio_value,
-                trade_price=trade_price,
-                trade_units=trade_units,
-                fee=fee_paid,
-                reward_components=reward_components,
-            )
+    if (
+        not env.config.disable_logging
+        and env.config.action_space_type == "multidiscrete"
+    ):
+        log_action(
+            env,
+            env.current_step,
+            action,
+            reward,
+            prev_portfolio_value,
+            trade_price=trade_price,
+            trade_units=trade_units,
+            fee=fee_paid,
+            reward_components=reward_components,
+        )
 
     info |= {
         "fees_paid": env.fees_paid_total,

@@ -66,6 +66,12 @@ Examples:
         help=f"Initial cash budget for the agent (default {default_config.budget_initial})",
     )
     parser.add_argument(
+        "--capital-preservation-bonus",
+        type=float,
+        default=default_config.capital_preservation_bonus,
+        help=f"Bonus reward for preserving capital (default {default_config.capital_preservation_bonus}). Encourages the agent to avoid catastrophic losses and maintain a positive portfolio value.",
+    )
+    parser.add_argument(
         "--checkpoint",
         action="store_true",
         default=default_config.checkpoint,
@@ -102,6 +108,12 @@ Examples:
         help="Seed for data subset selection (default: None = random / no seed)",
     )
     parser.add_argument(
+        "--drawdown-penalty-coef",
+        type=float,
+        default=default_config.drawdown_penalty_coef,
+        help=f"Coefficient for drawdown penalty term (default {default_config.drawdown_penalty_coef})",
+    )
+    parser.add_argument(
         "--empty-buy-penalty",
         type=float,
         default=default_config.empty_buy_penalty,
@@ -127,9 +139,9 @@ Examples:
     )
     parser.add_argument(
         "--eval-freq",
-        type=int,
+        type=lambda x: x if x == "auto" else int(x),
         default=default_config.eval_freq,
-        help=f"Frequency (in steps) to run full episode evaluation for Calmar ratio (default: {default_config.eval_freq})",
+        help=f"Frequency (in steps) to run full episode evaluation for Calmar ratio (default: {default_config.eval_freq}). Use 'auto' to let the system determine the frequency automatically based on the number of timesteps.",
     )
     parser.add_argument(
         "--fee-rate",
@@ -155,10 +167,10 @@ Examples:
         ),
     )
     parser.add_argument(
-        "--hold-incentive",
+        "--hold-penalty-threshold",
         type=float,
-        default=default_config.hold_incentive,
-        help=f"Micro-incentive reward per asset remaining in the action dead zone (default {default_config.hold_incentive})",
+        default=default_config.hold_penalty_threshold,
+        help=f"Threshold for hold penalty (default: {default_config.hold_penalty_threshold}). If the unrealized PnL percentage falls below this threshold, a hold cost penalty will be applied.",
     )
     parser.add_argument(
         "--illegal-buy-penalty",
@@ -179,6 +191,12 @@ Examples:
         help="Learning rate for the PPO model",
     )
     parser.add_argument(
+        "--loss-cut-bonus",
+        type=float,
+        default=default_config.loss_cut_bonus,
+        help=f"Bonus reward for cutting losses early (default {default_config.loss_cut_bonus}). Encourages the agent to take small losses and free up cash for better opportunities.",
+    )
+    parser.add_argument(
         "--max-asset-allocation",
         type=float,
         default=default_config.max_asset_allocation,
@@ -194,7 +212,7 @@ Examples:
         "--max-single-step-allocation",
         type=float,
         default=default_config.max_single_step_allocation,
-        help=f"Maximum amount of cash to be allocated within a single step (default {default_config.max_single_step_allocation})",
+        help=f"Maximum amount of cash to be allocated within a single step (default {default_config.max_single_step_allocation}). Applies only to BUY actions.",
     )
     parser.add_argument(
         "--min-turnover-threshold",
@@ -227,12 +245,6 @@ Examples:
         help=f"Bonus reward for profitable trades (default {default_config.profit_bonus}). Encourages the agent to maximize the absolute amount of profit (realized PnL) for each trade.",
     )
     parser.add_argument(
-        "--drawdown-penalty-coef",
-        type=float,
-        default=default_config.drawdown_penalty_coef,
-        help=f"Coefficient for drawdown penalty term (default {default_config.drawdown_penalty_coef})",
-    )
-    parser.add_argument(
         "--reward-type",
         type=str,
         default=default_config.reward_type,
@@ -246,6 +258,18 @@ Examples:
         help=f"Number of last rows to load from parquet file (default: {default_config.n_rows}). "
         "Lower values use less RAM; higher values gives more training data. "
         "Uses pyarrow row-group-aware reading if available for memory efficiency.",
+    )
+    parser.add_argument(
+        "--net-arch-dim",
+        type=int,
+        default=default_config.net_arch_dim,
+        help=f"Number of neurons in each layer of the policy/value network (default: {default_config.net_arch_dim})",
+    )
+    parser.add_argument(
+        "--test-fraction",
+        type=float,
+        default=default_config.test_fraction,
+        help=f"Fraction of data to use for testing (default: {default_config.test_fraction})",
     )
     parser.add_argument(
         "--timesteps",

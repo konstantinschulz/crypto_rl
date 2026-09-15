@@ -23,7 +23,7 @@ sampling, giving a clean safety guarantee without relying solely on reward
 penalties. The discrete representation also reduces the policy's output
 dimension compared to per-asset continuous weights.
 
-#### `--action-dead-zone 0.60`
+#### `--action-dead-zone 0.50`
 
 In the multidiscrete action space, dimension 2 encodes trade size as an
 integer 0–100 (mapped to 0.0–1.0). Any value below `action_dead_zone`
@@ -39,10 +39,10 @@ up to 4 assets to hold equal-weight positions, providing a minimum level of
 diversification while still allowing meaningful concentration bets. Combined
 with 9 tradeable assets, the bot cannot "go all-in" on one position.
 
-#### `--max-single-step-allocation 0.15`
+#### `--max-single-step-allocation 0.50`
 
 Maximum fraction of available **cash** that can be spent in a single buy
-action. This was to the default of 0.15 because Optuna did not yet it and thus always used the default value.
+action. At 0.50, it allows the bot to spend a lot of cash at every single step, which gives it the power to commit quickly and heavily once a certain level of confidence is reached.
 
 #### `--min-turnover-threshold 0.10`
 
@@ -78,30 +78,29 @@ is applied to negative alpha to slightly penalise underperformance more than
 outperformance is rewarded (see `minimal_env.py` step logic). Rewards are
 clipped to [−1.0, +1.0] to prevent variance explosion.
 
-#### `--profit-bonus 0.08`
+#### `--profit-bonus 0.003`
 
 A shaped reward bonus applied on every **sell** that closes a position with
 positive realised PnL. The bonus is proportional to the trade return
 (`profit_bonus × trade_return`), so large profitable trades are rewarded more
-than small ones. At 0.08 this is a modest supplement to the main alpha signal;
+than small ones. At 0.003 this is a modest supplement to the main alpha signal;
 it is intended to reduce the agent's tendency to hold losing positions
 indefinitely.
 
-#### `--drawdown-penalty-coef 0.12`
+#### `--drawdown-penalty-coef 0.16`
 
 Coefficient applied to the **delta drawdown** each step. Only worsening
 drawdown steps are penalised (i.e., when the portfolio moves further below its
 peak); recoveries are not rewarded to avoid encouraging risk-seeking behaviour.
-It was decreased to 0.12 to allow trades enough breathing room to develop, even through short-term price fluctuations.
+It was decreased to 0.16 to allow trades enough breathing room to develop, even through short-term price fluctuations.
 
-#### `--hold-cost-rate 0.0`
+#### `--hold-cost-rate 0.0000007`
 
 A micro-penalty applied to any position whose unrealised PnL
-is worse than −5%. At 1-min bars, 1e-6 × 1440 min/day ≈ 0.14% per day — a
+is worse than −5%. At 1-min bars, 7e-7 × 1440 min/day ≈ 0.10% per day — a
 gentle but persistent drag on deeply underwater positions. The previous default
 (1e-4) was catastrophically high (~6%/hour) and caused the agent to immediately
-liquidate all holdings, so the value was reduced dramatically. The current value
-is 0 because Optuna did not yet test it, thus using the default of 0.0 .
+liquidate all holdings, so the value was reduced dramatically.
 
 #### `--hold-incentive 0.0`
 
@@ -121,27 +120,27 @@ already implicit: the dead zone remaps low-conviction actions to Hold for free.
 > therefore be large enough to train the policy away from these actions without
 > conditional masking.
 
-#### `--illegal-buy-penalty 0.00016` and `--illegal-sell-penalty 0.00016`
+#### `--illegal-buy-penalty 0.000005` and `--illegal-sell-penalty 0.000005`
 
 Penalty added to the step reward when the agent attempts to:
 
 - **Illegal buy**: BUY when cash ≈ 0 (cannot afford anything)
 - **Illegal sell**: SELL an asset with zero holdings (short-selling attempt)
 
-At 0.00016 these are smaller than the default `RULE_PENALTY` constant (5e-4). The rule_penalties cumulative value was **0.0** in the last eval, confirming the policy has successfully learned to
+At 0.000005 these are smaller than the default `RULE_PENALTY` constant (5e-4). The rule_penalties cumulative value was **0.0** in the last eval, confirming the policy has successfully learned to
 avoid illegal actions — the penalties have done their job and could potentially
 be reduced.
 
-#### `--empty-buy-penalty 0.00016` and `--empty-sell-penalty 0.00016`
+#### `--empty-buy-penalty 0.000005` and `--empty-sell-penalty 0.000005`
 
 Penalty for selecting Buy or Sell with a zero `amount_pct` (after the dead-zone
 remap resolves the amount). These catch the edge case where the policy outputs
 action_type=Buy (or action_type=Sell) but amount_pct=0. Like the illegal penalties, these discourage
 semantically empty trades.
 
-#### `--turnover-penalty 0.025` and `--turnover-penalty-steps-threshold 14`
+#### `--turnover-penalty 0.049` and `--turnover-penalty-steps-threshold 11`
 
-Penalty for selling positions too quickly (1 step = 1 minute). The goal is to punish the agent for executing many quick sells too impatiently. Sells afer an extended period of holding (> threshold) are not affected by this penalty.
+Penalty for selling positions too quickly (1 step = 1 minute). The goal is to punish the agent for executing many quick sells too impatiently. Sells afer an extended period of holding (> threshold) are not affected by this penalty. In the last evaluation, turnover penalties were 0.0, indicating that the model did not sell any assets overly quickly.
 
 ---
 
@@ -157,7 +156,7 @@ Proximal Policy Optimisation with **action masking** (`MaskablePPO` from
 3. On-policy updates are safer for non-stationary financial data than SAC's
    replay buffer, which can mix stale and fresh market regimes.
 
-#### `--gamma 0.992`
+#### `--gamma 0.988`
 
 Discount factor controlling the effective planning horizon. At γ = 0.99 the
 effective horizon is approximately 1/(1−γ) = 100 steps. At 1-min bars, this
@@ -165,45 +164,48 @@ corresponds to ~100 minutes of future reward lookahead — long enough to captur
 meaningful price moves but short enough to remain numerically stable. A higher
 gamma (0.999) would extend the horizon to ~1,000 steps but risks credit
 assignment problems with sparse rewards. *The Optuna best-params found
-γ = 0.992 (≈ 125-step horizon).*
+γ = 0.988 (≈ 83-step horizon).*
 
-#### `--learning-rate 0.00005`
+#### `--learning-rate 0.00001`
 
-Conservative learning rate (5e-5). The low rate reflects the noisy,
+Conservative learning rate (1e-5). The low rate reflects the noisy,
 non-stationary nature of financial time-series: large gradient steps risk
 catastrophic forgetting of previously learned patterns. The Optuna best-params
-suggested 5e-5; the current value allows marginally faster
-convergence while remaining conservative relative to the SB3 PPO default (3e-4).
+suggested 1e-5; the current value is conservative relative to the SB3 PPO default (3e-4).
 
-#### `--clip-range 0.29`
+#### `--clip-range 0.28`
 
-PPO's trust-region clipping parameter ε. At 0.29 this allows moderately large policy updates per
+PPO's trust-region clipping parameter ε. At 0.28 this allows moderately large policy updates per
 iteration while staying within the PPO stability bound. A typical ε of 0.2 is
-the SB3 default; 0.29 gives slightly more aggressive updates per rollout.
+the SB3 default; 0.28 gives slightly more aggressive updates per rollout.
 
 #### `--batch-size 128`
 
 Minibatch size for each gradient update within a PPO epoch. The rollout buffer
-holds `n_steps × n_envs = 512 × 9 = 4,608` transitions; these are divided into
-`4,608 / 128 = 36` minibatches per epoch. A smaller batch would
+holds `n_steps × n_envs = 1024 × 8 = 8,192` transitions; these are divided into
+`8,192 / 128 = 64` minibatches per epoch. A smaller batch would
 introduce more gradient noise, which can act as a regulariser in high-dimensional
 financial observation spaces. Confirmed by Optuna.
 
-#### `--n-steps 512`
+#### `--n-steps 1024`
 
 Number of environment steps collected per environment before a PPO update.
-Together with `n_envs = 9`, each update uses 4,608 total transitions. Shorter
-rollouts (e.g., 256 vs. default 512) would mean more frequent policy updates, improving
+Together with `n_envs = 8`, each update uses 8,192 total transitions. Shorter
+rollouts (e.g., 256) would mean more frequent policy updates, improving
 responsiveness to non-stationary data. Confirmed by Optuna as optimal.
 
-#### `--n-envs 9`
+#### `--n-envs 8`
 
 Number of parallel environment instances collecting experience simultaneously.
-9 envs balance CPU utilisation (each env is computationally lightweight but
+8 envs balance CPU utilisation (each env is computationally lightweight but
 observation calculation is non-trivial) against the overhead of Python
 process synchronisation with `DummyVecEnv`.
 
-#### `--ent-coef-initial 0.040` and `--ent-coef-final 0.003`
+#### `--net-arch-dim 256`
+
+Number of dimensions for the `pi` and `qf` parameters in the network architecture of the PPO algorithm. It was increased from 128 to 256 to allow the model to represent the complexities of a large dataset (about 4 years of 1-minute OHLCV data) more adequately. A value of 512 or higher would probably be too much, as the model might use this capacity to memorize the specific features of the training dataset. Smaller networks in financial reinforcement learning act as a regularizer for noisy crypto data with their very low signal-to-noise ratio.
+
+#### `--ent-coef-initial 0.067` and `--ent-coef-final 0.002`
 
 Entropy coefficient schedule, decayed linearly over the
 training run via `EntropyDecayCallback`. High initial entropy encourages broad
@@ -234,10 +236,10 @@ windows (30 × 1-min, 24 × 5-min, 24 × 60-min bars). The base window of 60
 was confirmed by Optuna as optimal. Increasing it further grows the observation
 vector linearly and is unlikely to add useful signal at this resolution.
 
-#### `--n-rows 400000`
+#### `--n-rows 1200000`
 
-Number of rows loaded from the Parquet file. At 1-min resolution, 400,000 rows
-≈ 277 days of multi-asset data, split 80/20 into train/test. Chosen as the
+Number of rows loaded from the Parquet file. At 1-min resolution, 1.2M rows
+≈ 2.9 years of multi-asset data, split 90/10 into train/test. Chosen as the
 maximum that fits comfortably in RAM while providing sufficient regime diversity
 (bull, bear, ranging) for generalisation.
 
@@ -253,17 +255,21 @@ multi-scale aggregation from scratch.
 
 ### Cross-validation & Evaluation
 
-#### `--cv-folds 3`
+#### `--cv-folds 1`
 
-A 3-fold train/test split (80%/20%) is used. Walk-forward cross-validation with
-multiple folds (`--cv-folds 3`) produced a more robust estimate of
+A 1-fold train/test split is used. Walk-forward cross-validation with
+multiple folds (`--cv-folds 3`) would produce a more robust estimate of
 out-of-sample performance but triples training time. CV-folds = 1 is the fast
-iteration default.
+iteration default, and is suitable for final single large training runs (after Optuna optimization with multi-fold CV per trial).
 
-#### `--timesteps 1500000`
+#### `--test-fraction 0.1`
 
-Total training steps. 1.5M was chosen as the minimum required for the policy to
-learn meaningful patterns from the 400k-row dataset; preliminary runs with fewer
+The fraction of the dataset that is used for evaluation. For large training runs, it is reduced from 0.2 to 0.1. Given a dataset size of about 1M rows, this still amounts to 100k rows for evaluation, which corresponds to about 70 days of 1-minute OHLCV data. Smaller runs (like in Optuna) still use the higher default value instead.
+
+#### `--timesteps 4500000`
+
+Total training steps. 4.5M was chosen as the minimum required for the policy to
+learn meaningful patterns from the 1.2M-row dataset; preliminary runs with fewer
 steps showed insufficient convergence.
 
 #### `--skip-multi-seed-eval`

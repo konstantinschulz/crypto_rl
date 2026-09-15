@@ -13,6 +13,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
+import warnings
 
 import numpy as np
 import optuna
@@ -296,7 +297,7 @@ class UnifiedEvalCallback(BaseCallback):
         self,
         config: RLConfig,
         eval_env: MinimalCryptoEnv | ActionMasker,
-        trial: Optional[optuna.trial.Trial],
+        trial: optuna.trial.Trial | None,
         checkpoint_dir: Path,
         fold_idx: int = 0,
         eval_step_offset: int = 0,
@@ -326,7 +327,14 @@ class UnifiedEvalCallback(BaseCallback):
             if self.trial is not None:
                 # Monotonically unique step across folds
                 report_step = self.eval_step_offset + self.eval_idx
-                self.trial.report(episode_reward, report_step)
+                # Suppress the harmless Optuna duplicate step warning without forcing a SQLite DB read
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=UserWarning,
+                        message=".*is already reported.*",
+                    )
+                    self.trial.report(episode_reward, report_step)
 
                 if self.trial.should_prune():
                     self.is_pruned = True

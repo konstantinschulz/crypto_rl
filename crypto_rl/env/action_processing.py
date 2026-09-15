@@ -21,8 +21,8 @@ def apply_continuous_action(env, action):
     target_weights = exp_action / np.sum(exp_action)
 
     # 1. Enforce Per-Asset Max Allocation Caps
-    base_cap = getattr(env, "max_asset_allocation", 1.0)
-    target_vol = getattr(env, "target_volatility", 0.02)
+    base_cap = env.config.max_asset_allocation
+    target_vol = env.config.target_volatility
 
     if hasattr(env, "asset_volatility"):
         current_vols = env.asset_volatility[env.current_step - 1]
@@ -54,8 +54,7 @@ def apply_continuous_action(env, action):
         old_weights[0] = 1.0
 
     turnover = np.sum(np.abs(target_weights - old_weights))
-    min_turnover_threshold = getattr(env, "min_turnover_threshold", 0.02)
-    if turnover < min_turnover_threshold:
+    if turnover < env.config.min_turnover_threshold:
         return 0.0, 0.0
 
     rebalance_cost = env.fee_rate * turnover * curr_portfolio_val / 2.0
@@ -109,7 +108,7 @@ def apply_discrete_action(env, action):
     curr_portfolio_val, _ = _get_current_portfolio_value(env)
     # 1. Catch and penalize invalid Sells
     if action_type == 2 and env.holdings[asset_idx] < 1e-8:
-        env._step_penalty += env.illegal_sell_penalty
+        env._step_penalty += env.config.illegal_sell_penalty
         env.last_remap_note = (
             f"illegal action (SELL, {env.asset_names[asset_idx]}) remapped to HOLD"
         )
@@ -117,7 +116,7 @@ def apply_discrete_action(env, action):
 
     # 2. Catch and penalize invalid Buys
     elif action_type == 1 and env.cash < 1e-8:
-        env._step_penalty += env.illegal_buy_penalty
+        env._step_penalty += env.config.illegal_buy_penalty
         env.last_remap_note = (
             f"illegal action (BUY, {env.asset_names[asset_idx]}) remapped to HOLD"
         )
@@ -128,13 +127,13 @@ def apply_discrete_action(env, action):
 
     if action_type == 1:  # BUY
         if amount_pct == 0.0:
-            step_penalty += env.empty_buy_penalty
+            step_penalty += env.config.empty_buy_penalty
             action_type = 0
             env.last_remap_note = "empty BUY remapped to HOLD"
         elif asset_idx < env.num_assets:
             # 2a. Enforce Per-Asset Max Allocation Caps (Volatility Scaled)
-            base_cap = getattr(env, "max_asset_allocation", 1.0)
-            target_vol = getattr(env, "target_volatility", 0.02)
+            base_cap = env.config.max_asset_allocation
+            target_vol = env.config.target_volatility
             if hasattr(env, "asset_volatility"):
                 current_vol = env.asset_volatility[env.current_step - 1][asset_idx]
                 dynamic_cap_pct = base_cap * (target_vol / (current_vol + 1e-8))
@@ -147,8 +146,7 @@ def apply_discrete_action(env, action):
             room_to_buy_usd = max(0.0, max_cap_usd - current_exposure_usd)
 
             # 2b. Enforce Single-Step Spend Cap
-            max_step_pct = getattr(env, "max_single_step_allocation", 1.0)
-            max_step_spend = env.cash * max_step_pct
+            max_step_spend = env.cash * env.config.max_single_step_allocation
 
             # Bound the target spend by requested pct, single-step limits, and overall asset exposure limits
             target_spend_usd = min(
@@ -173,7 +171,7 @@ def apply_discrete_action(env, action):
 
     elif action_type == 2:  # SELL
         if amount_pct == 0.0:
-            step_penalty += env.empty_sell_penalty
+            step_penalty += env.config.empty_sell_penalty
             action_type = 0
             env.last_remap_note = "empty SELL remapped to HOLD"
         elif asset_idx < env.num_assets:
