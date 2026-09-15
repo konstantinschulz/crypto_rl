@@ -230,7 +230,7 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
     )
     market_return = np.mean(asset_returns)
 
-    if env.reward_type == "excess_return":
+    if env.config.reward_type == "excess_return":
         # Benchmark Floor: In bear markets (market_return < 0),
         # the baseline switches to 0.0 (Cash), requiring non-negative return for positive alpha.
         effective_benchmark = max(0.0, market_return)

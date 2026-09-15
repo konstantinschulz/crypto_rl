@@ -102,12 +102,6 @@ gentle but persistent drag on deeply underwater positions. The previous default
 (1e-4) was catastrophically high (~6%/hour) and caused the agent to immediately
 liquidate all holdings, so the value was reduced dramatically.
 
-#### `--hold-incentive 0.0`
-
-Micro-reward for assets sitting in the action dead zone (continuous mode only).
-Disabled (0.0) for the current multidiscrete mode because the hold signal is
-already implicit: the dead zone remaps low-conviction actions to Hold for free.
-
 ---
 
 ### Penalty Structure

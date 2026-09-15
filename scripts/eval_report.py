@@ -6,18 +6,18 @@ import json
 import numpy as np
 import pandas as pd
 
+from crypto_rl.env.logging_utils import selective_logger
 from crypto_rl.env.metrics import get_calmar_from_returns
 
 
-def eval_report():
+def eval_report(logger):
     f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
     with open(f2) as f3:
         state = json.load(f3)
         keys = ["technical", "finance", "explainability"]
         for key in keys:
             if key in state:
-                print(f"{key}: {json.dumps(state[key], indent=2)}")
-
+                logger.info(f"{key}: {json.dumps(state[key], indent=2)}")
     f = sorted(glob.glob("logs/run-*/actions_eval_*.parquet"))[-1]
     df = pd.read_parquet(f)
     pv_series = df["portfolio"].to_numpy()
@@ -49,14 +49,15 @@ def eval_report():
         where=peak > 1e-8,
     )
 
-    print(
+    logger.info(
         f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd.min() * 100:.1f}%  FinalPV={pv_series[-1]:.2f}"
     )
     traded_symbols: set[str] = set(df["symbol"].tolist())
-    print(
+    logger.info(
         f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}"
     )
 
 
 if __name__ == "__main__":
-    eval_report()
+    with selective_logger("") as logger:
+        eval_report(logger)

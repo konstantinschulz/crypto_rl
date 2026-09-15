@@ -34,12 +34,12 @@ def objective(trial: optuna.trial.Trial, override_params: dict | None = None):
         return method(name, *s_args, **s_kwargs)
 
     # this is one central value for empty_buy_penalty, empty_sell_penalty, illegal_buy_penalty, illegal_sell_penalty
-    rule_penalty = suggest("rule_penalty", trial.suggest_float, 1e-6, 1e-3, log=True)
+    rule_penalty = suggest("rule_penalty", trial.suggest_float, 1e-7, 1e-4, log=True)
     # Let Optuna overwrite specific targets
     trial_config: RLConfig = replace(
         base_config,
         action_dead_zone=suggest(
-            "action_dead_zone", trial.suggest_float, 0.50, 0.75, step=0.05
+            "action_dead_zone", trial.suggest_float, 0.35, 0.65, step=0.05
         ),
         batch_size=suggest(
             "batch_size", trial.suggest_categorical, [64, 128, 256]
@@ -51,46 +51,45 @@ def objective(trial: optuna.trial.Trial, override_params: dict | None = None):
         cv_folds=3,
         dashboard=False,
         drawdown_penalty_coef=suggest(
-            "drawdown_penalty_coef", trial.suggest_float, 0.05, 0.35
+            "drawdown_penalty_coef", trial.suggest_float, 0.01, 0.30
         ),
         empty_buy_penalty=rule_penalty,
         empty_sell_penalty=rule_penalty,
         ent_coef_final=suggest(
-            "ent_coef_final", trial.suggest_float, 0.0005, 0.005, log=True
+            "ent_coef_final", trial.suggest_float, 0.0001, 0.01, log=True
         ),
         ent_coef_initial=suggest(
-            "ent_coef_initial", trial.suggest_float, 0.02, 0.08, log=True
+            "ent_coef_initial", trial.suggest_float, 0.03, 0.10, log=True
         ),
-        gamma=suggest("gamma", trial.suggest_float, 0.985, 0.998),
-        hold_cost_rate=suggest("hold_cost_rate", trial.suggest_float, 0.0, 1e-5),
+        gamma=suggest("gamma", trial.suggest_float, 0.982, 0.995),
+        hold_cost_rate=suggest(
+            "hold_cost_rate", trial.suggest_float, 1e-7, 1e-4, log=True
+        ),
         hold_penalty_threshold=suggest(
             "hold_penalty_threshold", trial.suggest_float, -0.10, -0.01
         ),
         illegal_buy_penalty=rule_penalty,
         illegal_sell_penalty=rule_penalty,
         learning_rate=suggest(
-            "learning_rate", trial.suggest_float, 1e-5, 1e-4, log=True
+            "learning_rate", trial.suggest_float, 5e-6, 5e-5, log=True
         ),
         loss_cut_bonus=suggest("loss_cut_bonus", trial.suggest_float, 0.0, 0.005),
         max_asset_allocation=suggest(
             "max_asset_allocation", trial.suggest_float, 0.10, 0.50, step=0.05
         ),
         max_single_step_allocation=suggest(
-            "max_single_step_allocation", trial.suggest_float, 0.05, 0.50, step=0.05
+            "max_single_step_allocation", trial.suggest_float, 0.30, 0.70, step=0.05
         ),
-        # min_turnover_threshold=trial.suggest_float(
-        #     "min_turnover_threshold", 0.05, 0.15
-        # ), # NOT APPLICABLE TO MULTIDISCRETE MODE
-        n_envs=suggest("n_envs", trial.suggest_int, 5, 10),
+        n_envs=suggest("n_envs", trial.suggest_int, 6, 12),
         n_rows=400000,  # 10000 / 20000  / 40000
         n_steps=suggest(
-            "n_steps", trial.suggest_categorical, [256, 512, 1024]
+            "n_steps", trial.suggest_categorical, [512, 1024, 2048]
         ),  # 256, 2048, 4096
-        profit_bonus=suggest("profit_bonus", trial.suggest_float, 0.0, 0.15),
+        profit_bonus=suggest("profit_bonus", trial.suggest_float, 0.0, 0.100, step=0.005),
         timesteps=1500000,  # 30000 / 50000 / 100000 / 1200000 / 1500000
-        turnover_penalty=suggest("turnover_penalty", trial.suggest_float, 0.005, 0.15),
+        turnover_penalty=suggest("turnover_penalty", trial.suggest_float, 0.010, 0.30),
         turnover_penalty_steps_threshold=suggest(
-            "turnover_penalty_steps_threshold", trial.suggest_int, 5, 30
+            "turnover_penalty_steps_threshold", trial.suggest_int, 5, 25
         ),
         window_size=suggest(
             "window_size", trial.suggest_categorical, [30, 60, 120, 240]

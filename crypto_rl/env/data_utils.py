@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+from crypto_rl.config import RLConfig
 from crypto_rl.env.feature_utils import precalculate_static_obs
 
 
@@ -35,19 +36,29 @@ def pivot_ohlcv(prices_df: pd.DataFrame):
         htf_slope_15m_df = _pivot_and_align("htf_slope_15m")
     else:
         ema_15 = close_df.ewm(span=15, adjust=False).mean()
-        htf_slope_15m_df = ((ema_15 - ema_15.shift(15)) / (close_df + 1e-8)).fillna(0.0).astype(np.float32)
+        htf_slope_15m_df = (
+            ((ema_15 - ema_15.shift(15)) / (close_df + 1e-8))
+            .fillna(0.0)
+            .astype(np.float32)
+        )
 
     if "htf_slope_1h" in prices_df.columns:
         htf_slope_1h_df = _pivot_and_align("htf_slope_1h")
     else:
         ema_60 = close_df.ewm(span=60, adjust=False).mean()
-        htf_slope_1h_df = ((ema_60 - ema_60.shift(60)) / (close_df + 1e-8)).fillna(0.0).astype(np.float32)
+        htf_slope_1h_df = (
+            ((ema_60 - ema_60.shift(60)) / (close_df + 1e-8))
+            .fillna(0.0)
+            .astype(np.float32)
+        )
 
     if "htf_regime_24h" in prices_df.columns:
         htf_regime_24h_df = _pivot_and_align("htf_regime_24h")
     else:
         ema_1440 = close_df.ewm(span=1440, adjust=False).mean()
-        htf_regime_24h_df = ((close_df - ema_1440) / (ema_1440 + 1e-8)).fillna(0.0).astype(np.float32)
+        htf_regime_24h_df = (
+            ((close_df - ema_1440) / (ema_1440 + 1e-8)).fillna(0.0).astype(np.float32)
+        )
 
     # Destroy the remaining skeleton of the source DataFrame (symbol, open_time)
     del prices_df
@@ -66,7 +77,7 @@ def pivot_ohlcv(prices_df: pd.DataFrame):
 
 
 def compute_static_obs_from_long_df(
-    long_df: pd.DataFrame, window_size: int
+    long_df: pd.DataFrame, config: RLConfig
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Pivot long-format OHLCV DataFrame and pre-calculate static observations.
 
@@ -112,7 +123,7 @@ def compute_static_obs_from_long_df(
         htf_slope_15m_df=htf_slope_15m_df,
         htf_slope_1h_df=htf_slope_1h_df,
         htf_regime_24h_df=htf_regime_24h_df,
-        window_size=window_size,
+        config=config,
         num_assets=num_assets,
     )
     precalculate_static_obs(temp_env)

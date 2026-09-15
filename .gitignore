@@ -6,6 +6,7 @@
 .aider*
 .env
 .jscpd.json
+*.log
 *.parquet
 *.profile
 __pycache__/

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import logging
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ from crypto_rl.config import RLConfig
 from crypto_rl.data import get_walk_forward_splits, read_n_rows
 from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import compute_static_obs_from_long_df
+from crypto_rl.env.logging_utils import selective_logger
 from crypto_rl.env.metrics import calculate_calmar_ratio
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from scripts.eval_log_action_counter import eval_log_action_counter
@@ -40,9 +42,14 @@ dummy_vec_env_args: dict[str, Any] = {
 }
 
 
-def print_if_not_trial(trial: optuna.trial.Trial | None = None, msg: str = ""):
+def print_if_not_trial(
+    logger, log_level: int, trial: optuna.trial.Trial | None = None, msg: str = ""
+):
     if trial is None:
-        print(msg)
+        if log_level == logging.INFO:
+            logger.info(msg)
+        elif log_level == logging.DEBUG:
+            logger.debug(msg)
 
 
 def _to_datetime(ts):
@@ -84,580 +91,680 @@ def run_experiment(
     ckpt_mgr: CVCheckpointManager = CVCheckpointManager()
     # Seed for reproducibility of dataset split
     np.random.seed(config.data_seed)
-    print_if_not_trial(trial, "1. Loading raw data...")
-    raw_df = read_n_rows(str(config.parquet_path), config.n_rows)
-    if config.eval_freq == "auto":
-        config.eval_freq = max(2000, config.timesteps // 10)
-    print_if_not_trial(trial, f"Evaluation frequency: after every {config.eval_freq} steps")
-    if config.cv_folds > 1:
-        splits = get_walk_forward_splits(raw_df, n_folds=config.cv_folds)
-    else:
-        n_test = round(len(raw_df) * config.test_fraction)
-        n_train = len(raw_df) - n_test
-        splits = [(raw_df.iloc[:n_train], raw_df.iloc[n_train:])]
+    with selective_logger("latest_results.log") as logger:
+        print_if_not_trial(logger, logging.DEBUG, trial, "1. Loading raw data...")
+        raw_df = read_n_rows(str(config.parquet_path), config.n_rows)
+        if config.eval_freq == "auto":
+            config.eval_freq = max(2000, config.timesteps // 10)
+        print_if_not_trial(
+            logger,
+            logging.DEBUG,
+            trial,
+            f"Evaluation frequency: after every {config.eval_freq} steps",
+        )
+        if config.cv_folds > 1:
+            splits = get_walk_forward_splits(raw_df, n_folds=config.cv_folds)
+        else:
+            n_test = round(len(raw_df) * config.test_fraction)
+            n_train = len(raw_df) - n_test
+            splits = [(raw_df.iloc[:n_train], raw_df.iloc[n_train:])]
 
-    fold_scores = []
-    n_splits = len(splits)
-    print_if_not_trial(
-        trial, f"Dataset split into {n_splits}-fold walk-forward cross-validation."
-    )
+        fold_scores = []
+        n_splits = len(splits)
+        print_if_not_trial(
+            logger,
+            logging.DEBUG,
+            trial,
+            f"Dataset split into {n_splits}-fold walk-forward cross-validation.",
+        )
 
-    run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
-    base_run_dir = Path(config.base_run_dir)
-    run_dir = base_run_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    state_file = run_dir / "state.json"
-    index_file = Path("rl_dashboard_index.json")
-    fold_results = []
-    last_model = None
-    last_test_prices = None
-    last_test_static = None
-    last_test_names = None
-    last_prices_arr = None
-    last_asset_names: list[str] = []
-    last_eval_reward_totals = {}
-    last_eval_portfolio_values = []
-    last_eval_realized_pnl = []
-    last_eval_steps = 0
-    last_model = None
-    env_config = dataclasses.replace(
-        config, disable_logging=trial is not None, parquet_path=None, n_rows=0
-    )
-    shared_env_config = dataclasses.replace(config, disable_logging=True)
-    evals_per_fold = config.timesteps // config.eval_freq
-    # 1. Fetch completed folds if resuming a specific trial
-    completed_folds = {}
-    if trial is not None:
-        existing_ckpt = ckpt_mgr.load_checkpoint(trial.number)
-        if existing_ckpt:
-            completed_folds = existing_ckpt.get("completed_folds", {})
-    try:
-        for fold_idx, (train_prices_df, test_prices_df) in enumerate(splits):
-            print_if_not_trial(trial, f"\n=== Fold {fold_idx + 1}/{n_splits} ===")
-            str_fold = str(fold_idx)
-            # ==========================================
-            # 2. RESUME FOLD FROM CHECKPOINT IF PRESENT
-            # ==========================================
-            if str_fold in completed_folds:
-                cached_score = completed_folds[str_fold]["score"]
-                print(
-                    f"--> [Fold {fold_idx + 1}/{config.cv_folds}] "
-                    f"RESUMED from checkpoint. Score: {cached_score:.4f}"
+        run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
+        base_run_dir = Path(config.base_run_dir)
+        run_dir = base_run_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        state_file = run_dir / "state.json"
+        index_file = Path("rl_dashboard_index.json")
+        fold_results = []
+        last_model = None
+        last_test_prices = None
+        last_test_static = None
+        last_test_names = None
+        last_prices_arr = None
+        last_asset_names: list[str] = []
+        last_eval_reward_totals = {}
+        last_eval_portfolio_values = []
+        last_eval_realized_pnl = []
+        last_eval_steps = 0
+        last_model = None
+        env_config = dataclasses.replace(
+            config, disable_logging=trial is not None, parquet_path=None, n_rows=0
+        )
+        shared_env_config = dataclasses.replace(config, disable_logging=True)
+        evals_per_fold = config.timesteps // config.eval_freq
+        # 1. Fetch completed folds if resuming a specific trial
+        completed_folds = {}
+        if trial is not None:
+            existing_ckpt = ckpt_mgr.load_checkpoint(trial.number)
+            if existing_ckpt:
+                completed_folds = existing_ckpt.get("completed_folds", {})
+        try:
+            for fold_idx, (train_prices_df, test_prices_df) in enumerate(splits):
+                print_if_not_trial(
+                    logger,
+                    logging.DEBUG,
+                    trial,
+                    f"\n=== Fold {fold_idx + 1}/{n_splits} ===",
                 )
-                fold_scores.append(cached_score)
-                # Monotonically report cached step score to Optuna to maintain pruning curves
-                if trial is not None:
-                    report_step = (fold_idx + 1) * evals_per_fold
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings(
-                            "ignore",
-                            category=UserWarning,
-                            message=".*is already reported.*",
-                        )
-                        trial.report(cached_score, report_step)
+                str_fold = str(fold_idx)
+                # ==========================================
+                # 2. RESUME FOLD FROM CHECKPOINT IF PRESENT
+                # ==========================================
+                if str_fold in completed_folds:
+                    cached_score = completed_folds[str_fold]["score"]
+                    print_if_not_trial(
+                        logger,
+                        logging.DEBUG,
+                        None,
+                        f"--> [Fold {fold_idx + 1}/{config.cv_folds}] "
+                        f"RESUMED from checkpoint. Score: {cached_score:.4f}",
+                    )
+                    fold_scores.append(cached_score)
+                    # Monotonically report cached step score to Optuna to maintain pruning curves
+                    if trial is not None:
+                        report_step = (fold_idx + 1) * evals_per_fold
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings(
+                                "ignore",
+                                category=UserWarning,
+                                message=".*is already reported.*",
+                            )
+                            trial.report(cached_score, report_step)
 
-                # Instantly skip to the next fold
-                continue
-            # ==========================================
-            # 2. RUN LIVE FOLD TRAINING & EVALUATION
-            # ==========================================
-            print(f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold...")
-            eval_step_offset = fold_idx * evals_per_fold
-
-            start_ts_raw = train_prices_df["open_time"].min()
-            end_ts_raw = train_prices_df["open_time"].max()
-            training_start_str = (
-                _to_datetime(start_ts_raw)
-                .tz_localize("UTC")
-                .strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-            training_end_str = (
-                _to_datetime(end_ts_raw)
-                .tz_localize("UTC")
-                .strftime("%Y-%m-%d %H:%M:%S %Z")
-            )
-            prices_arr, static_obs, norm_vol_arr, asset_names = (
-                compute_static_obs_from_long_df(train_prices_df, config.window_size)
-            )
-            last_prices_arr = prices_arr
-            last_asset_names = asset_names
-
-            print_if_not_trial(trial, "2. Setting up environment...")
-
-            def make_env():
-                e = MinimalCryptoEnv(
-                    config=env_config,
-                    prices_arr=prices_arr,
-                    static_obs=static_obs,
-                    norm_vol_arr=norm_vol_arr,
-                    asset_names=asset_names,
-                    run_id=run_id,
+                    # Instantly skip to the next fold
+                    continue
+                # ==========================================
+                # 2. RUN LIVE FOLD TRAINING & EVALUATION
+                # ==========================================
+                print_if_not_trial(
+                    logger,
+                    logging.DEBUG,
+                    None,
+                    f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold...",
                 )
-                # Apply ActionMasker directly to the base gym environment
-                return ActionMasker(e, get_action_mask)
-
-            env_fns = [make_env for _ in range(config.n_envs)]
-            # Vectorize and Normalize AFTER masking
-            train_env = VecNormalize(
-                DummyVecEnv(env_fns),
-                norm_reward=True,
-                norm_obs=True,
-                gamma=config.gamma,
-                clip_obs=CLIP_OBS,
-                clip_reward=5.0,
-            )
-            dashboard_callback = None
-            checkpoint_callback = None
-
-            if config.dashboard and fold_idx == 0:
-                try:
-                    index = {"runs": []}
-                    if index_file.exists():
-                        with open(index_file, "r", encoding="utf-8") as f:
-                            index = json.load(f)
-                    run_entry = {
-                        "run_id": run_id,
-                        "state_file": str(state_file),
-                        "mode": "minimal",
-                        "status": "initializing",
-                        "started_at": datetime.now(UTC).strftime(
-                            "%Y-%m-%d %H:%M:%S UTC"
-                        ),
-                    }
-                    runs = index.get("runs", [])
-                    runs.insert(0, run_entry)
-                    index["runs"] = runs
-                    index["latest_model_run"] = run_entry
-                    with open(index_file, "w", encoding="utf-8") as f:
-                        json.dump(index, f, indent=2)
-                except Exception:
-                    pass
-
-            if config.dashboard:
-                dashboard_callback = DashboardCallback(
-                    state_path=state_file,
-                    config=config,
-                    run_id=run_id,
-                    total_timesteps=config.timesteps,
-                    num_data_rows=config.n_rows,
-                    training_start_str=training_start_str,
-                    training_end_str=training_end_str,
-                )
-
-            print_if_not_trial(trial, "Computing test observations...")
-            (
-                shared_test_prices,
-                shared_test_static,
-                shared_test_norm_vol,
-                shared_test_names,
-            ) = compute_static_obs_from_long_df(test_prices_df, config.window_size)
-
-            checkpoint_dir = run_dir / f"checkpoints_fold_{fold_idx + 1}"
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            shared_env_args = {
-                "prices_arr": shared_test_prices,
-                "static_obs": shared_test_static,
-                "norm_vol_arr": shared_test_norm_vol,
-                "asset_names": shared_test_names,
-                "run_id": run_id,
-                "is_eval": True,
-                "config": shared_env_config,
-            }
-            eval_callback = None
-            eval_env = None
-            if config.checkpoint or trial is not None:
-                raw_eval_env = MinimalCryptoEnv(**shared_env_args)
-                masked_eval_env = ActionMasker(raw_eval_env, get_action_mask)
-                eval_env = VecNormalize(
-                    DummyVecEnv([lambda: Monitor(masked_eval_env)]),
-                    **dummy_vec_env_args,
-                )
-                eval_env.obs_rms = train_env.obs_rms
                 eval_step_offset = fold_idx * evals_per_fold
-                eval_callback = UnifiedEvalCallback(
-                    config=config,
-                    eval_env=eval_env,
-                    trial=trial,
-                    checkpoint_dir=checkpoint_dir,
-                    fold_idx=fold_idx,
-                    eval_step_offset=eval_step_offset,
+
+                start_ts_raw = train_prices_df["open_time"].min()
+                end_ts_raw = train_prices_df["open_time"].max()
+                training_start_str = (
+                    _to_datetime(start_ts_raw)
+                    .tz_localize("UTC")
+                    .strftime("%Y-%m-%d %H:%M:%S %Z")
                 )
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            verbose = 1 if trial is None else 0
-            seed = (
-                (config.data_seed + fold_idx * 100)
-                if config.data_seed is not None
-                else None
-            )
-            policy_kwargs = {
-                "net_arch": {
-                    "pi": [config.net_arch_dim, config.net_arch_dim],
-                    "qf": [config.net_arch_dim, config.net_arch_dim],
-                },
-                "activation_fn": torch.nn.ReLU,
-                "normalize_images": False,
-            }
-            sb3_args_common: dict[str, Any] = {
-                "device": device,
-                "verbose": verbose,
-                "seed": seed,
-                "n_steps": config.n_steps,
-                "batch_size": config.batch_size,
-                "learning_rate": config.learning_rate,
-            }
-            if config.algorithm == "SAC":
+                training_end_str = (
+                    _to_datetime(end_ts_raw)
+                    .tz_localize("UTC")
+                    .strftime("%Y-%m-%d %H:%M:%S %Z")
+                )
+                prices_arr, static_obs, norm_vol_arr, asset_names = (
+                    compute_static_obs_from_long_df(train_prices_df, config)
+                )
+                last_prices_arr = prices_arr
+                last_asset_names = asset_names
+
                 print_if_not_trial(
-                    trial, f"3. Training SAC model for Fold {fold_idx + 1}..."
+                    logger, logging.DEBUG, trial, "2. Setting up environment..."
                 )
-                model = SAC(
-                    env=train_env,
-                    policy="MlpPolicy",
-                    ent_coef="auto",
+
+                def make_env():
+                    e = MinimalCryptoEnv(
+                        config=env_config,
+                        prices_arr=prices_arr,
+                        static_obs=static_obs,
+                        norm_vol_arr=norm_vol_arr,
+                        asset_names=asset_names,
+                        run_id=run_id,
+                    )
+                    # Apply ActionMasker directly to the base gym environment
+                    return ActionMasker(e, get_action_mask)
+
+                env_fns = [make_env for _ in range(config.n_envs)]
+                # Vectorize and Normalize AFTER masking
+                train_env = VecNormalize(
+                    DummyVecEnv(env_fns),
+                    norm_reward=True,
+                    norm_obs=True,
                     gamma=config.gamma,
-                    policy_kwargs=policy_kwargs,
-                    **sb3_args_common,
+                    clip_obs=CLIP_OBS,
+                    clip_reward=5.0,
                 )
-            else:
+                dashboard_callback = None
+                checkpoint_callback = None
+
+                if config.dashboard and fold_idx == 0:
+                    try:
+                        index = {"runs": []}
+                        if index_file.exists():
+                            with open(index_file, "r", encoding="utf-8") as f:
+                                index = json.load(f)
+                        run_entry = {
+                            "run_id": run_id,
+                            "state_file": str(state_file),
+                            "mode": "minimal",
+                            "status": "initializing",
+                            "started_at": datetime.now(UTC).strftime(
+                                "%Y-%m-%d %H:%M:%S UTC"
+                            ),
+                        }
+                        runs = index.get("runs", [])
+                        runs.insert(0, run_entry)
+                        index["runs"] = runs
+                        index["latest_model_run"] = run_entry
+                        with open(index_file, "w", encoding="utf-8") as f:
+                            json.dump(index, f, indent=2)
+                    except Exception:
+                        pass
+
+                if config.dashboard:
+                    dashboard_callback = DashboardCallback(
+                        state_path=state_file,
+                        config=config,
+                        run_id=run_id,
+                        total_timesteps=config.timesteps,
+                        num_data_rows=config.n_rows,
+                        training_start_str=training_start_str,
+                        training_end_str=training_end_str,
+                    )
+
                 print_if_not_trial(
-                    trial, f"3. Training PPO model for Fold {fold_idx + 1}..."
+                    logger, logging.DEBUG, trial, "Computing test observations..."
                 )
-                model = MaskablePPO(
-                    env=train_env,
-                    policy="MlpPolicy",
-                    ent_coef=config.ent_coef_initial,
-                    clip_range=config.clip_range,
-                    policy_kwargs=policy_kwargs,
-                    **sb3_args_common,
+                (
+                    shared_test_prices,
+                    shared_test_static,
+                    shared_test_norm_vol,
+                    shared_test_names,
+                ) = compute_static_obs_from_long_df(test_prices_df, config)
+
+                checkpoint_dir = run_dir / f"checkpoints_fold_{fold_idx + 1}"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                shared_env_args = {
+                    "prices_arr": shared_test_prices,
+                    "static_obs": shared_test_static,
+                    "norm_vol_arr": shared_test_norm_vol,
+                    "asset_names": shared_test_names,
+                    "run_id": run_id,
+                    "is_eval": True,
+                    "config": shared_env_config,
+                }
+                eval_callback = None
+                eval_env = None
+                if config.checkpoint or trial is not None:
+                    raw_eval_env = MinimalCryptoEnv(**shared_env_args)
+                    masked_eval_env = ActionMasker(raw_eval_env, get_action_mask)
+                    eval_env = VecNormalize(
+                        DummyVecEnv([lambda: Monitor(masked_eval_env)]),
+                        **dummy_vec_env_args,
+                    )
+                    eval_env.obs_rms = train_env.obs_rms
+                    eval_step_offset = fold_idx * evals_per_fold
+                    eval_callback = UnifiedEvalCallback(
+                        config=config,
+                        eval_env=eval_env,
+                        trial=trial,
+                        checkpoint_dir=checkpoint_dir,
+                        fold_idx=fold_idx,
+                        eval_step_offset=eval_step_offset,
+                    )
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                verbose = 1 if trial is None else 0
+                seed = (
+                    (config.data_seed + fold_idx * 100)
+                    if config.data_seed is not None
+                    else None
                 )
-            total_training_steps: int = int(config.timesteps * (1.0 - config.test_fraction))
-            entropy_callback = EntropyDecayCallback(
-                ent_coef_initial=config.ent_coef_initial,  # High initial exploration
-                ent_coef_final=config.ent_coef_final,  # Fine-tuned deterministic policy at convergence
-                total_timesteps=total_training_steps,
-                verbose=verbose,
-            )
-
-            callbacks: list[
-                EntropyDecayCallback | DashboardCallback | UnifiedEvalCallback
-            ] = [entropy_callback]
-            if dashboard_callback is not None:
-                callbacks.append(dashboard_callback)
-            if eval_callback is not None:
-                callbacks.append(eval_callback)
-            if checkpoint_callback is not None:
-                callbacks.append(checkpoint_callback)
-
-            if callbacks:
-                model.learn(total_timesteps=config.timesteps, callback=callbacks)
-            else:
-                model.learn(total_timesteps=config.timesteps)
-
-            # Pruning cleanup
-            if eval_callback is not None:
-                eval_env.close()
-                if eval_callback.is_pruned:
-                    train_env.close()
-                    raise optuna.exceptions.TrialPruned()
-
-            print_if_not_trial(
-                trial, f"4. Testing trained model for Fold {fold_idx + 1}..."
-            )
-            shared_env_args_with_logging = shared_env_args.copy()
-            shared_env_args_with_logging["config"] = dataclasses.replace(
-                shared_env_config, disable_logging=False
-            )
-            test_env_raw = ActionMasker(
-                MinimalCryptoEnv(**shared_env_args_with_logging), get_action_mask
-            )
-            test_env = VecNormalize(
-                DummyVecEnv([lambda: test_env_raw]), **dummy_vec_env_args
-            )
-            # Inherit the trained reality
-            test_env.obs_rms = train_env.obs_rms
-            # VecEnv reset returns ONLY obs (1 value)
-            obs = test_env.reset()
-            done = False
-            eval_steps = 0
-            base_test_env: MinimalCryptoEnv = test_env.venv.envs[0].unwrapped
-            eval_initial_portfolio_value = base_test_env.portfolio_value
-            eval_portfolio_values = [
-                {"step": 0, "value": float(eval_initial_portfolio_value)}
-            ]
-            eval_realized_pnl = [{"step": 0, "value": 0.0}]
-            eval_closed_trades = 0
-            eval_winning_trades = 0
-            eval_reward_totals = {}
-            info: dict[str, Any] = {}
-            while not done:
-                action_masks = np.expand_dims(
-                    test_env.venv.envs[0].action_masks(), axis=0
+                policy_kwargs = {
+                    "net_arch": {
+                        "pi": [config.net_arch_dim, config.net_arch_dim],
+                        "qf": [config.net_arch_dim, config.net_arch_dim],
+                    },
+                    "activation_fn": torch.nn.ReLU,
+                    "normalize_images": False,
+                }
+                sb3_args_common: dict[str, Any] = {
+                    "device": device,
+                    "verbose": verbose,
+                    "seed": seed,
+                    "n_steps": config.n_steps,
+                    "batch_size": config.batch_size,
+                    "learning_rate": config.learning_rate,
+                }
+                if config.algorithm == "SAC":
+                    print_if_not_trial(
+                        logger,
+                        logging.DEBUG,
+                        trial,
+                        f"3. Training SAC model for Fold {fold_idx + 1}...",
+                    )
+                    model = SAC(
+                        env=train_env,
+                        policy="MlpPolicy",
+                        ent_coef="auto",
+                        gamma=config.gamma,
+                        policy_kwargs=policy_kwargs,
+                        **sb3_args_common,
+                    )
+                else:
+                    print_if_not_trial(
+                        logger,
+                        logging.DEBUG,
+                        trial,
+                        f"3. Training PPO model for Fold {fold_idx + 1}...",
+                    )
+                    model = MaskablePPO(
+                        env=train_env,
+                        policy="MlpPolicy",
+                        ent_coef=config.ent_coef_initial,
+                        clip_range=config.clip_range,
+                        policy_kwargs=policy_kwargs,
+                        **sb3_args_common,
+                    )
+                total_training_steps: int = int(
+                    config.timesteps * (1.0 - config.test_fraction)
                 )
-                action, _ = model.predict(
-                    obs, action_masks=action_masks, deterministic=True
+                entropy_callback = EntropyDecayCallback(
+                    ent_coef_initial=config.ent_coef_initial,  # High initial exploration
+                    ent_coef_final=config.ent_coef_final,  # Fine-tuned deterministic policy at convergence
+                    total_timesteps=total_training_steps,
+                    verbose=verbose,
                 )
-                # VecEnv step returns 4 values: obs, rewards, dones, infos
-                obs, rewards, dones, infos = test_env.step(action)
-                reward = float(rewards[0])
-                done = bool(dones[0])
-                info = infos[0]
-                if "reward_components" in info:
-                    for k, v in info["reward_components"].items():
-                        eval_reward_totals[k] = eval_reward_totals.get(k, 0) + v
-                if info.get("is_valid_sell", False):
-                    eval_closed_trades += 1
-                    if info.get("realised_pnl", 0.0) > 0:
-                        eval_winning_trades += 1
-                eval_steps += 1
-                # Get the true PV, dodging the VecEnv auto-reset on the final step
-                current_pv = info.get(
+
+                callbacks: list[
+                    EntropyDecayCallback | DashboardCallback | UnifiedEvalCallback
+                ] = [entropy_callback]
+                if dashboard_callback is not None:
+                    callbacks.append(dashboard_callback)
+                if eval_callback is not None:
+                    callbacks.append(eval_callback)
+                if checkpoint_callback is not None:
+                    callbacks.append(checkpoint_callback)
+
+                if callbacks:
+                    model.learn(total_timesteps=config.timesteps, callback=callbacks)
+                else:
+                    model.learn(total_timesteps=config.timesteps)
+
+                # Pruning cleanup
+                if eval_callback is not None:
+                    eval_env.close()
+                    if eval_callback.is_pruned:
+                        train_env.close()
+                        raise optuna.exceptions.TrialPruned()
+
+                print_if_not_trial(
+                    logger,
+                    logging.DEBUG,
+                    trial,
+                    f"4. Testing trained model for Fold {fold_idx + 1}...",
+                )
+                shared_env_args_with_logging = shared_env_args.copy()
+                shared_env_args_with_logging["config"] = dataclasses.replace(
+                    shared_env_config, disable_logging=False
+                )
+                test_env_raw = ActionMasker(
+                    MinimalCryptoEnv(**shared_env_args_with_logging), get_action_mask
+                )
+                test_env = VecNormalize(
+                    DummyVecEnv([lambda: test_env_raw]), **dummy_vec_env_args
+                )
+                # Inherit the trained reality
+                test_env.obs_rms = train_env.obs_rms
+                # VecEnv reset returns ONLY obs (1 value)
+                obs = test_env.reset()
+                done = False
+                eval_steps = 0
+                base_test_env: MinimalCryptoEnv = test_env.venv.envs[0].unwrapped
+                eval_initial_portfolio_value = base_test_env.portfolio_value
+                eval_portfolio_values = [
+                    {"step": 0, "value": float(eval_initial_portfolio_value)}
+                ]
+                eval_realized_pnl = [{"step": 0, "value": 0.0}]
+                eval_closed_trades = 0
+                eval_winning_trades = 0
+                eval_reward_totals = {}
+                info: dict[str, Any] = {}
+                while not done:
+                    action_masks = np.expand_dims(
+                        test_env.venv.envs[0].action_masks(), axis=0
+                    )
+                    action, _ = model.predict(
+                        obs, action_masks=action_masks, deterministic=True
+                    )
+                    # VecEnv step returns 4 values: obs, rewards, dones, infos
+                    obs, rewards, dones, infos = test_env.step(action)
+                    reward = float(rewards[0])
+                    done = bool(dones[0])
+                    info = infos[0]
+                    if "reward_components" in info:
+                        for k, v in info["reward_components"].items():
+                            eval_reward_totals[k] = eval_reward_totals.get(k, 0) + v
+                    if info.get("is_valid_sell", False):
+                        eval_closed_trades += 1
+                        if info.get("realised_pnl", 0.0) > 0:
+                            eval_winning_trades += 1
+                    eval_steps += 1
+                    # Get the true PV, dodging the VecEnv auto-reset on the final step
+                    current_pv = info.get(
+                        "final_portfolio_value", base_test_env.portfolio_value
+                    )
+                    eval_portfolio_values.append(
+                        {"step": eval_steps, "value": float(current_pv)}
+                    )
+                    eval_realized_pnl.append(
+                        {
+                            "step": eval_steps,
+                            "value": float(current_pv - eval_initial_portfolio_value),
+                        }
+                    )
+                per_asset_stats = info["per_asset_stats"]
+                eval_final_portfolio_value = info.get(
                     "final_portfolio_value", base_test_env.portfolio_value
                 )
-                eval_portfolio_values.append(
-                    {"step": eval_steps, "value": float(current_pv)}
+                eval_final_trades_count = info.get(
+                    "final_trades_count", base_test_env.trades_count
                 )
-                eval_realized_pnl.append(
+                eval_final_fees_paid = info.get(
+                    "final_fees_paid", base_test_env.fees_paid_total
+                )
+
+                fold_score = calculate_calmar_ratio(eval_portfolio_values)
+                fold_scores.append(fold_score)
+                # ==========================================
+                # 4. SAVE COMPLETED FOLD TO DISK
+                # ==========================================
+                if trial is not None:
+                    ckpt_mgr.save_fold_result(
+                        trial_number=trial.number,
+                        fold_idx=fold_idx,
+                        score=fold_score,
+                        metrics={"calmar": fold_score},
+                    )
+                eval_win_rate_pct = (
+                    (eval_winning_trades / eval_closed_trades * 100.0)
+                    if eval_closed_trades > 0
+                    else 0.0
+                )
+                fold_results.append(
                     {
-                        "step": eval_steps,
-                        "value": float(current_pv - eval_initial_portfolio_value),
+                        "fold": fold_idx + 1,
+                        "final_portfolio_value": eval_final_portfolio_value,
+                        "pnl": float(
+                            eval_final_portfolio_value - eval_initial_portfolio_value
+                        ),
+                        "calmar": float(fold_score),
+                        "trades": eval_final_trades_count,
+                        "closed_trades": int(eval_closed_trades),
+                        "win_rate_pct": float(eval_win_rate_pct),
+                        "fees_paid": float(eval_final_fees_paid),
                     }
                 )
-            per_asset_stats = info["per_asset_stats"]
-            eval_final_portfolio_value = info.get(
-                "final_portfolio_value", base_test_env.portfolio_value
-            )
-            eval_final_trades_count = info.get(
-                "final_trades_count", base_test_env.trades_count
-            )
-            eval_final_fees_paid = info.get(
-                "final_fees_paid", base_test_env.fees_paid_total
-            )
 
-            fold_score = calculate_calmar_ratio(eval_portfolio_values)
-            fold_scores.append(fold_score)
-            # ==========================================
-            # 4. SAVE COMPLETED FOLD TO DISK
-            # ==========================================
-            if trial is not None:
-                ckpt_mgr.save_fold_result(
-                    trial_number=trial.number,
-                    fold_idx=fold_idx,
-                    score=fold_score,
-                    metrics={"calmar": fold_score},
-                )
-            eval_win_rate_pct = (
-                (eval_winning_trades / eval_closed_trades * 100.0)
-                if eval_closed_trades > 0
-                else 0.0
-            )
-            fold_results.append(
-                {
-                    "fold": fold_idx + 1,
-                    "final_portfolio_value": eval_final_portfolio_value,
-                    "pnl": float(
-                        eval_final_portfolio_value - eval_initial_portfolio_value
-                    ),
-                    "calmar": float(fold_score),
-                    "trades": eval_final_trades_count,
-                    "closed_trades": int(eval_closed_trades),
-                    "win_rate_pct": float(eval_win_rate_pct),
-                    "fees_paid": float(eval_final_fees_paid),
-                }
-            )
-
-            print_if_not_trial(trial, f"Fold {fold_idx + 1} Results:")
-            print_if_not_trial(
-                trial,
-                f"  Final PV: ${eval_final_portfolio_value:.2f} | PnL: ${eval_final_portfolio_value - eval_initial_portfolio_value:.2f} | Calmar: {fold_score:.2f}",
-            )
-            print_if_not_trial(
-                trial,
-                f"  Trades: {eval_final_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${eval_final_fees_paid:.4f}",
-            )
-
-            last_model = model
-            last_eval_reward_totals = eval_reward_totals
-            last_eval_portfolio_values = eval_portfolio_values
-            last_eval_realized_pnl = eval_realized_pnl
-            last_eval_steps = eval_steps
-
-            print_if_not_trial(trial, "\nPer-Asset Performance Breakdown:")
-            print_if_not_trial(
-                trial,
-                f"{'Symbol':<10} | {'Realized PnL':<13} | {'Total PnL':<11} | {'Trades':<8} | {'Win Rate':<10} | {'Fees':<8}",
-            )
-            print_if_not_trial(trial, "-" * 72)
-            for sym, stats in per_asset_stats.items():
                 print_if_not_trial(
+                    logger, logging.INFO, trial, f"Fold {fold_idx + 1} Results:"
+                )
+                print_if_not_trial(
+                    logger,
+                    logging.INFO,
                     trial,
-                    f"{sym:<10} | ${stats['realized_pnl']:<12.2f} | ${stats['total_pnl']:<10.2f} | "
-                    f"{stats['trades']:<8} | {stats['win_rate_pct']:<9.1f}% | ${stats['fees_paid']:<7.4f}",
+                    f"  Final PV: ${eval_final_portfolio_value:.2f} | PnL: ${eval_final_portfolio_value - eval_initial_portfolio_value:.2f} | Calmar: {fold_score:.2f}",
+                )
+                print_if_not_trial(
+                    logger,
+                    logging.INFO,
+                    trial,
+                    f"  Trades: {eval_final_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${eval_final_fees_paid:.4f}",
                 )
 
-            last_test_prices = shared_test_prices
-            last_test_static = shared_test_static
-            last_test_norm_vol = shared_test_norm_vol
-            last_test_names = shared_test_names
+                last_model = model
+                last_eval_reward_totals = eval_reward_totals
+                last_eval_portfolio_values = eval_portfolio_values
+                last_eval_realized_pnl = eval_realized_pnl
+                last_eval_steps = eval_steps
 
-            test_env.close()
-            train_env.close()
-
-        # Aggregate Walk-Forward CV Results
-        cv_mean_pv = float(np.mean([r["final_portfolio_value"] for r in fold_results]))
-        cv_mean_pnl = float(np.mean([r["pnl"] for r in fold_results]))
-        cv_mean_calmar = float(
-            np.mean(fold_scores)
-        )  # [r["calmar"] for r in fold_results]
-        cv_mean_win_rate = float(np.mean([r["win_rate_pct"] for r in fold_results]))
-        cv_total_trades = sum([r["trades"] for r in fold_results])
-        cv_total_fees = sum([r["fees_paid"] for r in fold_results])
-
-        print_if_not_trial(trial, "\n" + "=" * 40)
-        print_if_not_trial(trial, f"WALK-FORWARD CV SUMMARY ({n_splits} Folds):")
-        print_if_not_trial(trial, f"Mean Test Portfolio Value: ${cv_mean_pv:.2f}")
-        print_if_not_trial(trial, f"Mean Test PnL:             ${cv_mean_pnl:.2f}")
-        print_if_not_trial(trial, f"Mean Test Calmar:          {cv_mean_calmar:.2f}")
-        print_if_not_trial(trial, f"Mean Test Win Rate:        {cv_mean_win_rate:.1f}%")
-        print_if_not_trial(trial, f"Total CV Trades:           {cv_total_trades}")
-        print_if_not_trial(
-            trial, f"Total Test Fees Paid:           ${cv_total_fees:.4f}"
-        )
-        print_if_not_trial(trial, "=" * 40 + "\n")
-
-        # Select BTCUSDT if present, otherwise locate the first symbol with start_price > 0
-        if "BTCUSDT" in last_asset_names:
-            btc_idx = last_asset_names.index("BTCUSDT")
-            start_price = last_prices_arr[0, btc_idx]
-            end_price = last_prices_arr[-1, btc_idx]
-        else:
-            start_price = last_prices_arr[0, 0]
-            end_price = last_prices_arr[-1, 0]
-
-        if start_price > 1e-8:
-            buy_hold_return = (end_price - start_price) / start_price
-        else:
-            buy_hold_return = 0.0
-
-        buy_hold_final = config.budget_initial * (1 + buy_hold_return)
-
-        # Multi-seed evaluation on the final model
-        # Caveat: this should actually rather be used with multiple models (1 per seed), non-deterministic predictions (i.e., sampling from the whole probability distribution), and a non-deterministic environment (e.g., random slippage, partial order filling, randomized latency).
-        multi_seed_pv = []
-        if not config.skip_multi_seed_eval:
-            print("5. Performing multi‑seed evaluation...")
-            for mseed in range(5):
-                np.random.seed(mseed + 100)
-                raw_ms_env = MinimalCryptoEnv(
-                    prices_arr=last_test_prices,
-                    static_obs=last_test_static,
-                    norm_vol_arr=last_test_norm_vol,
-                    asset_names=last_test_names,
-                    run_id=run_id,
-                    is_eval=True,
-                    config=shared_env_config,
+                print_if_not_trial(
+                    logger, logging.INFO, trial, "\nPer-Asset Performance Breakdown:"
                 )
-                ms_env_masked = ActionMasker(raw_ms_env, get_action_mask)
-                ms_env = VecNormalize(
-                    DummyVecEnv([lambda: ms_env_masked]), **dummy_vec_env_args
+                print_if_not_trial(
+                    logger,
+                    logging.INFO,
+                    trial,
+                    f"{'Symbol':<10} | {'Realized PnL':<13} | {'Total PnL':<11} | {'Trades':<8} | {'Win Rate':<10} | {'Fees':<8}",
                 )
-                ms_env.obs_rms = train_env.obs_rms
-                ms_obs = ms_env.reset()
-                ms_done = False
-                final_ms_pv = None
-                while not ms_done:
-                    # Add an explicit batch dimension for the single environment
-                    action_masks = np.expand_dims(
-                        ms_env.venv.envs[0].action_masks(), axis=0
+                print_if_not_trial(logger, logging.INFO, trial, "-" * 72)
+                for sym, stats in per_asset_stats.items():
+                    print_if_not_trial(
+                        logger,
+                        logging.INFO,
+                        trial,
+                        f"{sym:<10} | ${stats['realized_pnl']:<12.2f} | ${stats['total_pnl']:<10.2f} | "
+                        f"{stats['trades']:<8} | {stats['win_rate_pct']:<9.1f}% | ${stats['fees_paid']:<7.4f}",
                     )
-                    ms_action, _ = last_model.predict(
-                        ms_obs, action_masks=action_masks, deterministic=True
+
+                last_test_prices = shared_test_prices
+                last_test_static = shared_test_static
+                last_test_norm_vol = shared_test_norm_vol
+                last_test_names = shared_test_names
+
+                test_env.close()
+                train_env.close()
+
+            # Aggregate Walk-Forward CV Results
+            cv_mean_pv = float(
+                np.mean([r["final_portfolio_value"] for r in fold_results])
+            )
+            cv_mean_pnl = float(np.mean([r["pnl"] for r in fold_results]))
+            cv_mean_calmar = float(
+                np.mean(fold_scores)
+            )  # [r["calmar"] for r in fold_results]
+            cv_mean_win_rate = float(np.mean([r["win_rate_pct"] for r in fold_results]))
+            cv_total_trades = sum([r["trades"] for r in fold_results])
+            cv_total_fees = sum([r["fees_paid"] for r in fold_results])
+
+            print_if_not_trial(logger, logging.INFO, trial, "\n" + "=" * 40)
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"WALK-FORWARD CV SUMMARY ({n_splits} Folds):",
+            )
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"Mean Test Portfolio Value: ${cv_mean_pv:.2f}",
+            )
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"Mean Test PnL:             ${cv_mean_pnl:.2f}",
+            )
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"Mean Test Calmar:          {cv_mean_calmar:.2f}",
+            )
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"Mean Test Win Rate:        {cv_mean_win_rate:.1f}%",
+            )
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"Total CV Trades:           {cv_total_trades}",
+            )
+            print_if_not_trial(
+                logger,
+                logging.INFO,
+                trial,
+                f"Total Test Fees Paid:           ${cv_total_fees:.4f}",
+            )
+            print_if_not_trial(logger, logging.INFO, trial, "=" * 40 + "\n")
+
+            # Select BTCUSDT if present, otherwise locate the first symbol with start_price > 0
+            if "BTCUSDT" in last_asset_names:
+                btc_idx = last_asset_names.index("BTCUSDT")
+                start_price = last_prices_arr[0, btc_idx]
+                end_price = last_prices_arr[-1, btc_idx]
+            else:
+                start_price = last_prices_arr[0, 0]
+                end_price = last_prices_arr[-1, 0]
+
+            if start_price > 1e-8:
+                buy_hold_return = (end_price - start_price) / start_price
+            else:
+                buy_hold_return = 0.0
+
+            buy_hold_final = config.budget_initial * (1 + buy_hold_return)
+
+            # Multi-seed evaluation on the final model
+            # Caveat: this should actually rather be used with multiple models (1 per seed), non-deterministic predictions (i.e., sampling from the whole probability distribution), and a non-deterministic environment (e.g., random slippage, partial order filling, randomized latency).
+            multi_seed_pv = []
+            if not config.skip_multi_seed_eval:
+                print_if_not_trial(
+                    logger,
+                    logging.DEBUG,
+                    trial,
+                    "5. Performing multi‑seed evaluation...",
+                )
+                for mseed in range(5):
+                    np.random.seed(mseed + 100)
+                    raw_ms_env = MinimalCryptoEnv(
+                        prices_arr=last_test_prices,
+                        static_obs=last_test_static,
+                        norm_vol_arr=last_test_norm_vol,
+                        asset_names=last_test_names,
+                        run_id=run_id,
+                        is_eval=True,
+                        config=shared_env_config,
                     )
-                    ms_obs, _, ms_dones, ms_infos = ms_env.step(
-                        ms_action
-                    )  # 4-value unpack
-                    ms_done = ms_dones[0]
-                    # Capture the true PV from info on the terminal step
-                    if ms_done:
-                        final_ms_pv = ms_infos[0].get(
-                            "final_portfolio_value", raw_ms_env.portfolio_value
+                    ms_env_masked = ActionMasker(raw_ms_env, get_action_mask)
+                    ms_env = VecNormalize(
+                        DummyVecEnv([lambda: ms_env_masked]), **dummy_vec_env_args
+                    )
+                    ms_env.obs_rms = train_env.obs_rms
+                    ms_obs = ms_env.reset()
+                    ms_done = False
+                    final_ms_pv = None
+                    while not ms_done:
+                        # Add an explicit batch dimension for the single environment
+                        action_masks = np.expand_dims(
+                            ms_env.venv.envs[0].action_masks(), axis=0
                         )
-                multi_seed_pv.append(final_ms_pv)
-                ms_env.close()
+                        ms_action, _ = last_model.predict(
+                            ms_obs, action_masks=action_masks, deterministic=True
+                        )
+                        ms_obs, _, ms_dones, ms_infos = ms_env.step(
+                            ms_action
+                        )  # 4-value unpack
+                        ms_done = ms_dones[0]
+                        # Capture the true PV from info on the terminal step
+                        if ms_done:
+                            final_ms_pv = ms_infos[0].get(
+                                "final_portfolio_value", raw_ms_env.portfolio_value
+                            )
+                    multi_seed_pv.append(final_ms_pv)
+                    ms_env.close()
 
-        if multi_seed_pv:
-            arr = np.array(multi_seed_pv)
-            print_if_not_trial(
-                trial,
-                f"  n={len(arr)}  mean=${arr.mean():.2f}  std=${arr.std():.2f}  "
-                f"min=${arr.min():.2f}  max=${arr.max():.2f}",
-            )
-
-        # Dashboard update
-        if config.dashboard and state_file and state_file.exists():
-            try:
-                with open(state_file, "r", encoding="utf-8") as f:
-                    state = json.load(f)
-                state["run"]["status"] = "evaluated"
-                state["run"]["finished_at"] = datetime.now(UTC).strftime(
-                    "%Y-%m-%d %H:%M:%S UTC"
-                )
-                state["finance"]["evaluation_results"] = {
-                    "final_portfolio_value": cv_mean_pv,
-                    "pnl": cv_mean_pnl,
-                    "evaluation_steps": int(last_eval_steps),
-                    "eval_trades": int(cv_total_trades),
-                    "eval_win_rate_pct": float(cv_mean_win_rate),
-                    "buy_hold_baseline": float(buy_hold_final),
-                    "total_fees_paid": float(cv_total_fees),
-                    "cv_folds": fold_results,
-                    "per_asset_breakdown": per_asset_stats,
-                }
-                # Add CV mean Calmar ratio to finance section for dashboard display
-                state["finance"]["calmar"] = float(cv_mean_calmar)
-                state["explainability"] = {
-                    "cumulative_rewards": {
-                        k: float(v) for k, v in last_eval_reward_totals.items()
-                    },
-                    "hyperparameters": config.to_dict(),
-                }
-                if "series" not in state:
-                    state["series"] = {}
-
-                # Downsample eval series to max 1000 points to keep state.json lightweight and responsive
-                def _downsample(series_list, max_pts=1000):
-                    if not series_list or len(series_list) <= max_pts:
-                        return series_list
-                    step_sz = len(series_list) / max_pts
-                    res = [series_list[int(i * step_sz)] for i in range(max_pts)]
-                    if res[-1] != series_list[-1]:
-                        res[-1] = series_list[-1]
-                    return res
-
-                state["series"]["test_portfolio_value"] = _downsample(
-                    last_eval_portfolio_values
-                )
-                state["series"]["test_realized_pnl"] = _downsample(
-                    last_eval_realized_pnl
-                )
-                with open(state_file, "w", encoding="utf-8") as f:
-                    json.dump(state, f, indent=2)
+            if multi_seed_pv:
+                arr = np.array(multi_seed_pv)
                 print_if_not_trial(
+                    logger,
+                    logging.INFO,
                     trial,
-                    f"Dashboard state updated with evaluation results in {state_file}",
+                    f"  n={len(arr)}  mean=${arr.mean():.2f}  std=${arr.std():.2f}  "
+                    f"min=${arr.min():.2f}  max=${arr.max():.2f}",
                 )
-            except Exception as e:
-                print_if_not_trial(trial, f"Error updating dashboard state: {e}")
 
-        if trial is None:
-            eval_log_action_counter()
-            eval_report()
-        # Trial finished all folds successfully: clean up checkpoint file
-        if trial is not None:
+            # Dashboard update
+            if config.dashboard and state_file and state_file.exists():
+                try:
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        state = json.load(f)
+                    state["run"]["status"] = "evaluated"
+                    state["run"]["finished_at"] = datetime.now(UTC).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
+                    )
+                    state["finance"]["evaluation_results"] = {
+                        "final_portfolio_value": cv_mean_pv,
+                        "pnl": cv_mean_pnl,
+                        "evaluation_steps": int(last_eval_steps),
+                        "eval_trades": int(cv_total_trades),
+                        "eval_win_rate_pct": float(cv_mean_win_rate),
+                        "buy_hold_baseline": float(buy_hold_final),
+                        "total_fees_paid": float(cv_total_fees),
+                        "cv_folds": fold_results,
+                        "per_asset_breakdown": per_asset_stats,
+                    }
+                    # Add CV mean Calmar ratio to finance section for dashboard display
+                    state["finance"]["calmar"] = float(cv_mean_calmar)
+                    state["explainability"] = {
+                        "cumulative_rewards": {
+                            k: float(v) for k, v in last_eval_reward_totals.items()
+                        },
+                        "hyperparameters": config.to_dict(),
+                    }
+                    if "series" not in state:
+                        state["series"] = {}
+
+                    # Downsample eval series to max 1000 points to keep state.json lightweight and responsive
+                    def _downsample(series_list, max_pts=1000):
+                        if not series_list or len(series_list) <= max_pts:
+                            return series_list
+                        step_sz = len(series_list) / max_pts
+                        res = [series_list[int(i * step_sz)] for i in range(max_pts)]
+                        if res[-1] != series_list[-1]:
+                            res[-1] = series_list[-1]
+                        return res
+
+                    state["series"]["test_portfolio_value"] = _downsample(
+                        last_eval_portfolio_values
+                    )
+                    state["series"]["test_realized_pnl"] = _downsample(
+                        last_eval_realized_pnl
+                    )
+                    with open(state_file, "w", encoding="utf-8") as f:
+                        json.dump(state, f, indent=2)
+                    print_if_not_trial(
+                        logger,
+                        logging.DEBUG,
+                        trial,
+                        f"Dashboard state updated with evaluation results in {state_file}",
+                    )
+                except Exception as e:
+                    print_if_not_trial(
+                        logger,
+                        logging.DEBUG,
+                        trial,
+                        f"Error updating dashboard state: {e}",
+                    )
+
+            if trial is None:
+                eval_log_action_counter(logger)
+                eval_report(logger)
+            # Trial finished all folds successfully: clean up checkpoint file
+            if trial is not None:
+                ckpt_mgr.clear_checkpoint(trial.number)
+            return float(
+                cv_mean_calmar
+            )  # Return mean Calmar ratio for Optuna optimization
+        except optuna.exceptions.TrialPruned:
+            # If trial was pruned by Optuna, clean up the checkpoint
             ckpt_mgr.clear_checkpoint(trial.number)
-        return float(cv_mean_calmar)  # Return mean Calmar ratio for Optuna optimization
-    except optuna.exceptions.TrialPruned:
-        # If trial was pruned by Optuna, clean up the checkpoint
-        ckpt_mgr.clear_checkpoint(trial.number)
-        raise
-    except Exception as e:
-        # Leave checkpoint intact on crash/interrupt so it can resume later
-        raise e
+            raise
+        except Exception as e:
+            # Leave checkpoint intact on crash/interrupt so it can resume later
+            raise e

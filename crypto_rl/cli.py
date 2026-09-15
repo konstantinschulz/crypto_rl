@@ -215,12 +215,6 @@ Examples:
         help=f"Maximum amount of cash to be allocated within a single step (default {default_config.max_single_step_allocation}). Applies only to BUY actions.",
     )
     parser.add_argument(
-        "--min-turnover-threshold",
-        type=float,
-        default=default_config.min_turnover_threshold,
-        help=f"Minimum portfolio turnover required before executing a continuous rebalance (default: {default_config.min_turnover_threshold}). Not applicable to multidiscrete action space.",
-    )
-    parser.add_argument(
         "--n-envs",
         type=int,
         default=default_config.n_envs,

@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+import sys
 import time
 from pathlib import Path
 import pandas as pd
@@ -61,8 +63,41 @@ def log_action(
         "price": float(trade_price),
         "units": float(trade_units),
         "fee": float(fee),
-        "reward_components": reward_components
+        "reward_components": reward_components,
     }
     env.log_buffer.append(entry)
     env.last_invalid_sell = False
     env.last_remap_note = None
+
+
+@contextmanager
+def selective_logger(file_name: str):
+    """Context manager providing methods for dual-output or console-only logging."""
+    original_stdout = sys.stdout
+    log_file = (
+        open(file_name, "w", encoding="utf-8")
+        if file_name
+        else open("/dev/null", "w", encoding="utf-8")
+    )
+
+    class Logger:
+        def info(self, message: str):
+            """Prints to BOTH the console and the file."""
+            original_stdout.write(message + "\n")
+            log_file.write(message + "\n")
+            self.flush()
+
+        def debug(self, message: str):
+            """Prints to the console ONLY (hidden from file)."""
+            original_stdout.write(message + "\n")
+            original_stdout.flush()
+
+        def flush(self):
+            original_stdout.flush()
+            log_file.flush()
+
+    logger = Logger()
+    try:
+        yield logger
+    finally:
+        log_file.close()

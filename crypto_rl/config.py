@@ -29,7 +29,6 @@ class RLConfig:
     fee_rate: float = 0.001
     gamma: float = 0.99
     hold_cost_rate: float = 0.0
-    hold_incentive: float = 0.0
     hold_penalty_threshold: float = -0.03
     illegal_buy_penalty: float = RULE_PENALTY
     illegal_sell_penalty: float = RULE_PENALTY
