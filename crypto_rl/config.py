@@ -37,7 +37,6 @@ class RLConfig:
     max_asset_allocation: float = 0.25
     max_checkpoints: int = 5
     max_single_step_allocation: float = 0.15
-    min_turnover_threshold: float = 0.02
     n_envs: int = 9
     n_rows: int = 400000
     n_steps: int = 512

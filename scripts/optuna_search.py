@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+from datetime import datetime, timezone
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -85,7 +86,9 @@ def objective(trial: optuna.trial.Trial, override_params: dict | None = None):
         n_steps=suggest(
             "n_steps", trial.suggest_categorical, [512, 1024, 2048]
         ),  # 256, 2048, 4096
-        profit_bonus=suggest("profit_bonus", trial.suggest_float, 0.0, 0.100, step=0.005),
+        profit_bonus=suggest(
+            "profit_bonus", trial.suggest_float, 0.0, 0.100, step=0.005
+        ),
         timesteps=1500000,  # 30000 / 50000 / 100000 / 1200000 / 1500000
         turnover_penalty=suggest("turnover_penalty", trial.suggest_float, 0.010, 0.30),
         turnover_penalty_steps_threshold=suggest(
@@ -95,7 +98,6 @@ def objective(trial: optuna.trial.Trial, override_params: dict | None = None):
             "window_size", trial.suggest_categorical, [30, 60, 120, 240]
         ),
     )
-
     try:
         # Pass the trial object directly into Python memory!
         score = run_experiment(trial_config, trial=trial)
@@ -112,21 +114,23 @@ def resume_running_trials(study: optuna.Study):
     running_trials = [
         t for t in study.trials if t.state == optuna.trial.TrialState.RUNNING
     ]
-
     for t in running_trials:
         # t is a FrozenTrial, so t.params contains the exact dictionary of parameters it used
         interrupted_params = t.params
         print(f"\n[Optuna] Resuming interrupted Trial {t.number} with frozen params.")
-
         # Instantiate a live Trial object to continue the execution
         trial = optuna.trial.Trial(study, t._trial_id)
-
         try:
             # Pass the frozen params directly to override default suggestions
             score = objective(trial, override_params=interrupted_params)
             study.tell(t.number, score)
+            print(
+                f"\n[{datetime.now(tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] [Optuna] ✅ Resumed Trial {t.number} finished with value: {score}"
+            )
+            print(f"[Optuna] Parameters used: {interrupted_params}")
         except optuna.exceptions.TrialPruned:
             study.tell(t.number, state=optuna.trial.TrialState.PRUNED)
+            print(f"\n[Optuna] ✂️ Resumed Trial {t.number} was PRUNED.")
         except Exception as e:
             print(f"Trial {t.number} failed with error: {e}")
             study.tell(t.number, state=optuna.trial.TrialState.FAIL)

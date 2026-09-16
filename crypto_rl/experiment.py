@@ -1,6 +1,8 @@
 import dataclasses
 import json
 import logging
+import os
+import sys
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -765,6 +767,21 @@ def run_experiment(
             # If trial was pruned by Optuna, clean up the checkpoint
             ckpt_mgr.clear_checkpoint(trial.number)
             raise
+        except KeyboardInterrupt:
+            # Prevent Optuna from catching this and marking the trial as FAIL.
+            # This hard-exits the process so the DB retains the "RUNNING" state,
+            # allowing resume_running_trials() to pick it up on the next run.
+            print_if_not_trial(
+                logger,
+                logging.DEBUG,
+                None,
+                "\n[!] Ctrl+C (KeyboardInterrupt) detected. Hard-exiting to preserve trial in RUNNING state for later resumption...",
+            )
+            # Flush I/O to ensure the logger output actually reaches the console/file
+            sys.stdout.flush()
+            sys.stderr.flush()
+            # Immediately terminate the process, bypassing Optuna's teardown
+            os._exit(0)
         except Exception as e:
             # Leave checkpoint intact on crash/interrupt so it can resume later
             raise e
