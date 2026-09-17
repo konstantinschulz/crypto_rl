@@ -1,4 +1,3 @@
-from ale_py import env
 import numpy as np
 
 

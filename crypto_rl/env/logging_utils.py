@@ -1,7 +1,10 @@
 from contextlib import contextmanager
+import logging
+import subprocess
 import sys
 import time
 from pathlib import Path
+import optuna
 import pandas as pd
 
 
@@ -70,6 +73,16 @@ def log_action(
     env.last_remap_note = None
 
 
+def print_if_not_trial(
+    logger, log_level: int, trial: optuna.trial.Trial | None = None, msg: str = ""
+):
+    if trial is None:
+        if log_level == logging.INFO:
+            logger.info(msg)
+        elif log_level == logging.DEBUG:
+            logger.debug(msg)
+
+
 @contextmanager
 def selective_logger(file_name: str):
     """Context manager providing methods for dual-output or console-only logging."""
@@ -101,3 +114,7 @@ def selective_logger(file_name: str):
         yield logger
     finally:
         log_file.close()
+
+
+def send_notification(message: str) -> None:
+    subprocess.run(["notify-send", "--app-name", "Crypto RL", message], check=False)

@@ -28,7 +28,11 @@ from crypto_rl.config import RLConfig
 from crypto_rl.data import get_walk_forward_splits, read_n_rows
 from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import compute_static_obs_from_long_df
-from crypto_rl.env.logging_utils import selective_logger
+from crypto_rl.env.logging_utils import (
+    print_if_not_trial,
+    selective_logger,
+    send_notification,
+)
 from crypto_rl.env.metrics import calculate_calmar_ratio
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from scripts.eval_log_action_counter import eval_log_action_counter
@@ -42,16 +46,6 @@ dummy_vec_env_args: dict[str, Any] = {
     "clip_obs": CLIP_OBS,
     "training": False,
 }
-
-
-def print_if_not_trial(
-    logger, log_level: int, trial: optuna.trial.Trial | None = None, msg: str = ""
-):
-    if trial is None:
-        if log_level == logging.INFO:
-            logger.info(msg)
-        elif log_level == logging.DEBUG:
-            logger.debug(msg)
 
 
 def _to_datetime(ts):
@@ -151,12 +145,6 @@ def run_experiment(
                 completed_folds = existing_ckpt.get("completed_folds", {})
         try:
             for fold_idx, (train_prices_df, test_prices_df) in enumerate(splits):
-                print_if_not_trial(
-                    logger,
-                    logging.DEBUG,
-                    trial,
-                    f"\n=== Fold {fold_idx + 1}/{n_splits} ===",
-                )
                 str_fold = str(fold_idx)
                 # ==========================================
                 # 2. RESUME FOLD FROM CHECKPOINT IF PRESENT
@@ -187,12 +175,16 @@ def run_experiment(
                 # ==========================================
                 # 2. RUN LIVE FOLD TRAINING & EVALUATION
                 # ==========================================
+                msg: str = (
+                    f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold..."
+                )
                 print_if_not_trial(
                     logger,
                     logging.DEBUG,
                     None,
-                    f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold...",
+                    msg,
                 )
+                send_notification(msg)
                 eval_step_offset = fold_idx * evals_per_fold
 
                 start_ts_raw = train_prices_df["open_time"].min()
