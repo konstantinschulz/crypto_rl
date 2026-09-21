@@ -3,6 +3,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Generator
 
 import gi
 import optuna
@@ -12,6 +13,14 @@ gi.require_version("Notify", "0.7")
 from gi.repository import GLib, Notify
 
 Notify.init("crypto_rl")  # refers to ~/.local/share/applications/crypto_rl.desktop
+
+
+class LoggerBase:
+    def debug(self, message: str):
+        raise NotImplementedError("Subclasses must implement the 'debug' method.")
+
+    def info(self, message: str):
+        raise NotImplementedError("Subclasses must implement the 'info' method.")
 
 
 def init_log(env, run_id: str = "default") -> None:
@@ -80,7 +89,7 @@ def log_action(
 
 
 def print_if_not_trial(
-    logger, log_level: int, trial: optuna.trial.Trial | None = None, msg: str = ""
+    logger: LoggerBase, log_level: int, trial: optuna.trial.Trial | None = None, msg: str = ""
 ):
     if trial is None:
         if log_level == logging.INFO:
@@ -90,7 +99,7 @@ def print_if_not_trial(
 
 
 @contextmanager
-def selective_logger(file_name: str):
+def selective_logger(file_name: str) -> Generator[LoggerBase, None, None]:
     """Context manager providing methods for dual-output or console-only logging."""
     original_stdout = sys.stdout
     log_file = (
@@ -99,7 +108,7 @@ def selective_logger(file_name: str):
         else open("/dev/null", "w", encoding="utf-8")
     )
 
-    class Logger:
+    class Logger(LoggerBase):
         def info(self, message: str):
             """Prints to BOTH the console and the file."""
             original_stdout.write(message + "\n")

@@ -34,6 +34,7 @@ from crypto_rl.config import RLConfig
 from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import compute_static_obs_from_long_df
 from crypto_rl.env.logging_utils import (
+    LoggerBase,
     print_if_not_trial,
     send_notification,
 )
@@ -44,7 +45,7 @@ from crypto_rl.env.minimal_env import MinimalCryptoEnv
 def run_folds(
     config: RLConfig,
     trial: optuna.trial.Trial | None,
-    logger: Any,
+    logger: LoggerBase,
     run_id: str,
     run_dir: Path,
     state_file: Path,
@@ -109,7 +110,9 @@ def run_folds(
         # ----- Live training --------------------------------------------------------
         msg = f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold..."
         print_if_not_trial(logger, logging.DEBUG, None, msg)
-        send_notification(msg, summary="Experiment Run" if trial is None else "Optuna Trial")
+        send_notification(
+            msg, summary="Experiment Run" if trial is None else f"Optuna Trial {trial.number}"
+        )
         eval_step_offset = fold_idx * evals_per_fold
 
         # training period strings
@@ -142,6 +145,7 @@ def run_folds(
                 norm_vol_arr=norm_vol_arr,
                 asset_names=asset_names,
                 run_id=run_id,
+                logger=logger,
             )
             return ActionMasker(e, get_action_mask)
 
@@ -211,6 +215,7 @@ def run_folds(
             "run_id": run_id,
             "is_eval": True,
             "config": shared_env_config,
+            "logger": logger,
         }
         eval_callback = None
         eval_env = None

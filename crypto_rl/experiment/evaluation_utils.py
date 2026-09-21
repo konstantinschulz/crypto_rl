@@ -11,7 +11,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl.config import RLConfig
 from crypto_rl.env.action_processing import get_action_mask
-from crypto_rl.env.logging_utils import print_if_not_trial
+from crypto_rl.env.logging_utils import LoggerBase, print_if_not_trial
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 
@@ -42,7 +42,7 @@ def compute_buy_and_hold_baseline(
 
 def run_multi_seed_eval(
     config: RLConfig,
-    logger: Any,
+    logger: LoggerBase,
     trial: optuna.trial.Trial | None,
     last_model: Any,
     last_test_prices: np.ndarray,

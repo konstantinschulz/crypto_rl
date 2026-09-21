@@ -36,10 +36,9 @@ def get_calmar_from_portfolio_series(pv_series: np.ndarray) -> float:
     # If the bot loses money, return the raw negative Calmar to punish drawdowns
     if annualized_return <= 0:
         return float(base_calmar)
-    # Scale Calmar directly by the annualized return
-    # This automatically prefers higher absolute returns at equivalent risk levels
-    adjusted_score = base_calmar * annualized_return
-
+    # FIX: Scale by the RAW return (total_return) instead of annualized_return.
+    # A 5% raw return (0.05) will appropriately scale down the metric, keeping the score in the single or double digits regardless of the time window.
+    adjusted_score = base_calmar * total_return
     return float(adjusted_score)
 
 

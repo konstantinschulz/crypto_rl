@@ -7,7 +7,7 @@ from crypto_rl.env.feature_utils import (
     MACRO_DIM,
     STATIC_PER_ASSET_DIM,
 )
-from crypto_rl.env.logging_utils import flush_log_parquet
+from crypto_rl.env.logging_utils import LoggerBase, flush_log_parquet
 from crypto_rl.env.observation import build_observation
 from crypto_rl.env.reset import reset_env
 from crypto_rl.env.step import step_env
@@ -55,6 +55,7 @@ class MinimalCryptoEnv(gym.Env):
         config: RLConfig,
         run_id: str = "default",
         is_eval: bool = False,
+        logger: LoggerBase | None = None,
     ):
         super().__init__()
         # Preprocessed data supplied externally
@@ -80,7 +81,7 @@ class MinimalCryptoEnv(gym.Env):
         self.per_asset_trades = np.zeros(self.num_assets, dtype=np.int32)
         self.per_asset_wins = np.zeros(self.num_assets, dtype=np.int32)
         self.per_asset_fees = np.zeros(self.num_assets, dtype=np.float32)
-
+        self.logger = LoggerBase() if logger is None else logger
         self.fees_paid_total = 0.0
         self.previous_drawdown = 0.0
         self.last_invalid_sell = False
@@ -132,6 +133,7 @@ class MinimalCryptoEnv(gym.Env):
         self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
         # --- NEW: Track entry steps for holding period calculations ---
         self.entry_step = np.zeros(self.num_assets, dtype=np.int32)
+        self.trades_count = 0
         self.winning_trades_count = 0
         self.total_closed_trades = 0
         self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)

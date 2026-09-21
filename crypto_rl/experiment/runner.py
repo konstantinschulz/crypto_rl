@@ -12,6 +12,7 @@ import optuna
 from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
 from crypto_rl.env.logging_utils import (
+    LoggerBase,
     print_if_not_trial,
     selective_logger,
 )
@@ -33,7 +34,7 @@ dummy_vec_env_args: dict[str, Any] = {
 
 
 def _print_cv_summary(
-    logger: Any,
+    logger: LoggerBase,
     trial: optuna.trial.Trial | None,
     n_splits: int,
     cv_mean_pv: float,

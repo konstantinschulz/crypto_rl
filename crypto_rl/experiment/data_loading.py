@@ -10,10 +10,10 @@ import pandas as pd
 
 from crypto_rl.config import RLConfig
 from crypto_rl.data import get_walk_forward_splits, read_n_rows
-from crypto_rl.env.logging_utils import print_if_not_trial
+from crypto_rl.env.logging_utils import LoggerBase, print_if_not_trial
 
 
-def load_raw_data(config: RLConfig, logger: Any, trial: optuna.trial.Trial | None) -> pd.DataFrame:
+def load_raw_data(config: RLConfig, logger: LoggerBase, trial: optuna.trial.Trial | None) -> pd.DataFrame:
     """Load raw OHLCV data and configure evaluation frequency.
     Returns the raw DataFrame.
     """
@@ -33,7 +33,7 @@ def load_raw_data(config: RLConfig, logger: Any, trial: optuna.trial.Trial | Non
 def prepare_splits(
     raw_df: pd.DataFrame,
     config: RLConfig,
-    logger: Any,
+    logger: LoggerBase,
     trial: optuna.trial.Trial | None,
 ) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
     """Create walk‑forward splits based on config.

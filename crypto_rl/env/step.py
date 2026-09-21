@@ -1,5 +1,6 @@
-import logging
-from typing import Any
+from __future__ import annotations  # avoid circular import issues with TYPE_CHECKING
+
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -8,6 +9,9 @@ from crypto_rl.env.action_processing import (
 )
 from crypto_rl.env.logging_utils import log_action
 from crypto_rl.env.metrics import get_per_asset_summary
+
+if TYPE_CHECKING: # avoid circular import issues
+    from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 
 def _process_buy_accounting(
@@ -106,7 +110,9 @@ def _process_sell_accounting(
     return revenue, fee
 
 
-def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+def step_env(
+    env: MinimalCryptoEnv, action
+) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
     """Execute one environment step for MinimalCryptoEnv."""
     prev_portfolio_value = env.portfolio_value
     current_prices = env.prices_arr[env.current_step - 1]
@@ -313,13 +319,13 @@ def step_env(env, action) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]
 
         # Log warning if discrepancy exceeds $0.05
         if abs(sum_per_asset_pnl - actual_pnl) > 0.05:
-            logging.warning(
+            env.logger.debug(
                 f"PnL Mismatch Detected! Portfolio PnL: ${actual_pnl:.2f} vs "
                 f"Sum Per-Asset PnL: ${sum_per_asset_pnl:.2f}"
             )
 
     if step_penalty >= 0.1:
-        logging.debug(f"High step penalty value (>= 0.1): {step_penalty}")
+        env.logger.debug(f"High step penalty value (>= 0.1): {step_penalty}")
 
     # Explicitly clip raw rewards at the source to prevent variance explosion
     reward = np.clip(sum(reward_components.values()), -1.0, 1.0)

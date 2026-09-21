@@ -10,10 +10,10 @@ the Streamlit dashboard can poll for live metrics.
 from __future__ import annotations
 
 import json
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
-import warnings
 
 import numpy as np
 import optuna
@@ -316,14 +316,20 @@ class UnifiedEvalCallback(BaseCallback):
         self.eval_idx = 0
         self.is_pruned = False
         self.best_calmar = -float("inf")
-
+        self.ema_score = None
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.num_timesteps % self.eval_freq == 0:
             self.eval_idx += 1
-            episode_reward, calmar = self._run_evaluation()
-
+            _, calmar = self._run_evaluation()
+            # --- NEW: Exponential Moving Average (EMA) Smoothing ---
+            # Alpha of 0.5 means the new score is 50% current eval, 50% historical average.
+            alpha = 0.5
+            if self.ema_score is None:
+                self.ema_score = calmar
+            else:
+                self.ema_score = (alpha * calmar) + ((1.0 - alpha) * self.ema_score)
             if self.trial is not None:
                 # Monotonically unique step across folds
                 report_step = self.eval_step_offset + self.eval_idx
@@ -334,7 +340,8 @@ class UnifiedEvalCallback(BaseCallback):
                         category=UserWarning,
                         message=".*is already reported.*",
                     )
-                    self.trial.report(episode_reward, report_step)
+                    # Report the SMOOTHED score to Optuna's MedianPruner
+                    self.trial.report(self.ema_score, report_step)
 
                 if self.trial.should_prune():
                     self.is_pruned = True
@@ -352,10 +359,13 @@ class UnifiedEvalCallback(BaseCallback):
         obs = self.eval_env.reset()
         done = False
         episode_reward = 0.0
+        # Access the unwrapped base environment for fast property lookups
+        # (bypassing slow VecEnv get_attr IPC calls)
+        base_env = self.eval_env.venv.envs[0].unwrapped
 
-        initial_pv = self.eval_env.get_attr("portfolio_value")[0]
+        initial_pv = base_env.portfolio_value
         portfolio_values = [{"step": 0, "value": float(initial_pv)}]
-
+        steps = 0
         while not done:
             masks = self.eval_env.env_method("action_masks")[0]
             current_masks = np.array([masks])
@@ -366,17 +376,22 @@ class UnifiedEvalCallback(BaseCallback):
 
             obs, reward, done_array, infos = self.eval_env.step(action)
             done = done_array[0]
-
+            info = infos[0]
             episode_reward += float(reward[0])
-
-            current_pv = self.eval_env.get_attr("portfolio_value")[0]
+            steps += 1
+            # Dodge the VecEnv auto-reset bug
+            if done:
+                # On the terminal step, grab the true final PV from info before the reset wiped it
+                current_pv = info.get("final_portfolio_value", base_env.portfolio_value)
+            else:
+                # Otherwise, grab the live PV safely
+                current_pv = base_env.portfolio_value
             portfolio_values.append(
                 {
-                    "step": len(portfolio_values),
+                    "step": steps,
                     "value": float(current_pv),
                 }
             )
-
         calmar = calculate_calmar_ratio(portfolio_values)
         return episode_reward, calmar
 

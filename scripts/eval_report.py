@@ -6,11 +6,11 @@ import json
 import numpy as np
 import pandas as pd
 
-from crypto_rl.env.logging_utils import selective_logger
+from crypto_rl.env.logging_utils import LoggerBase, selective_logger
 from crypto_rl.env.metrics import get_calmar_from_portfolio_series
 
 
-def eval_report(logger):
+def eval_report(logger: LoggerBase):
     f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
     with open(f2) as f3:
         state = json.load(f3)
