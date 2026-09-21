@@ -16,33 +16,31 @@ def calculate_calmar_ratio(portfolio_values: list[dict]) -> float:
         The Calmar ratio.
     """
     pv_series = np.array([v["value"] for v in portfolio_values])
-    returns = np.diff(pv_series) / pv_series[:-1]
-    return get_calmar_from_returns(returns, pv_series)
+    return get_calmar_from_portfolio_series(pv_series)
 
 
-
-def get_calmar_from_returns(returns: np.ndarray, pv_series: np.ndarray) -> float:
+def get_calmar_from_portfolio_series(pv_series: np.ndarray) -> float:
     """
-    Calculate the Calmar ratio from a series of returns.
-
-    Parameters
-    ----------
-    returns : np.ndarray
-        An array of returns.
-    pv_series : np.ndarray
-        An array of portfolio values.
-
-    Returns
-    -------
-    float
-        The Calmar ratio.
+    Calculate a Return-Scaled Calmar Ratio (Return^2 / Drawdown).
     """
-    annualized_return = returns.mean() * 525600  # Assuming 1-min returns
+    if len(pv_series) < 2:
+        return 0.0
+    total_return = (pv_series[-1] - pv_series[0]) / pv_series[0]
+    annualized_return = total_return * (525600 / len(pv_series))
     running_max = np.maximum.accumulate(pv_series)
     drawdowns = (running_max - pv_series) / running_max
     max_drawdown = np.max(drawdowns)
-    calmar = annualized_return / max(max_drawdown, 1e-8)
-    return calmar
+    # 1% Floor to prevent zero-drawdown division explosions
+    safe_max_drawdown = max(max_drawdown, 0.01)
+    base_calmar = annualized_return / safe_max_drawdown
+    # If the bot loses money, return the raw negative Calmar to punish drawdowns
+    if annualized_return <= 0:
+        return float(base_calmar)
+    # Scale Calmar directly by the annualized return
+    # This automatically prefers higher absolute returns at equivalent risk levels
+    adjusted_score = base_calmar * annualized_return
+
+    return float(adjusted_score)
 
 
 def get_per_asset_summary(env) -> dict[str, dict[str, float]]:

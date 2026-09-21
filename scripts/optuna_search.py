@@ -5,9 +5,9 @@ Usage:
 """
 
 import argparse
-from datetime import datetime, timezone
 import sys
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import optuna
@@ -82,14 +82,14 @@ def objective(trial: optuna.trial.Trial, override_params: dict | None = None):
             "max_single_step_allocation", trial.suggest_float, 0.30, 0.70, step=0.05
         ),
         n_envs=suggest("n_envs", trial.suggest_int, 6, 12),
-        n_rows=400000,  # 10000 / 20000  / 40000
+        n_rows=400000,  # 40000 / 400000
         n_steps=suggest(
             "n_steps", trial.suggest_categorical, [512, 1024, 2048]
         ),  # 256, 2048, 4096
         profit_bonus=suggest(
             "profit_bonus", trial.suggest_float, 0.0, 0.100, step=0.005
         ),
-        timesteps=1500000,  # 30000 / 50000 / 100000 / 1200000 / 1500000
+        timesteps=1500000,  # 3000 / 1500000
         turnover_penalty=suggest("turnover_penalty", trial.suggest_float, 0.010, 0.30),
         turnover_penalty_steps_threshold=suggest(
             "turnover_penalty_steps_threshold", trial.suggest_int, 5, 25

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from crypto_rl.env.logging_utils import selective_logger
-from crypto_rl.env.metrics import get_calmar_from_returns
+from crypto_rl.env.metrics import get_calmar_from_portfolio_series
 
 
 def eval_report(logger):
@@ -30,7 +30,7 @@ def eval_report(logger):
         out=np.zeros_like(np.diff(pv_series), dtype=float),
         where=denom > 1e-8,
     )
-    calmar = get_calmar_from_returns(returns, pv_series)
+    calmar = get_calmar_from_portfolio_series(pv_series)
     downside = returns[returns < 0]
     sortino = 0.0
     # 1. Check for insufficient data (Degrees of freedom <= 0)

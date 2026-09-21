@@ -1,11 +1,17 @@
-from contextlib import contextmanager
 import logging
-import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+import gi
 import optuna
 import pandas as pd
+
+gi.require_version("Notify", "0.7")
+from gi.repository import GLib, Notify
+
+Notify.init("crypto_rl")  # refers to ~/.local/share/applications/crypto_rl.desktop
 
 
 def init_log(env, run_id: str = "default") -> None:
@@ -116,5 +122,8 @@ def selective_logger(file_name: str):
         log_file.close()
 
 
-def send_notification(message: str) -> None:
-    subprocess.run(["notify-send", "--app-name", "Crypto RL", message], check=False)
+def send_notification(body: str, summary: str = "Experiment Run"):
+    notification = Notify.Notification.new(summary, body)
+    # Attach the desktop-entry hint so GNOME Shell groups it
+    notification.set_hint("desktop-entry", GLib.Variant("s", "crypto_rl"))
+    notification.show()
