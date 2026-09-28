@@ -1,4 +1,6 @@
 import dataclasses
+import gc
+import json
 import logging
 import os
 import sys
@@ -83,15 +85,44 @@ def run_experiment(
     """Run training and evaluation with walk-forward CV.
     Returns the mean test Calmar across folds (or multi-seed portfolio value) for Optuna.
     """
-    ckpt_mgr: CVCheckpointManager = CVCheckpointManager()
     # Seed for reproducibility of dataset split
     np.random.seed(config.data_seed)
-    with selective_logger("latest_results.log") as logger:
+    log_file_name: str = "latest_results.log"
+    if trial is not None:
+        log_file_name = os.path.join(
+            config.optuna_dir, f"optuna_trial_{trial.number}.log"
+        )
+    with selective_logger(log_file_name) as logger:
+        ckpt_mgr: CVCheckpointManager = CVCheckpointManager(logger)
+        if config.eval_freq == "auto":
+            config.eval_freq = max(2000, config.timesteps // 10)
         # ── 1. Load data & create walk-forward splits ────────────────────────
-        raw_df = load_raw_data(config, logger, trial)
-        splits = prepare_splits(raw_df, config, logger, trial)
+        splits_cache = Path(
+            f"{config.data_cache_dir}/seed_{config.data_seed}_rows_{config.n_rows}_splits.json"
+        )
+        splits_cache.parent.mkdir(parents=True, exist_ok=True)
+        raw_df = None  # Default to None to save RAM
+        if splits_cache.exists():
+            with open(splits_cache, "r") as f:
+                splits = json.load(f)
+            print_if_not_trial(
+                logger,
+                logging.DEBUG,
+                trial,
+                "1. Loaded walk-forward splits from cache.",
+            )
+        else:
+            raw_df_tmp = load_raw_data(config, logger, trial)
+            splits = prepare_splits(raw_df_tmp, config, logger, trial)
+            # Save splits atomically for the next workers
+            tmp_json = splits_cache.with_suffix(".tmp")
+            with open(tmp_json, "w") as f:
+                json.dump(splits, f)
+            tmp_json.rename(splits_cache)
+            # DESTROY THE CALLER REFERENCE BEFORE LAUNCHING RUN_FOLDS
+            del raw_df_tmp
+            gc.collect()
         n_splits = len(splits)
-
         # ── 2. Set up run directory ──────────────────────────────────────────
         run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")
         run_dir = Path(config.base_run_dir) / run_id
@@ -102,7 +133,6 @@ def run_experiment(
         env_config = dataclasses.replace(
             config, disable_logging=trial is not None, parquet_path=None, n_rows=0
         )
-        shared_env_config = dataclasses.replace(config, disable_logging=True)
 
         try:
             # ── 3. Execute all CV folds ──────────────────────────────────────
@@ -128,12 +158,10 @@ def run_experiment(
                 state_file=state_file,
                 index_file=index_file,
                 ckpt_mgr=ckpt_mgr,
-                shared_env_config=shared_env_config,
                 env_config=env_config,
                 dummy_vec_env_args=dummy_vec_env_args,
                 splits=splits,
             )
-
             (
                 last_test_prices,
                 last_test_static,
@@ -167,7 +195,6 @@ def run_experiment(
             buy_hold_final = compute_buy_and_hold_baseline(
                 config, last_asset_names, last_prices_arr
             )
-
             # ── 6. Multi-seed evaluation ─────────────────────────────────────
             run_multi_seed_eval(
                 config=config,
@@ -179,7 +206,6 @@ def run_experiment(
                 last_test_norm_vol=last_test_norm_vol,
                 last_test_names=last_test_names,
                 run_id=run_id,
-                shared_env_config=shared_env_config,
                 train_env_obs_rms=last_obs_rms,
                 dummy_vec_env_args=dummy_vec_env_args,
             )
@@ -230,6 +256,9 @@ def run_experiment(
             return float(cv_mean_calmar)  # Return mean Calmar ratio for Optuna
 
         except optuna.exceptions.TrialPruned:
+            assert trial is not None, (
+                "TrialPruned should only occur during an Optuna trial."
+            )
             # Clean up checkpoint and let Optuna handle the pruned trial
             ckpt_mgr.clear_checkpoint(trial.number)
             raise

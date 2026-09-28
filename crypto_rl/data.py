@@ -35,9 +35,17 @@ DEFAULT_SYMBOLS = [
     "NEARUSDT",
     "UNIUSDT",
 ]
-
-
 HTF_COLS = ["htf_slope_15m", "htf_slope_1h", "htf_regime_24h"]
+_OHLCV_NUMERIC_COLS = [
+    "close",
+    "open",
+    "high",
+    "low",
+    "volume",
+    "htf_slope_15m",
+    "htf_slope_1h",
+    "htf_regime_24h",
+]
 
 
 def _get_read_cols(path: str) -> list[str]:
@@ -262,65 +270,52 @@ def read_n_rows(path: str, n_rows: int) -> pd.DataFrame:
 
 def get_walk_forward_splits(
     df: pd.DataFrame, n_folds: int = 3
-) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
+) -> list[tuple[int, int, int, str, str]]:
     """Split dataframe into n_folds expanding walk-forward train and test sets.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Long-format dataframe containing at least 'open_time' and 'symbol'.
-    n_folds : int
-        Number of walk-forward folds (default: 3).
-
-    Returns
-    -------
-    list[tuple[pd.DataFrame, pd.DataFrame]]
-        List of (train_df, test_df) tuples for each fold.
+    Returns a list of (t_train_max, t_test_min, t_test_max, train_start_str, train_end_str) for each fold.
     """
     if n_folds <= 0:
         raise ValueError(f"n_folds must be >= 1, got {n_folds}")
-
     unique_times = np.sort(df["open_time"].unique())
     n_unique = len(unique_times)
     n_chunks = n_folds + 1
     chunk_len = n_unique // n_chunks
-
     if chunk_len == 0:
         raise ValueError(
             f"Not enough unique timestamps ({n_unique}) to create {n_folds} folds."
         )
-
     splits = []
     for fold in range(n_folds):
         train_end_idx = (fold + 1) * chunk_len
         test_start_idx = train_end_idx
         test_end_idx = (fold + 2) * chunk_len if fold < (n_folds - 1) else n_unique
-
-        t_train_max = unique_times[train_end_idx - 1]
-        t_test_min = unique_times[test_start_idx]
-        t_test_max = unique_times[test_end_idx - 1]
-
-        train_df = df[df["open_time"] <= t_train_max].copy().reset_index(drop=True)
-        test_df = (
-            df[(df["open_time"] >= t_test_min) & (df["open_time"] <= t_test_max)]
-            .copy()
-            .reset_index(drop=True)
+        t_train_min_raw = unique_times[
+            0
+        ]  # Expanding window always starts at the beginning
+        t_train_max_raw = unique_times[train_end_idx - 1]
+        t_test_min_raw = unique_times[test_start_idx]
+        t_test_max_raw = unique_times[test_end_idx - 1]
+        # Format strings here so we never need the DataFrame later
+        train_start_str = (
+            pd.to_datetime(t_train_min_raw)
+            .tz_localize("UTC")
+            .strftime("%Y-%m-%d %H:%M:%S %Z")
         )
-        splits.append((train_df, test_df))
-
+        train_end_str = (
+            pd.to_datetime(t_train_max_raw)
+            .tz_localize("UTC")
+            .strftime("%Y-%m-%d %H:%M:%S %Z")
+        )
+        splits.append(
+            (
+                int(t_train_max_raw),
+                int(t_test_min_raw),
+                int(t_test_max_raw),
+                train_start_str,
+                train_end_str,
+            )
+        )
     return splits
-
-
-_OHLCV_NUMERIC_COLS = [
-    "close",
-    "open",
-    "high",
-    "low",
-    "volume",
-    "htf_slope_15m",
-    "htf_slope_1h",
-    "htf_regime_24h",
-]
 
 
 def _downcast_ohlcv(df: pd.DataFrame) -> pd.DataFrame:

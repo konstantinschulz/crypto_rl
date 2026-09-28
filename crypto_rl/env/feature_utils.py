@@ -50,36 +50,30 @@ def precalculate_static_obs(env) -> None:
     numpy arrays are retained.
     """
     # ------------------------------------------------------------------
-    # Convert DataFrames → float32 numpy arrays (half the memory of float64)
+    # Convert DataFrames to float32 numpy arrays (half the memory of float64)
     # ------------------------------------------------------------------
     env.prices_arr = env.prices_df.values.astype(np.float32)
     env.open_arr = env.open_df.values.astype(np.float32)
     env.high_arr = env.high_df.values.astype(np.float32)
     env.low_arr = env.low_df.values.astype(np.float32)
     env.volume_arr = env.volume_df.values.astype(np.float32)
-
-    # HTF indicators
-    env.htf_slope_15m_arr = (
-        env.htf_slope_15m_df.values.astype(np.float32)
-        if getattr(env, "htf_slope_15m_df", None) is not None
-        else np.zeros_like(env.prices_arr)
-    )
-    env.htf_slope_1h_arr = (
-        env.htf_slope_1h_df.values.astype(np.float32)
-        if getattr(env, "htf_slope_1h_df", None) is not None
-        else np.zeros_like(env.prices_arr)
-    )
-    env.htf_regime_24h_arr = (
-        env.htf_regime_24h_df.values.astype(np.float32)
-        if getattr(env, "htf_regime_24h_df", None) is not None
-        else np.zeros_like(env.prices_arr)
-    )
-
+    htf_indicators: dict[str, str] = {
+        "htf_slope_15m_arr": "htf_slope_15m_df",
+        "htf_slope_1h_arr": "htf_slope_1h_df",
+        "htf_regime_24h_arr": "htf_regime_24h_df",
+    }
+    for indicator_name, indicator_df in htf_indicators.items():
+        new_value = (
+            getattr(env, indicator_df).values.astype(np.float32)
+            if getattr(env, indicator_df) is not None
+            else np.zeros_like(env.prices_arr)
+        )
+        setattr(env, indicator_name, new_value)
     # Keep column names before freeing the DataFrame
     env.asset_cols = list(env.prices_df.columns)
 
     # ------------------------------------------------------------------
-    # Drop source DataFrames immediately – they are never needed again
+    # Drop source DataFrames immediately - they are never needed again
     # ------------------------------------------------------------------
     env.prices_df = None
     env.open_df = None
@@ -107,25 +101,42 @@ def precalculate_static_obs(env) -> None:
         )
 
     # ------------------------------------------------------------------
-    # All intermediate computations in numpy float32 to avoid pandas overhead
+    # All intermediate computations in numpy float32 to avoid pandas overhead.
+    #
+    # MEMORY STRATEGY: each intermediate array is deleted as soon as it has
+    # been folded into a column block, so that at most a handful of large
+    # arrays coexist at any point.  The final precalc_static_obs is assembled
+    # via a single np.concatenate rather than a row-by-row Python loop (which
+    # kept all 39+ (T, N) arrays alive simultaneously for the full T iters).
     # ------------------------------------------------------------------
-    prices = env.prices_arr  # (T, N) float32
-    volume = env.volume_arr  # (T, N) float32
-    high = env.high_arr  # (T, N) float32
-    low = env.low_arr  # (T, N) float32
-    htf_slope_15m = env.htf_slope_15m_arr  # (T, N) float32
-    htf_slope_1h = env.htf_slope_1h_arr  # (T, N) float32
-    htf_regime_24h = env.htf_regime_24h_arr  # (T, N) float32
+    prices = env.prices_arr          # (T, N) float32 - owned by env, not freed here
+    volume = env.volume_arr          # (T, N) float32
+    high   = env.high_arr            # (T, N) float32
+    low    = env.low_arr             # (T, N) float32
+    htf_slope_15m  = env.htf_slope_15m_arr   # (T, N)
+    htf_slope_1h   = env.htf_slope_1h_arr    # (T, N)
+    htf_regime_24h = env.htf_regime_24h_arr  # (T, N)
+
+    # Column blocks accumulate here; each has shape (T+1, k).
+    # The extra row at [T] is a copy of [T-1] (boundary padding).
+    col_blocks: list[np.ndarray] = []
+
+    def _pad(arr: np.ndarray) -> np.ndarray:
+        """Append a copy of the last row so shape becomes (T+1, ...)."""
+        return np.vstack([arr, arr[-1:]])
 
     # --- returns: pct_change -------------------------------------------
-    safe_prev = np.where(prices[:-1] > 0, prices[:-1], 1e-8)
-    returns = np.empty_like(prices)  # (T, N)
+    safe_prev = np.where(prices[:-1] > 0, prices[:-1], np.float32(1e-8))
+    returns = np.empty_like(prices)
     returns[0] = 0.0
     returns[1:] = (prices[1:] - prices[:-1]) / safe_prev
+    del safe_prev
 
     # --- rolling volatility (std of returns over W bars) ---------------
     vol_norm_arr = _rolling_std(returns, W)
     env.asset_volatility = vol_norm_arr
+    del returns
+    gc.collect()
 
     # --- momentum: prices[t]/prices[t-W] - 1 --------------------------
     momentum = np.zeros_like(prices)
@@ -139,131 +150,154 @@ def precalculate_static_obs(env) -> None:
     delta = np.diff(prices, axis=0, prepend=prices[:1])
     gain = np.clip(delta, 0, None)
     loss = np.clip(-delta, 0, None)
+    del delta
     alpha = 1.0 / 14.0
-    avg_gain = _ewm(gain, alpha)
-    avg_loss = _ewm(loss, alpha)
+    avg_gain = _ewm(gain, alpha);  del gain
+    avg_loss = _ewm(loss, alpha);  del loss
+    gc.collect()
     rs = avg_gain / (avg_loss + 1e-8)
+    del avg_gain, avg_loss
     rsi_raw = (rs / (1.0 + rs)) * 2.0 - 1.0
+    del rs
 
     # --- MACD: (mean_3 - mean_W) / std_W --------------------------------
     mean_W, std_W = _rolling_mean_std(prices, W)
     mean_3, _ = _rolling_mean_std(prices, min(3, T))
     macd_raw = (mean_3 - mean_W) / (std_W + 1e-8)
+    del mean_3, std_W, mean_W
 
-    # --- Base Volume normalisation (Window W) -------------------------
+    # --- Base Volume normalisation (Window W) --------------------------
     vol_mean, _ = _rolling_mean_std(volume, W)
-    safe_vol_mean = np.where(vol_mean > 0, vol_mean, np.nan)
+    safe_vol_mean = np.where(vol_mean > 0, vol_mean, np.nan);  del vol_mean
     vol_norm = np.nan_to_num((volume / safe_vol_mean) - 1.0, nan=0.0).astype(np.float32)
+    del safe_vol_mean
 
-    # --- NEW: 24h Relative Volume (RVOL) ------------------------------
+    # --- 24h Relative Volume (RVOL) ------------------------------------
     W_24h = min(1440, T)
     vol_mean_24h, _ = _rolling_mean_std(volume, W_24h)
     safe_vol_mean_24h = np.where(vol_mean_24h > 0, vol_mean_24h, np.nan)
+    del vol_mean_24h
     rvol_24h = np.nan_to_num(volume / safe_vol_mean_24h, nan=1.0).astype(np.float32)
+    del safe_vol_mean_24h
 
-    # --- Intrabar volatility ------------------------------------------
+    # --- Intrabar volatility -------------------------------------------
     safe_prices = np.where(prices > 0, prices, np.nan)
     intrabar_vol = np.nan_to_num((high - low) / safe_prices, nan=0.0).astype(np.float32)
+    del safe_prices, high, low
 
-    # --- Base VWAP deviation (Window W) -------------------------------
+    # --- Base VWAP deviation (Window W) --------------------------------
     pv = prices * volume
-    pv_sum = _rolling_sum(pv, W)
+    pv_sum  = _rolling_sum(pv, W)
     vol_sum = _rolling_sum(volume, W)
-    safe_vol_sum = np.where(vol_sum > 0, vol_sum, np.nan)
-    vwap = pv_sum / safe_vol_sum
-    safe_vwap = np.where(vwap > 0, vwap, np.nan)
+    safe_vol_sum = np.where(vol_sum > 0, vol_sum, np.nan);  del vol_sum
+    vwap = pv_sum / safe_vol_sum;  del pv_sum, safe_vol_sum
+    safe_vwap = np.where(vwap > 0, vwap, np.nan);  del vwap
     vwap_dev = np.nan_to_num((prices / safe_vwap) - 1.0, nan=0.0).astype(np.float32)
+    del safe_vwap
 
-    # --- NEW: 24h VWAP deviation --------------------------------------
-    pv_sum_24h = _rolling_sum(pv, W_24h)
+    # --- 24h VWAP deviation --------------------------------------------
+    pv_sum_24h  = _rolling_sum(pv, W_24h)
     vol_sum_24h = _rolling_sum(volume, W_24h)
+    del pv, volume   # no longer needed
     safe_vol_sum_24h = np.where(vol_sum_24h > 0, vol_sum_24h, np.nan)
-    vwap_24h = pv_sum_24h / safe_vol_sum_24h
-    safe_vwap_24h = np.where(vwap_24h > 0, vwap_24h, np.nan)
-    vwap_dev_24h = np.nan_to_num((prices / safe_vwap_24h) - 1.0, nan=0.0).astype(
-        np.float32
-    )
+    del vol_sum_24h
+    vwap_24h = pv_sum_24h / safe_vol_sum_24h;  del pv_sum_24h, safe_vol_sum_24h
+    safe_vwap_24h = np.where(vwap_24h > 0, vwap_24h, np.nan);  del vwap_24h
+    vwap_dev_24h = np.nan_to_num(
+        (prices / safe_vwap_24h) - 1.0, nan=0.0
+    ).astype(np.float32)
+    del safe_vwap_24h
+    gc.collect()
 
     # --- BTC macro features & correlations ----------------------------
     btc_idx = env.asset_cols.index("BTCUSDT") if "BTCUSDT" in env.asset_cols else 0
     btc_prices = prices[:, btc_idx]
-    btc_mom = momentum[:, btc_idx]
-    btc_vol = vol_norm_arr[:, btc_idx]
+    btc_mom    = momentum[:, btc_idx]
+    btc_vol    = vol_norm_arr[:, btc_idx]
 
-    # --- NEW: 60m BTC Correlation -------------------------------------
+    # --- 60m BTC Correlation -----------------------------------------
     W_60m = min(60, T)
-    btc_prices_2d = btc_prices[:, None]  # Broadcastable shape (T, 1)
-    btc_corr_60m = _rolling_corr(prices, btc_prices_2d, W_60m)
+    btc_corr_60m = _rolling_corr(prices, btc_prices[:, None], W_60m)
 
     # 24h and 7d % change for BTC regime
     btc_mom_24h = _pct_change_lag(btc_prices, min(24, T))
-    btc_mom_7d = _pct_change_lag(btc_prices, min(168, T))
-    bull_mask = (btc_mom_24h > 0.005) & (btc_mom_7d > 0.005)
-    bear_mask = (btc_mom_24h < -0.005) & (btc_mom_7d < -0.005)
+    btc_mom_7d  = _pct_change_lag(btc_prices, min(168, T))
+    del btc_prices
+    bull_mask    = (btc_mom_24h > 0.005)  & (btc_mom_7d > 0.005)
+    bear_mask    = (btc_mom_24h < -0.005) & (btc_mom_7d < -0.005)
     ranging_mask = ~(bull_mask | bear_mask)
+    del btc_mom_24h, btc_mom_7d
 
     btc_regime_1hot = np.zeros((T, 3), dtype=np.float32)
     btc_regime_1hot[bull_mask, 0] = 1.0
     btc_regime_1hot[ranging_mask, 1] = 1.0
     btc_regime_1hot[bear_mask, 2] = 1.0
+    del bull_mask, bear_mask, ranging_mask
 
     # Relative momentum vs BTC
     rel_mom = momentum - btc_mom[:, None]
 
-    # Rolling z-score (window=100, min 10 periods)
-    mom_norm = _rolling_zscore(momentum, window=min(100, T), min_periods=10)
-    rel_mom_norm = _rolling_zscore(rel_mom, window=min(100, T), min_periods=10)
+    # Rolling z-scores
+    mom_norm     = _rolling_zscore(momentum, window=min(100, T), min_periods=10);  del momentum
+    rel_mom_norm = _rolling_zscore(rel_mom,  window=min(100, T), min_periods=10);  del rel_mom
 
-    btc_mom_2d = btc_mom[:, None]
-    btc_vol_2d = btc_vol[:, None]
-    btc_mom_norm = _rolling_zscore(btc_mom_2d, window=min(100, T), min_periods=10)[:, 0]
-    btc_vol_norm = _rolling_zscore(btc_vol_2d, window=min(100, T), min_periods=10)[:, 0]
+    btc_mom_norm = _rolling_zscore(btc_mom[:, None], window=min(100, T), min_periods=10)[:, 0]
+    del btc_mom
+    btc_vol_norm = _rolling_zscore(btc_vol[:, None], window=min(100, T), min_periods=10)[:, 0]
+    del btc_vol
+    gc.collect()
 
     # ------------------------------------------------------------------
     # Assemble precalc_static_obs: shape (T+1, static_dim)
+    #
+    # VECTORIZED: build column blocks and concatenate once instead of
+    # filling row-by-row in a Python loop (which kept all intermediate
+    # arrays alive for the full T iterations).
+    # Each array is appended to col_blocks then immediately deleted so
+    # the peak footprint is bounded to a few blocks at a time.
     # ------------------------------------------------------------------
-    env.precalc_static_obs = np.zeros((T + 1, env.static_dim), dtype=np.float32)
 
-    for t in range(W, T):
-        idx = 0
-        env.precalc_static_obs[t, idx] = btc_mom_norm[t]
-        env.precalc_static_obs[t, idx + 1] = btc_vol_norm[t]
-        env.precalc_static_obs[t, idx + 2 : idx + 5] = btc_regime_1hot[t]
-        idx += env.macro_dim
+    # Macro block (T+1, MACRO_DIM=5)
+    macro_block = np.zeros((T + 1, MACRO_DIM), dtype=np.float32)
+    macro_block[:T, 0]    = btc_mom_norm
+    macro_block[:T, 1]    = btc_vol_norm
+    macro_block[:T, 2:5]  = btc_regime_1hot
+    macro_block[T]        = macro_block[T - 1]
+    col_blocks.append(macro_block)
+    del btc_mom_norm, btc_vol_norm, btc_regime_1hot, macro_block
 
-        # Core Indicators
-        env.precalc_static_obs[t, idx : idx + N] = vol_norm[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = intrabar_vol[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = vwap_dev[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = mom_norm[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = rsi_raw[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = macd_raw[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = rel_mom_norm[t]
-        idx += N
+    # Per-asset indicator blocks (each (T+1, N)).
+    # Array is padded, appended, then deleted immediately.
+    for arr in [
+        vol_norm,
+        intrabar_vol,
+        vwap_dev,
+        mom_norm,
+        rsi_raw,
+        macd_raw,
+        rel_mom_norm,
+        rvol_24h,
+        vwap_dev_24h,
+        btc_corr_60m,
+        htf_slope_15m,
+        htf_slope_1h,
+        htf_regime_24h,
+    ]:
+        col_blocks.append(_pad(arr))
+        del arr
 
-        # New Contextual Indicators (RVOL, 24h VWAP, BTC Corr)
-        env.precalc_static_obs[t, idx : idx + N] = rvol_24h[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = vwap_dev_24h[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = btc_corr_60m[t]
-        idx += N
+    # Explicitly unbind the local names so CPython refcount drops to zero
+    del (vol_norm, intrabar_vol, vwap_dev, mom_norm, rsi_raw, macd_raw,
+         rel_mom_norm, rvol_24h, vwap_dev_24h, btc_corr_60m,
+         htf_slope_15m, htf_slope_1h, htf_regime_24h)
+    gc.collect()
 
-        # HTF Indicators
-        env.precalc_static_obs[t, idx : idx + N] = htf_slope_15m[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = htf_slope_1h[t]
-        idx += N
-        env.precalc_static_obs[t, idx : idx + N] = htf_regime_24h[t]
-        idx += N
+    # Single concatenation
+    env.precalc_static_obs = np.concatenate(col_blocks, axis=1)
+    del col_blocks
+    gc.collect()
 
-    env.precalc_static_obs[T] = env.precalc_static_obs[T - 1]
+    # Clamp any residual NaN / Inf
     np.nan_to_num(env.precalc_static_obs, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
 

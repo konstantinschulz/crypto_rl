@@ -85,6 +85,28 @@ def _to_float(value, default=0.0):
     except (TypeError, ValueError):
         return float(default)
 
+def _abbrev_number(value: int) -> str:
+    """Abbreviate large integers using 'k' for thousands and 'M' for millions.
+
+    Small numbers are formatted with commas. Values are rounded to one decimal
+    place for abbreviated forms, and trailing zeros and decimal points are
+    stripped (e.g., ``1.0k`` becomes ``1k``).
+    """
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    abs_v = abs(v)
+    if abs_v >= 1_000_000:
+        formatted = f"{v / 1_000_000:.1f}M"
+    elif abs_v >= 1_000:
+        formatted = f"{v / 1_000:.1f}k"
+    else:
+        return f"{v:,}"  # include commas for readability
+    # Strip unnecessary trailing zeros and a trailing dot
+    return formatted.rstrip('0').rstrip('.')
+
+
 
 def _run_epoch_from_id(run_id: str) -> int:
     # run id format: run-YYYYMMDD-HHMMSS-xxxxxx
@@ -414,9 +436,9 @@ if _status in {"initializing", "running", "finished"}:
 
 st.subheader("Training Metrics")
 col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(9)
-col1.metric("Data Intervals", f"{int(_to_float(tech.get('num_data_rows', 0), 0)):,}")
+col1.metric("Data Intervals", _abbrev_number(int(_to_float(tech.get('num_data_rows', 0), 0))))
 col2.metric("Window Size", f"{int(_to_float(tech.get('window_size', 10), 10)):,}")
-col3.metric("Step", f"{int(kpis['step']):,}")
+col3.metric("Step", _abbrev_number(int(kpis['step'])))
 col4.metric("Train Loss", f"{kpis['train_loss']:.5f}")
 col5.metric("Train Reward", f"{kpis['train_reward']:.4f}")
 col6.metric("Train Portfolio", f"${kpis['train_portfolio_value']:.2f}")
@@ -433,7 +455,7 @@ eval_col1, eval_col2, eval_col3, eval_col4, eval_col5, eval_col6, eval_col7 = (
 )
 eval_col1.metric("Final Portfolio Value", f"${kpis['eval_final_portfolio_value']:.2f}")
 eval_col2.metric("PnL", f"${kpis['eval_pnl']:.2f}")
-eval_col3.metric("Evaluation Steps", f"{kpis['eval_steps']:,}")
+eval_col3.metric("Evaluation Steps", _abbrev_number(int(kpis['eval_steps'])))
 eval_col4.metric("Time in Market", f"{kpis['eval_time_in_market_pct']:.1f}%")
 eval_col5.metric("Buy/Hold Baseline", f"${kpis['eval_buy_hold_baseline']:.2f}")
 eval_col6.metric("Eval Trades", f"{kpis['eval_trades']:,}")  # Added

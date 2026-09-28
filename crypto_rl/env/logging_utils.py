@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 import logging
+import os
 import sys
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
 
 import gi
 import optuna
@@ -89,7 +91,10 @@ def log_action(
 
 
 def print_if_not_trial(
-    logger: LoggerBase, log_level: int, trial: optuna.trial.Trial | None = None, msg: str = ""
+    logger: LoggerBase,
+    log_level: int,
+    trial: optuna.trial.Trial | None = None,
+    msg: str = "",
 ):
     if trial is None:
         if log_level == logging.INFO:
@@ -102,6 +107,7 @@ def print_if_not_trial(
 def selective_logger(file_name: str) -> Generator[LoggerBase, None, None]:
     """Context manager providing methods for dual-output or console-only logging."""
     original_stdout = sys.stdout
+    os.makedirs(Path(file_name).parent, exist_ok=True)
     log_file = (
         open(file_name, "w", encoding="utf-8")
         if file_name
@@ -109,20 +115,26 @@ def selective_logger(file_name: str) -> Generator[LoggerBase, None, None]:
     )
 
     class Logger(LoggerBase):
-        def info(self, message: str):
-            """Prints to BOTH the console and the file."""
-            original_stdout.write(message + "\n")
-            log_file.write(message + "\n")
-            self.flush()
+        def add_timestamp(self, message: str) -> str:
+            """Prepends a UTC timestamp to the log message."""
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            return f"[{timestamp}] {message}"
 
         def debug(self, message: str):
             """Prints to the console ONLY (hidden from file)."""
-            original_stdout.write(message + "\n")
+            original_stdout.write(self.add_timestamp(message) + "\n")
             original_stdout.flush()
 
         def flush(self):
             original_stdout.flush()
             log_file.flush()
+
+        def info(self, message: str):
+            """Prints to BOTH the console and the file."""
+            msg_with_timestamp: str = self.add_timestamp(message)
+            original_stdout.write(msg_with_timestamp + "\n")
+            log_file.write(msg_with_timestamp + "\n")
+            self.flush()
 
     logger = Logger()
     try:

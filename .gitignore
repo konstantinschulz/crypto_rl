@@ -12,6 +12,7 @@
 __pycache__/
 artifacts/
 best_model/
+data/
 docs/.~*
 logs/
 models/

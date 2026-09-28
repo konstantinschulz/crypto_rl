@@ -10,7 +10,7 @@ from crypto_rl.env.action_processing import (
 from crypto_rl.env.logging_utils import log_action
 from crypto_rl.env.metrics import get_per_asset_summary
 
-if TYPE_CHECKING: # avoid circular import issues
+if TYPE_CHECKING:  # avoid circular import issues
     from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 
@@ -113,7 +113,14 @@ def _process_sell_accounting(
 def step_env(
     env: MinimalCryptoEnv, action
 ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-    """Execute one environment step for MinimalCryptoEnv."""
+    """Execute one environment step for MinimalCryptoEnv.
+    Returns:
+        obs: np.ndarray - The next observation after the step.
+        reward: float - The reward obtained from the step.
+        done: bool - Whether the episode has ended.
+        truncated: bool - Whether the episode was truncated (not used here).
+        info: dict - Additional information about the step, including reward components.
+    """
     prev_portfolio_value = env.portfolio_value
     current_prices = env.prices_arr[env.current_step - 1]
     next_prices = env.prices_arr[env.current_step]
@@ -184,7 +191,8 @@ def step_env(
 
     # Advance step
     env.current_step += 1
-    done = env.current_step >= env.prices_arr.shape[0]
+    # TRIGGER EPISODE END BASED ON THE RANDOMIZED BOUNDARY
+    done = env.current_step >= env.max_steps
     current_asset_value = np.sum(env.holdings * next_prices)
     env.portfolio_value = env.cash + current_asset_value
     env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)

@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import pandas as pd
 from gymnasium import spaces
 
 from crypto_rl.config import RLConfig
@@ -55,6 +56,7 @@ class MinimalCryptoEnv(gym.Env):
         config: RLConfig,
         run_id: str = "default",
         is_eval: bool = False,
+        is_fast_eval: bool = False,
         logger: LoggerBase | None = None,
     ):
         super().__init__()
@@ -64,18 +66,19 @@ class MinimalCryptoEnv(gym.Env):
         self.norm_vol_arr: np.ndarray = norm_vol_arr
         self.asset_names: list[str] = asset_names
         self.num_assets: int = len(asset_names)
-        self.prices_df = None
-        self.open_df = None
-        self.high_df = None
-        self.low_df = None
-        self.volume_df = None
-        self.htf_slope_15m_df = None
-        self.htf_slope_1h_df = None
-        self.htf_regime_24h_df = None
+        self.prices_df: pd.DataFrame
+        self.open_df: pd.DataFrame
+        self.high_df: pd.DataFrame
+        self.low_df: pd.DataFrame
+        self.volume_df: pd.DataFrame
+        self.htf_slope_15m_df: pd.DataFrame | None = None
+        self.htf_slope_1h_df: pd.DataFrame | None = None
+        self.htf_regime_24h_df: pd.DataFrame | None = None
         self.config = config
         self.run_id = run_id
         self.fee_rate = config.fee_rate
         self.is_eval = is_eval
+        self.is_fast_eval = is_fast_eval
         # Per-asset performance metrics
         self.per_asset_realized_pnl = np.zeros(self.num_assets, dtype=np.float32)
         self.per_asset_trades = np.zeros(self.num_assets, dtype=np.int32)
@@ -121,7 +124,8 @@ class MinimalCryptoEnv(gym.Env):
         # Pre-allocate dynamic slice buffers
         self.unrealised_pnl_buf = np.zeros(self.num_assets, dtype=np.float32)
 
-        self.current_step = config.window_size
+        self.current_step: int = config.window_size
+        self.max_steps: int = 0
         self.cash = config.budget_initial
         self.holdings = np.zeros(self.num_assets, dtype=np.float32)
         self.portfolio_value = config.budget_initial
@@ -139,8 +143,8 @@ class MinimalCryptoEnv(gym.Env):
         self.total_cost_basis = np.zeros(self.num_assets, dtype=np.float32)
 
         self._cached_valid_open_times: np.ndarray | None = None
-        self._cached_symbols: list[str] | None = None
-        self._cached_k: int | None = None
+        self._cached_symbols: list[str]
+        self._cached_k: int
 
         if self.config.parquet_path is not None and self.config.n_rows > 0:
             from crypto_rl.data import get_valid_start_timestamps

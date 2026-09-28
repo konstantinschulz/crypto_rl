@@ -17,6 +17,8 @@ from typing import Optional
 
 import numpy as np
 import optuna
+from sb3_contrib.common.wrappers import ActionMasker
+from tqdm import tqdm
 
 from crypto_rl.config import RLConfig
 from crypto_rl.env.metrics import calculate_calmar_ratio
@@ -304,13 +306,13 @@ class UnifiedEvalCallback(BaseCallback):
     ):
         super().__init__(verbose=0)
         self.config = config
-        self.eval_env = eval_env
+        self.eval_env: MinimalCryptoEnv | ActionMasker = eval_env
         self.trial = trial
         self.checkpoint_dir = checkpoint_dir
         self.fold_idx = fold_idx
         self.eval_step_offset = eval_step_offset
 
-        self.eval_freq = config.eval_freq
+        self.eval_freq: int = int(config.eval_freq)
         self.max_checkpoints = config.max_checkpoints
 
         self.eval_idx = 0
@@ -323,9 +325,12 @@ class UnifiedEvalCallback(BaseCallback):
         if self.eval_freq > 0 and self.num_timesteps % self.eval_freq == 0:
             self.eval_idx += 1
             _, calmar = self._run_evaluation()
+            total_evals = self.config.timesteps // self.eval_freq
+            # Target a window of 30% of total evaluations (standard in quant fincance), but never less than 1
+            smoothing_window: int = max(1, round(total_evals * 0.3))
             # --- NEW: Exponential Moving Average (EMA) Smoothing ---
             # Alpha of 0.5 means the new score is 50% current eval, 50% historical average.
-            alpha = 0.5
+            alpha = 2.0 / (smoothing_window + 1.0)
             if self.ema_score is None:
                 self.ema_score = calmar
             else:
@@ -362,7 +367,15 @@ class UnifiedEvalCallback(BaseCallback):
         # Access the unwrapped base environment for fast property lookups
         # (bypassing slow VecEnv get_attr IPC calls)
         base_env = self.eval_env.venv.envs[0].unwrapped
-
+        # Calculate exactly how many steps this evaluation will take
+        total_eval_steps = base_env.max_steps - base_env.current_step
+        # Disable the progress bar if we are running headless background Optuna workers
+        pbar: tqdm = tqdm(
+            total=total_eval_steps, 
+            desc=f"Intermediate Evaluation at {self.num_timesteps} steps", 
+            disable=self.trial is not None,
+            unit="steps"
+        )
         initial_pv = base_env.portfolio_value
         portfolio_values = [{"step": 0, "value": float(initial_pv)}]
         steps = 0
@@ -379,6 +392,7 @@ class UnifiedEvalCallback(BaseCallback):
             info = infos[0]
             episode_reward += float(reward[0])
             steps += 1
+            pbar.update(1)
             # Dodge the VecEnv auto-reset bug
             if done:
                 # On the terminal step, grab the true final PV from info before the reset wiped it
@@ -392,6 +406,7 @@ class UnifiedEvalCallback(BaseCallback):
                     "value": float(current_pv),
                 }
             )
+        pbar.close()
         calmar = calculate_calmar_ratio(portfolio_values)
         return episode_reward, calmar
 

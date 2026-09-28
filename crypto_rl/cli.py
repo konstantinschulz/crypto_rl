@@ -78,6 +78,12 @@ Examples:
         help="Enable checkpointing of best Calmar model",
     )
     parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        default=default_config.clear_cache,
+        help="Clear cached preprocessed data (static observations, normalized volatility) before running",
+    )
+    parser.add_argument(
         "--clip-range",
         type=float,
         default=default_config.clip_range,
@@ -142,6 +148,12 @@ Examples:
         type=lambda x: x if x == "auto" else int(x),
         default=default_config.eval_freq,
         help=f"Frequency (in steps) to run full episode evaluation for Calmar ratio (default: {default_config.eval_freq}). Use 'auto' to let the system determine the frequency automatically based on the number of timesteps.",
+    )
+    parser.add_argument(
+        "--eval-length",
+        type=int,
+        default=default_config.eval_length,
+        help=f"Length of evaluation episodes in steps (default: {default_config.eval_length}). This is the number of steps to run for each evaluation episode, which is used to calculate the Calmar ratio and other metrics. It should be long enough to capture meaningful performance, but not so long that it slows down the training process.",
     )
     parser.add_argument(
         "--fee-rate",

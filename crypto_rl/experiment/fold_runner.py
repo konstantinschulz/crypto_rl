@@ -7,8 +7,10 @@ preserving the original behavior.
 """
 
 import dataclasses
+import gc
 import json
 import logging
+import os
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +25,7 @@ from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from tqdm import tqdm
 
 from crypto_rl.callbacks import (
     DashboardCallback,
@@ -31,8 +34,9 @@ from crypto_rl.callbacks import (
 )
 from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
+from crypto_rl.data import DEFAULT_SYMBOLS
 from crypto_rl.env.action_processing import get_action_mask
-from crypto_rl.env.data_utils import compute_static_obs_from_long_df
+from crypto_rl.env.data_utils import compute_static_obs_from_long_df, is_cache_built
 from crypto_rl.env.logging_utils import (
     LoggerBase,
     print_if_not_trial,
@@ -40,6 +44,7 @@ from crypto_rl.env.logging_utils import (
 )
 from crypto_rl.env.metrics import calculate_calmar_ratio
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
+from crypto_rl.experiment.data_loading import load_raw_data
 
 
 def run_folds(
@@ -51,10 +56,9 @@ def run_folds(
     state_file: Path,
     index_file: Path,
     ckpt_mgr: CVCheckpointManager,
-    shared_env_config: RLConfig,
     env_config: RLConfig,
     dummy_vec_env_args: dict[str, Any],
-    splits: list[tuple[pd.DataFrame, pd.DataFrame]],
+    splits: list[tuple[int, int, int, str, str]],
 ) -> tuple[float, float, float, float, int, float, list[dict], dict, Any, list[tuple]]:
     """Execute all CV folds.
 
@@ -75,16 +79,66 @@ def run_folds(
     last_eval_realized_pnl: list = []
     last_eval_steps = 0
     last_obs_rms = None
-    evals_per_fold = config.timesteps // config.eval_freq
-
+    evals_per_fold = config.timesteps // int(config.eval_freq)
     # 1. Fetch completed folds if resuming a specific trial
     completed_folds: dict = {}
     if trial is not None:
         existing_ckpt = ckpt_mgr.load_checkpoint(trial.number)
         if existing_ckpt:
             completed_folds = existing_ckpt.get("completed_folds", {})
-
-    for fold_idx, (train_prices_df, test_prices_df) in enumerate(splits):
+    # =========================================================================
+    # PHASE 1: THE PRE-FLIGHT CACHE BUILDER
+    # Pre-build all required memory-mapped caches so we can completely destroy 
+    # raw_df before the heavy PyTorch neural networks spin up.
+    # =========================================================================
+    num_assets = len(DEFAULT_SYMBOLS)
+    needs_raw_df = False
+    # Check if ANY fold is missing its cache
+    for fold_idx in range(len(splits)):
+        prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
+        prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
+        if not is_cache_built(config, prefix_train) or not is_cache_built(config, prefix_test):
+            needs_raw_df = True
+            break
+    if needs_raw_df:
+        print_if_not_trial(logger, logging.DEBUG, trial, "Pre-flight: Loading raw data to build missing caches...")
+        raw_df = load_raw_data(config, logger, trial)
+        for fold_idx in range(len(splits)):
+            (t_train_max, t_test_min, t_test_max, _, _) = splits[fold_idx]
+            prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
+            prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
+            if not is_cache_built(config, prefix_train):
+                train_prices_df = raw_df[raw_df["open_time"] <= t_train_max].copy().reset_index(drop=True)
+                compute_static_obs_from_long_df(train_prices_df, config, cache_prefix=prefix_train)
+            if not is_cache_built(config, prefix_test):
+                test_prices_df = raw_df[
+                    (raw_df["open_time"] >= t_test_min) & (raw_df["open_time"] <= t_test_max)
+                ].copy().reset_index(drop=True)
+                compute_static_obs_from_long_df(test_prices_df, config, cache_prefix=prefix_test)
+        del raw_df
+        gc.collect()
+        # --- NEW: FORCE C-ALLOCATOR TO RETURN RAM TO LINUX ---
+        import ctypes
+        try:
+            # malloc_trim(0) forces glibc to release free memory back to the OS
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+            print(f"[PID {os.getpid()}] glibc malloc_trim executed successfully.")
+        except Exception as e:
+            pass
+    # =========================================================================
+    # PHASE 2: EXECUTE FOLDS (TRAINING & EVALUATION)
+    # =========================================================================
+    for fold_idx in range(len(splits)):
+        (t_train_max, t_test_min, t_test_max, training_start_str, training_end_str) = splits[fold_idx]
+        
+        cache_prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
+        
+        # We know the cache exists now, so we pass None safely!
+        prices_arr, static_obs, norm_vol_arr, asset_names = (
+            compute_static_obs_from_long_df(
+                None, config, cache_prefix=cache_prefix_train
+            )
+        )
         str_fold = str(fold_idx)
         # ----- Resume from checkpoint ------------------------------------------------
         if str_fold in completed_folds:
@@ -109,32 +163,18 @@ def run_folds(
 
         # ----- Live training --------------------------------------------------------
         msg = f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold..."
+        if trial is not None:
+            msg = f"[PID {os.getpid()}] Optuna Trial {trial.number} " + msg
         print_if_not_trial(logger, logging.DEBUG, None, msg)
         send_notification(
-            msg, summary="Experiment Run" if trial is None else f"Optuna Trial {trial.number}"
+            msg,
+            summary="Experiment Run"
+            if trial is None
+            else f"Optuna Trial {trial.number}",
         )
         eval_step_offset = fold_idx * evals_per_fold
-
-        # training period strings
-        start_ts_raw = train_prices_df["open_time"].min()
-        end_ts_raw = train_prices_df["open_time"].max()
-        training_start_str = (
-            pd.to_datetime(start_ts_raw)
-            .tz_localize("UTC")
-            .strftime("%Y-%m-%d %H:%M:%S %Z")
-        )
-        training_end_str = (
-            pd.to_datetime(end_ts_raw)
-            .tz_localize("UTC")
-            .strftime("%Y-%m-%d %H:%M:%S %Z")
-        )
-
-        prices_arr, static_obs, norm_vol_arr, asset_names = (
-            compute_static_obs_from_long_df(train_prices_df, config)
-        )
         last_prices_arr = prices_arr
         last_asset_names = asset_names
-
         print_if_not_trial(logger, logging.DEBUG, trial, "2. Setting up environment...")
 
         def make_env():
@@ -198,13 +238,15 @@ def run_folds(
         print_if_not_trial(
             logger, logging.DEBUG, trial, "Computing test observations..."
         )
+        cache_prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
         (
             shared_test_prices,
             shared_test_static,
             shared_test_norm_vol,
             shared_test_names,
-        ) = compute_static_obs_from_long_df(test_prices_df, config)
-
+        ) = compute_static_obs_from_long_df(
+            None, config, cache_prefix=cache_prefix_test
+        )
         checkpoint_dir = run_dir / f"checkpoints_fold_{fold_idx + 1}"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         shared_env_args = {
@@ -214,7 +256,8 @@ def run_folds(
             "asset_names": shared_test_names,
             "run_id": run_id,
             "is_eval": True,
-            "config": shared_env_config,
+            "is_fast_eval": True,  # trial is not None,
+            "config": env_config,
             "logger": logger,
         }
         eval_callback = None
@@ -300,6 +343,32 @@ def run_folds(
             callbacks.append(dashboard_callback)
         if eval_callback:
             callbacks.append(eval_callback)
+        # =====================================================================
+        # DEBUG: RAM INSPECTION BLOCK
+        # =====================================================================
+        if False:
+            import tracemalloc
+
+            gc.collect()  # Force garbage collection before measuring
+
+            print(f"\n[PID {os.getpid()}] === TOP MEMORY ALLOCATIONS (TRACEMALLOC) ===")
+            snapshot = tracemalloc.take_snapshot()
+            top_stats = snapshot.statistics("lineno")
+            for stat in top_stats[:10]:
+                print(stat)
+
+            print(f"\n[PID {os.getpid()}] === LARGEST LIVE OBJECTS IN RAM (PYMPLER) ===")
+            try:
+                from pympler import muppy, summary
+
+                all_objects = muppy.get_objects()
+                sum1 = summary.summarize(all_objects)
+                summary.print_(sum1, limit=10)
+            except ImportError:
+                print("pympler not installed. Run 'pip install pympler'.")
+            print("=====================================================================\n")
+            # =====================================================================
+        
         if callbacks:
             model.learn(total_timesteps=config.timesteps, callback=callbacks)
         else:
@@ -321,7 +390,7 @@ def run_folds(
         )
         shared_env_args_with_logging = shared_env_args.copy()
         shared_env_args_with_logging["config"] = dataclasses.replace(
-            shared_env_config, disable_logging=False
+            env_config, disable_logging=False
         )
         test_env_raw = ActionMasker(
             MinimalCryptoEnv(**shared_env_args_with_logging), get_action_mask
@@ -343,6 +412,15 @@ def run_folds(
         eval_winning_trades = 0
         eval_reward_totals: dict = {}
         info: dict = {}
+        # Calculate exactly how many steps this evaluation will take
+        total_eval_steps = base_test_env.max_steps - base_test_env.current_step
+        # Disable the progress bar if we are running headless background Optuna workers
+        pbar: tqdm = tqdm(
+            total=total_eval_steps,
+            desc=f"Evaluating Fold {fold_idx + 1}",
+            disable=trial is not None,
+            unit="steps",
+        )
         while not done:
             action_masks = np.expand_dims(test_env.venv.envs[0].action_masks(), axis=0)
             action, _ = model.predict(
@@ -359,6 +437,7 @@ def run_folds(
                 if info.get("realised_pnl", 0.0) > 0:
                     eval_winning_trades += 1
             eval_steps += 1
+            pbar.update(1)
             current_pv = info.get(
                 "final_portfolio_value", base_test_env.portfolio_value
             )
@@ -371,6 +450,7 @@ def run_folds(
                     "value": float(current_pv - eval_initial_portfolio_value),
                 }
             )
+        pbar.close()
         per_asset_stats = info["per_asset_stats"]
         eval_final_portfolio_value = info.get(
             "final_portfolio_value", base_test_env.portfolio_value

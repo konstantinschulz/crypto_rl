@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Evaluation utilities for experiment: baseline calculations and multi-seed evaluation."""
 
+import dataclasses
 import logging
 from typing import Any
 
@@ -50,7 +51,6 @@ def run_multi_seed_eval(
     last_test_norm_vol: np.ndarray,
     last_test_names: list[str],
     run_id: str,
-    shared_env_config: RLConfig,
     train_env_obs_rms: Any,
     dummy_vec_env_args: dict[str, Any],
 ) -> list[float]:
@@ -74,7 +74,7 @@ def run_multi_seed_eval(
             asset_names=last_test_names,
             run_id=run_id,
             is_eval=True,
-            config=shared_env_config,
+            config=dataclasses.replace(config, disable_logging=True),
         )
         ms_env_masked = ActionMasker(raw_ms_env, get_action_mask)
         ms_env = VecNormalize(

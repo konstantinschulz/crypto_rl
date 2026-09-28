@@ -11,15 +11,19 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from crypto_rl.config import RLConfig
+from crypto_rl.env.logging_utils import LoggerBase
+
 logger = logging.getLogger(__name__)
 
 
 class CVCheckpointManager:
     """Manages fold-level checkpointing for cross-validation based on exact Trial ID."""
 
-    def __init__(self, checkpoint_dir: Path | str = Path("logs/optuna_cv_checkpoints")):
+    def __init__(self, logger: LoggerBase, checkpoint_dir: str = RLConfig.optuna_dir):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.logger: LoggerBase = logger
 
     def get_checkpoint_path(self, trial_number: int) -> Path:
         return self.checkpoint_dir / f"cv_ckpt_trial_{trial_number}.json"
@@ -32,7 +36,7 @@ class CVCheckpointManager:
                 with open(ckpt_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                logger.warning(f"Failed to load checkpoint {ckpt_path}: {e}")
+                self.logger.debug(f"Failed to load checkpoint {ckpt_path}: {e}")
         return None
 
     def save_fold_result(
@@ -63,4 +67,4 @@ class CVCheckpointManager:
             try:
                 ckpt_path.unlink()
             except Exception as e:
-                logger.warning(f"Failed to delete checkpoint {ckpt_path}: {e}")
+                self.logger.debug(f"Failed to delete checkpoint {ckpt_path}: {e}")
