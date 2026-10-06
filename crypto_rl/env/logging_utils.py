@@ -1,10 +1,10 @@
-from datetime import datetime, timezone
 import logging
 import os
 import sys
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import gi
@@ -23,6 +23,19 @@ class LoggerBase:
 
     def info(self, message: str):
         raise NotImplementedError("Subclasses must implement the 'info' method.")
+
+    def log(self, message: str, trial: optuna.Trial | None = None):
+        raise NotImplementedError("Subclasses must implement the 'log' method.")
+
+    def print_if_not_trial(
+        self,
+        log_level: int,
+        trial: optuna.trial.Trial | None = None,
+        msg: str = "",
+    ):
+        raise NotImplementedError(
+            "Subclasses must implement the 'print_if_not_trial' method."
+        )
 
 
 def init_log(env, run_id: str = "default") -> None:
@@ -90,19 +103,6 @@ def log_action(
     env.last_remap_note = None
 
 
-def print_if_not_trial(
-    logger: LoggerBase,
-    log_level: int,
-    trial: optuna.trial.Trial | None = None,
-    msg: str = "",
-):
-    if trial is None:
-        if log_level == logging.INFO:
-            logger.info(msg)
-        elif log_level == logging.DEBUG:
-            logger.debug(msg)
-
-
 @contextmanager
 def selective_logger(file_name: str) -> Generator[LoggerBase, None, None]:
     """Context manager providing methods for dual-output or console-only logging."""
@@ -117,7 +117,7 @@ def selective_logger(file_name: str) -> Generator[LoggerBase, None, None]:
     class Logger(LoggerBase):
         def add_timestamp(self, message: str) -> str:
             """Prepends a UTC timestamp to the log message."""
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             return f"[{timestamp}] {message}"
 
         def debug(self, message: str):
@@ -135,6 +135,26 @@ def selective_logger(file_name: str) -> Generator[LoggerBase, None, None]:
             original_stdout.write(msg_with_timestamp + "\n")
             log_file.write(msg_with_timestamp + "\n")
             self.flush()
+
+        def log(self, message: str, trial: optuna.Trial | None = None):
+            """Writes to the log file, and optionally to the console."""
+            msg_with_timestamp: str = self.add_timestamp(message)
+            log_file.write(msg_with_timestamp + "\n")
+            log_file.flush()
+            if trial is None:
+                self.debug(msg_with_timestamp)
+
+        def print_if_not_trial(
+            self,
+            log_level: int,
+            trial: optuna.trial.Trial | None = None,
+            msg: str = "",
+        ):
+            if trial is None:
+                if log_level == logging.INFO:
+                    self.info(msg)
+                elif log_level == logging.DEBUG:
+                    self.debug(msg)
 
     logger = Logger()
     try:

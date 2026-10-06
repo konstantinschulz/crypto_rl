@@ -18,7 +18,6 @@ from typing import Any
 
 import numpy as np
 import optuna
-import pandas as pd
 import torch
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
@@ -39,7 +38,6 @@ from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import compute_static_obs_from_long_df, is_cache_built
 from crypto_rl.env.logging_utils import (
     LoggerBase,
-    print_if_not_trial,
     send_notification,
 )
 from crypto_rl.env.metrics import calculate_calmar_ratio
@@ -88,7 +86,7 @@ def run_folds(
             completed_folds = existing_ckpt.get("completed_folds", {})
     # =========================================================================
     # PHASE 1: THE PRE-FLIGHT CACHE BUILDER
-    # Pre-build all required memory-mapped caches so we can completely destroy 
+    # Pre-build all required memory-mapped caches so we can completely destroy
     # raw_df before the heavy PyTorch neural networks spin up.
     # =========================================================================
     num_assets = len(DEFAULT_SYMBOLS)
@@ -97,28 +95,48 @@ def run_folds(
     for fold_idx in range(len(splits)):
         prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
         prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
-        if not is_cache_built(config, prefix_train) or not is_cache_built(config, prefix_test):
+        if not is_cache_built(config, prefix_train) or not is_cache_built(
+            config, prefix_test
+        ):
             needs_raw_df = True
             break
     if needs_raw_df:
-        print_if_not_trial(logger, logging.DEBUG, trial, "Pre-flight: Loading raw data to build missing caches...")
+        logger.print_if_not_trial(
+            logging.DEBUG,
+            trial,
+            "Pre-flight: Loading raw data to build missing caches...",
+        )
         raw_df = load_raw_data(config, logger, trial)
         for fold_idx in range(len(splits)):
             (t_train_max, t_test_min, t_test_max, _, _) = splits[fold_idx]
             prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
             prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
             if not is_cache_built(config, prefix_train):
-                train_prices_df = raw_df[raw_df["open_time"] <= t_train_max].copy().reset_index(drop=True)
-                compute_static_obs_from_long_df(train_prices_df, config, cache_prefix=prefix_train)
+                train_prices_df = (
+                    raw_df[raw_df["open_time"] <= t_train_max]
+                    .copy()
+                    .reset_index(drop=True)
+                )
+                compute_static_obs_from_long_df(
+                    train_prices_df, config, cache_prefix=prefix_train
+                )
             if not is_cache_built(config, prefix_test):
-                test_prices_df = raw_df[
-                    (raw_df["open_time"] >= t_test_min) & (raw_df["open_time"] <= t_test_max)
-                ].copy().reset_index(drop=True)
-                compute_static_obs_from_long_df(test_prices_df, config, cache_prefix=prefix_test)
+                test_prices_df = (
+                    raw_df[
+                        (raw_df["open_time"] >= t_test_min)
+                        & (raw_df["open_time"] <= t_test_max)
+                    ]
+                    .copy()
+                    .reset_index(drop=True)
+                )
+                compute_static_obs_from_long_df(
+                    test_prices_df, config, cache_prefix=prefix_test
+                )
         del raw_df
         gc.collect()
         # --- NEW: FORCE C-ALLOCATOR TO RETURN RAM TO LINUX ---
         import ctypes
+
         try:
             # malloc_trim(0) forces glibc to release free memory back to the OS
             ctypes.CDLL("libc.so.6").malloc_trim(0)
@@ -129,10 +147,12 @@ def run_folds(
     # PHASE 2: EXECUTE FOLDS (TRAINING & EVALUATION)
     # =========================================================================
     for fold_idx in range(len(splits)):
-        (t_train_max, t_test_min, t_test_max, training_start_str, training_end_str) = splits[fold_idx]
-        
+        (t_train_max, t_test_min, t_test_max, training_start_str, training_end_str) = (
+            splits[fold_idx]
+        )
+
         cache_prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
-        
+
         # We know the cache exists now, so we pass None safely!
         prices_arr, static_obs, norm_vol_arr, asset_names = (
             compute_static_obs_from_long_df(
@@ -143,8 +163,7 @@ def run_folds(
         # ----- Resume from checkpoint ------------------------------------------------
         if str_fold in completed_folds:
             cached_score = completed_folds[str_fold]["score"]
-            print_if_not_trial(
-                logger,
+            logger.print_if_not_trial(
                 logging.DEBUG,
                 None,
                 f"--> [Fold {fold_idx + 1}/{config.cv_folds}] RESUMED from checkpoint. Score: {cached_score:.4f}",
@@ -165,7 +184,7 @@ def run_folds(
         msg = f"--> [Fold {fold_idx + 1}/{config.cv_folds}] Executing fold..."
         if trial is not None:
             msg = f"[PID {os.getpid()}] Optuna Trial {trial.number} " + msg
-        print_if_not_trial(logger, logging.DEBUG, None, msg)
+        logger.print_if_not_trial(logging.DEBUG, None, msg)
         send_notification(
             msg,
             summary="Experiment Run"
@@ -175,7 +194,7 @@ def run_folds(
         eval_step_offset = fold_idx * evals_per_fold
         last_prices_arr = prices_arr
         last_asset_names = asset_names
-        print_if_not_trial(logger, logging.DEBUG, trial, "2. Setting up environment...")
+        logger.print_if_not_trial(logging.DEBUG, trial, "2. Setting up environment...")
 
         def make_env():
             e = MinimalCryptoEnv(
@@ -235,8 +254,8 @@ def run_folds(
             )
 
         # ----- Test observations ----------------------------------------------------
-        print_if_not_trial(
-            logger, logging.DEBUG, trial, "Computing test observations..."
+        logger.print_if_not_trial(
+            logging.DEBUG, trial, "Computing test observations..."
         )
         cache_prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
         (
@@ -301,36 +320,23 @@ def run_folds(
             "batch_size": config.batch_size,
             "learning_rate": config.learning_rate,
         }
-        if config.algorithm == "SAC":
-            print_if_not_trial(
-                logger,
-                logging.DEBUG,
-                trial,
-                f"3. Training SAC model for Fold {fold_idx + 1}...",
+        if config.algorithm != "PPO":
+            raise NotImplementedError(
+                f"Algorithm {config.algorithm} is not supported in this runner."
             )
-            model = SAC(
-                env=train_env,
-                policy="MlpPolicy",
-                ent_coef="auto",
-                gamma=config.gamma,
-                policy_kwargs=policy_kwargs,
-                **sb3_args_common,
-            )
-        else:
-            print_if_not_trial(
-                logger,
-                logging.DEBUG,
-                trial,
-                f"3. Training PPO model for Fold {fold_idx + 1}...",
-            )
-            model = MaskablePPO(
-                env=train_env,
-                policy="MlpPolicy",
-                ent_coef=config.ent_coef_initial,
-                clip_range=config.clip_range,
-                policy_kwargs=policy_kwargs,
-                **sb3_args_common,
-            )
+        logger.print_if_not_trial(
+            logging.DEBUG,
+            trial,
+            f"3. Training PPO model for Fold {fold_idx + 1}...",
+        )
+        model = MaskablePPO(
+            env=train_env,
+            policy="MlpPolicy",
+            ent_coef=config.ent_coef_initial,
+            clip_range=config.clip_range,
+            policy_kwargs=policy_kwargs,
+            **sb3_args_common,
+        )
         total_training_steps = int(config.timesteps * (1.0 - config.test_fraction))
         entropy_callback = EntropyDecayCallback(
             ent_coef_initial=config.ent_coef_initial,
@@ -357,7 +363,9 @@ def run_folds(
             for stat in top_stats[:10]:
                 print(stat)
 
-            print(f"\n[PID {os.getpid()}] === LARGEST LIVE OBJECTS IN RAM (PYMPLER) ===")
+            print(
+                f"\n[PID {os.getpid()}] === LARGEST LIVE OBJECTS IN RAM (PYMPLER) ==="
+            )
             try:
                 from pympler import muppy, summary
 
@@ -366,9 +374,11 @@ def run_folds(
                 summary.print_(sum1, limit=10)
             except ImportError:
                 print("pympler not installed. Run 'pip install pympler'.")
-            print("=====================================================================\n")
+            print(
+                "=====================================================================\n"
+            )
             # =====================================================================
-        
+
         if callbacks:
             model.learn(total_timesteps=config.timesteps, callback=callbacks)
         else:
@@ -382,8 +392,7 @@ def run_folds(
                 raise optuna.exceptions.TrialPruned()
 
         # ----- Testing --------------------------------------------------------------
-        print_if_not_trial(
-            logger,
+        logger.print_if_not_trial(
             logging.DEBUG,
             trial,
             f"4. Testing trained model for Fold {fold_idx + 1}...",
@@ -490,15 +499,13 @@ def run_folds(
         )
 
         # Log results --------------------------------------------------------------
-        print_if_not_trial(logger, logging.INFO, trial, f"Fold {fold_idx + 1} Results:")
-        print_if_not_trial(
-            logger,
+        logger.print_if_not_trial(logging.INFO, trial, f"Fold {fold_idx + 1} Results:")
+        logger.print_if_not_trial(
             logging.INFO,
             trial,
             f"  Final PV: ${eval_final_portfolio_value:.2f} | PnL: ${eval_final_portfolio_value - eval_initial_portfolio_value:.2f} | Calmar: {fold_score:.2f}",
         )
-        print_if_not_trial(
-            logger,
+        logger.print_if_not_trial(
             logging.INFO,
             trial,
             f"  Trades: {eval_final_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${eval_final_fees_paid:.4f}",
@@ -509,26 +516,18 @@ def run_folds(
         last_eval_portfolio_values = eval_portfolio_values
         last_eval_realized_pnl = eval_realized_pnl
         last_eval_steps = eval_steps
-
         # Per‑asset breakdown -------------------------------------------------------
-        print_if_not_trial(
-            logger, logging.INFO, trial, "\nPer-Asset Performance Breakdown:"
-        )
-        print_if_not_trial(
-            logger,
-            logging.INFO,
-            trial,
+        logger.log("\nPer-Asset Performance Breakdown:", trial)
+        logger.log(
             f"{'Symbol':<10} | {'Realized PnL':<13} | {'Total PnL':<11} | {'Trades':<8} | {'Win Rate':<10} | {'Fees':<8}",
+            trial,
         )
-        print_if_not_trial(logger, logging.INFO, trial, "-" * 72)
+        logger.log("-" * 72, trial)
         for sym, stats in per_asset_stats.items():
-            print_if_not_trial(
-                logger,
-                logging.INFO,
-                trial,
+            logger.log(
                 f"{sym:<10} | ${stats['realized_pnl']:<12.2f} | ${stats['total_pnl']:<10.2f} | {stats['trades']:<8} | {stats['win_rate_pct']:<9.1f}% | ${stats['fees_paid']:<7.4f}",
+                trial,
             )
-
         last_test_prices = shared_test_prices
         last_test_static = shared_test_static
         last_test_norm_vol = shared_test_norm_vol

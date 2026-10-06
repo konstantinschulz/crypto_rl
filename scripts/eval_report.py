@@ -4,13 +4,14 @@ import glob
 import json
 
 import numpy as np
+import optuna
 import pandas as pd
 
 from crypto_rl.env.logging_utils import LoggerBase, selective_logger
 from crypto_rl.env.metrics import get_calmar_from_portfolio_series
 
 
-def eval_report(logger: LoggerBase):
+def eval_report(logger: LoggerBase, trial: optuna.Trial | None = None) -> None:
     f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
     with open(f2) as f3:
         state = json.load(f3)
@@ -48,13 +49,14 @@ def eval_report(logger: LoggerBase):
         out=np.zeros_like(pv_series, dtype=float),
         where=peak > 1e-8,
     )
-
-    logger.info(
-        f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd.min() * 100:.1f}%  FinalPV={pv_series[-1]:.2f}"
+    logger.log(
+        f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd.min() * 100:.1f}%  FinalPV={pv_series[-1]:.2f}",
+        trial,
     )
     traded_symbols: set[str] = set(df["symbol"].tolist())
-    logger.info(
-        f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}"
+    logger.log(
+        f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}",
+        trial,
     )
 
 

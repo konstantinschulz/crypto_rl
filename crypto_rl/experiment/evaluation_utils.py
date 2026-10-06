@@ -12,7 +12,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl.config import RLConfig
 from crypto_rl.env.action_processing import get_action_mask
-from crypto_rl.env.logging_utils import LoggerBase, print_if_not_trial
+from crypto_rl.env.logging_utils import LoggerBase
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 
@@ -59,8 +59,7 @@ def run_multi_seed_eval(
     if config.skip_multi_seed_eval:
         return multi_seed_pv
 
-    print_if_not_trial(
-        logger,
+    logger.print_if_not_trial(
         logging.DEBUG,
         trial,
         "5. Performing multi‑seed evaluation...",
@@ -101,8 +100,7 @@ def run_multi_seed_eval(
 
     if multi_seed_pv:
         arr = np.array(multi_seed_pv)
-        print_if_not_trial(
-            logger,
+        logger.print_if_not_trial(
             logging.INFO,
             trial,
             f"  n={len(arr)}  mean=${arr.mean():.2f}  std=${arr.std():.2f}  "

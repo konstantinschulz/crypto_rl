@@ -15,7 +15,6 @@ from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
 from crypto_rl.env.logging_utils import (
     LoggerBase,
-    print_if_not_trial,
     selective_logger,
 )
 from scripts.eval_log_action_counter import eval_log_action_counter
@@ -47,35 +46,15 @@ def _print_cv_summary(
     cv_total_fees: float,
 ) -> None:
     """Print the walk-forward CV summary to the logger."""
-    print_if_not_trial(logger, logging.INFO, trial, "\n" + "=" * 40)
-    print_if_not_trial(
-        logger, logging.INFO, trial, f"WALK-FORWARD CV SUMMARY ({n_splits} Folds):"
-    )
-    print_if_not_trial(
-        logger, logging.INFO, trial, f"Mean Test Portfolio Value: ${cv_mean_pv:.2f}"
-    )
-    print_if_not_trial(
-        logger, logging.INFO, trial, f"Mean Test PnL:             ${cv_mean_pnl:.2f}"
-    )
-    print_if_not_trial(
-        logger, logging.INFO, trial, f"Mean Test Calmar:          {cv_mean_calmar:.2f}"
-    )
-    print_if_not_trial(
-        logger,
-        logging.INFO,
-        trial,
-        f"Mean Test Win Rate:        {cv_mean_win_rate:.1f}%",
-    )
-    print_if_not_trial(
-        logger, logging.INFO, trial, f"Total CV Trades:           {cv_total_trades}"
-    )
-    print_if_not_trial(
-        logger,
-        logging.INFO,
-        trial,
-        f"Total Test Fees Paid:           ${cv_total_fees:.4f}",
-    )
-    print_if_not_trial(logger, logging.INFO, trial, "=" * 40 + "\n")
+    logger.log("\n" + "=" * 40, trial)
+    logger.log(f"WALK-FORWARD CV SUMMARY ({n_splits} Folds):", trial)
+    logger.log(f"Mean Test Portfolio Value: ${cv_mean_pv:.2f}", trial)
+    logger.log(f"Mean Test PnL:             ${cv_mean_pnl:.2f}", trial)
+    logger.log(f"Mean Test Calmar:          {cv_mean_calmar:.2f}", trial)
+    logger.log(f"Mean Test Win Rate:        {cv_mean_win_rate:.1f}%", trial)
+    logger.log(f"Total CV Trades:           {cv_total_trades}", trial)
+    logger.log(f"Total Test Fees Paid:           ${cv_total_fees:.4f}", trial)
+    logger.log("=" * 40 + "\n", trial)
 
 
 def run_experiment(
@@ -105,8 +84,7 @@ def run_experiment(
         if splits_cache.exists():
             with open(splits_cache, "r") as f:
                 splits = json.load(f)
-            print_if_not_trial(
-                logger,
+            logger.print_if_not_trial(
                 logging.DEBUG,
                 trial,
                 "1. Loaded walk-forward splits from cache.",
@@ -230,24 +208,21 @@ def run_experiment(
                         last_eval_realized_pnl=last_eval_realized_pnl,
                         buy_hold_baseline=buy_hold_final,
                     )
-                    print_if_not_trial(
-                        logger,
+                    logger.print_if_not_trial(
                         logging.DEBUG,
                         trial,
                         f"Dashboard state updated with evaluation results in {state_file}",
                     )
                 except Exception as e:
-                    print_if_not_trial(
-                        logger,
+                    logger.print_if_not_trial(
                         logging.DEBUG,
                         trial,
                         f"Error updating dashboard state: {e}",
                     )
 
             # ── 8. Final reporting (non-trial runs only) ─────────────────────
-            if trial is None:
-                eval_log_action_counter(logger)
-                eval_report(logger)
+            eval_log_action_counter(logger, trial)
+            eval_report(logger, trial)
 
             # Trial finished all folds successfully: clean up checkpoint file
             if trial is not None:
@@ -265,8 +240,7 @@ def run_experiment(
         except KeyboardInterrupt:
             # Prevent Optuna from catching this and marking the trial as FAIL.
             # Hard-exit preserves the "RUNNING" state in the DB for later resumption.
-            print_if_not_trial(
-                logger,
+            logger.print_if_not_trial(
                 logging.DEBUG,
                 None,
                 "\n[!] Ctrl+C (KeyboardInterrupt) detected. Hard-exiting to preserve "

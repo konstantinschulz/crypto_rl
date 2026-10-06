@@ -9,7 +9,7 @@ import pandas as pd
 
 from crypto_rl.config import RLConfig
 from crypto_rl.data import get_walk_forward_splits, read_n_rows
-from crypto_rl.env.logging_utils import LoggerBase, print_if_not_trial
+from crypto_rl.env.logging_utils import LoggerBase
 
 
 def load_raw_data(
@@ -18,10 +18,9 @@ def load_raw_data(
     """Load raw OHLCV data and configure evaluation frequency.
     Returns the raw DataFrame.
     """
-    print_if_not_trial(logger, logging.DEBUG, trial, "1. Loading raw data...")
+    logger.print_if_not_trial(logging.DEBUG, trial, "1. Loading raw data...")
     raw_df = read_n_rows(str(config.parquet_path), config.n_rows)
-    print_if_not_trial(
-        logger,
+    logger.print_if_not_trial(
         logging.DEBUG,
         trial,
         f"Evaluation frequency: after every {config.eval_freq} steps",
@@ -67,8 +66,7 @@ def prepare_splits(
             )
         ]
     n_splits = len(splits)
-    print_if_not_trial(
-        logger,
+    logger.print_if_not_trial(
         logging.DEBUG,
         trial,
         f"Dataset split into {n_splits}-fold walk-forward cross-validation.",
