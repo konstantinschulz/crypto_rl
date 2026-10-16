@@ -96,6 +96,7 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
     env.cash = env.config.budget_initial
     env.holdings = np.zeros(env.num_assets, dtype=np.float32)
     env.portfolio_value = env.config.budget_initial
+    env.portfolio_values = []
     env.fees_paid_total = 0.0
     env.trades_count = 0
     env.avg_entry_price = np.zeros(env.num_assets, dtype=np.float32)

@@ -1,9 +1,13 @@
+from collections import Counter
+from pathlib import Path
+
 import gymnasium as gym
 import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
 from crypto_rl.config import RLConfig
+from crypto_rl.data import get_valid_start_timestamps
 from crypto_rl.env.feature_utils import (
     MACRO_DIM,
     STATIC_PER_ASSET_DIM,
@@ -89,6 +93,7 @@ class MinimalCryptoEnv(gym.Env):
         self.previous_drawdown = 0.0
         self.last_invalid_sell = False
         self.peak_portfolio_value = config.budget_initial
+        self.portfolio_values: list[float] = []
         if self.config.action_space_type == "multidiscrete":
             self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
 
@@ -132,7 +137,9 @@ class MinimalCryptoEnv(gym.Env):
         self.episode_count = 0
 
         self.log_buffer = []
-        self.log_file_path = None
+        self.log_file_path: Path | None = None
+        self.action_type_counts: Counter[str] = Counter()
+        self.traded_coins: set[str] = set()
         self.last_remap_note = None
         self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
         # --- NEW: Track entry steps for holding period calculations ---
@@ -147,8 +154,6 @@ class MinimalCryptoEnv(gym.Env):
         self._cached_k: int
 
         if self.config.parquet_path is not None and self.config.n_rows > 0:
-            from crypto_rl.data import get_valid_start_timestamps
-
             self._cached_valid_open_times, self._cached_symbols, self._cached_k = (
                 get_valid_start_timestamps(
                     self.config.parquet_path, n=self.config.n_rows

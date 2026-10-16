@@ -7,6 +7,7 @@ functions below encapsulate that logic so the main runner stays concise.
 """
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,28 @@ def _downsample(series_list: list[dict[str, Any]], max_pts: int = 1000) -> list[
     if res[-1] != series_list[-1]:
         res[-1] = series_list[-1]
     return res
+
+
+def _json_default(obj: Any) -> Any:
+    """Fallback serializer for types the stdlib JSON encoder rejects."""
+    if isinstance(obj, set | frozenset):
+        return sorted(obj)
+    if hasattr(obj, "tolist"):  # numpy scalars and arrays
+        return obj.tolist()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _write_json_atomic(path: Path, data: Any) -> None:
+    """Serialize fully before touching the file, then swap it in atomically.
+
+    Dumping straight into an open ``"w"`` handle truncates the file first, so
+    any serialization error leaves a half-written, unreadable ``state.json``.
+    """
+    payload = json.dumps(data, indent=2, default=_json_default)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(payload)
+    os.replace(tmp_path, path)
 
 
 def update_dashboard_state(
@@ -92,5 +115,4 @@ def update_dashboard_state(
     series["test_realized_pnl"] = _downsample(last_eval_realized_pnl)
 
     # Persist the updated JSON
-    with open(state_file, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+    _write_json_atomic(state_file, state)

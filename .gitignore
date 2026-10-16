@@ -8,6 +8,7 @@
 .jscpd.json
 *.log
 *.parquet
+*.prof
 *.profile
 __pycache__/
 artifacts/

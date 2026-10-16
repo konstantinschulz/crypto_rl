@@ -195,6 +195,7 @@ def step_env(
     done = env.current_step >= env.max_steps
     current_asset_value = np.sum(env.holdings * next_prices)
     env.portfolio_value = env.cash + current_asset_value
+    env.portfolio_values.append(env.portfolio_value)
     env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)
 
     # Range: 0.0 (at peak) down to -1.0 (-100% loss)
@@ -311,6 +312,7 @@ def step_env(
         env.cash += liquidation_revenue
         env.fees_paid_total += liquidation_fees
         env.portfolio_value = env.cash
+        env.portfolio_values.append(env.portfolio_value)
 
         terminal_return = (
             env.portfolio_value - env.config.budget_initial
@@ -363,7 +365,13 @@ def step_env(
         "is_valid_sell": is_valid_sell,
         "episode_count": env.episode_count,
         "reward_components": reward_components,
+        "action_type_counts": env.action_type_counts,
+        "traded_coins": env.traded_coins,
     }
+    # Full history is only consumed from the terminal info. Including it every
+    # step makes SB3's DummyVecEnv deepcopy an ever-growing list each step.
+    if done:
+        info["portfolio_values"] = env.portfolio_values
 
     return (
         env._get_obs(),

@@ -182,7 +182,7 @@ Examples:
         "--hold-penalty-threshold",
         type=float,
         default=default_config.hold_penalty_threshold,
-        help=f"Threshold for hold penalty (default: {default_config.hold_penalty_threshold}). If the unrealized PnL percentage falls below this threshold, a hold cost penalty will be applied.",
+        help=f"Threshold for hold penalty (default: {default_config.hold_penalty_threshold}). If the unrealized PnL percentage is larger than this threshold, a hold cost penalty will be applied.",
     )
     parser.add_argument(
         "--illegal-buy-penalty",
@@ -294,6 +294,12 @@ Examples:
         type=float,
         default=default_config.target_volatility,
         help=f"Target volatility for excess return reward calculation (default {default_config.target_volatility})",
+    )
+    parser.add_argument(
+        "--train-chunks",
+        type=int,
+        default=default_config.train_chunks,
+        help=f"Number of chunks to split the training data into (default {default_config.train_chunks}). Each chunk is trained sequentially, allowing for incremental learning and checkpointing.",
     )
     parser.add_argument(
         "--turnover-penalty",

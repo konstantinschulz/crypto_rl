@@ -21,7 +21,6 @@ import optuna
 import torch
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
-from stable_baselines3 import SAC
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from tqdm import tqdm
@@ -275,7 +274,7 @@ def run_folds(
             "asset_names": shared_test_names,
             "run_id": run_id,
             "is_eval": True,
-            "is_fast_eval": True,  # trial is not None,
+            "is_fast_eval": True,
             "config": env_config,
             "logger": logger,
         }
@@ -329,14 +328,48 @@ def run_folds(
             trial,
             f"3. Training PPO model for Fold {fold_idx + 1}...",
         )
-        model = MaskablePPO(
-            env=train_env,
-            policy="MlpPolicy",
-            ent_coef=config.ent_coef_initial,
-            clip_range=config.clip_range,
-            policy_kwargs=policy_kwargs,
-            **sb3_args_common,
-        )
+        # =====================================================================
+        # MID-FOLD CHUNKING & RESUMPTION LOGIC
+        # =====================================================================
+        # 1. Define a persistent directory that survives Ctrl+C (bypassing timestamped run_id)
+        sub_dir: str = "single_run" if trial is None else f"trial_{trial.number}"
+        chunk_dir = os.path.join(config.chunks_dir, sub_dir)
+        os.makedirs(chunk_dir, exist_ok=True)
+
+        chunk_model_path = os.path.join(chunk_dir, f"fold_{fold_idx}_model.zip")
+        chunk_buffer_path = os.path.join(chunk_dir, f"fold_{fold_idx}_buffer.pkl")
+        chunk_meta_path = os.path.join(chunk_dir, f"fold_{fold_idx}_meta.json")
+        # Break the fold into smaller, frequent save points
+        chunk_steps = config.timesteps // config.train_chunks
+        start_chunk = 0
+        model: MaskablePPO
+
+        # 2. Attempt to load an existing chunk from a previous interrupted run
+        if os.path.exists(chunk_meta_path):
+            try:
+                with open(chunk_meta_path, "r") as f:
+                    start_chunk = json.load(f).get("chunk", 0)
+                logger.debug(
+                    f"Resuming Fold {fold_idx + 1} from Chunk {start_chunk}/{config.train_chunks}...",
+                )
+                model = MaskablePPO.load(chunk_model_path, env=train_env)
+                # CRITICAL: SB3 resets timesteps on load. We must restore it so
+                # your EntropyDecayCallback and UnifiedEvalCallback don't break!
+                model.num_timesteps = start_chunk * chunk_steps
+            except Exception as e:
+                logger.debug(f"Failed to load chunk: {e}. Starting fresh.")
+                start_chunk = 0
+        # 3. Instantiate fresh model if no chunk exists
+        if start_chunk == 0:
+            model = MaskablePPO(
+                env=train_env,
+                policy="MlpPolicy",
+                ent_coef=config.ent_coef_initial,
+                clip_range=config.clip_range,
+                policy_kwargs=policy_kwargs,
+                **sb3_args_common,
+            )
+        # 4. Setup Callbacks
         total_training_steps = int(config.timesteps * (1.0 - config.test_fraction))
         entropy_callback = EntropyDecayCallback(
             ent_coef_initial=config.ent_coef_initial,
@@ -349,41 +382,32 @@ def run_folds(
             callbacks.append(dashboard_callback)
         if eval_callback:
             callbacks.append(eval_callback)
-        # =====================================================================
-        # DEBUG: RAM INSPECTION BLOCK
-        # =====================================================================
-        if False:
-            import tracemalloc
-
-            gc.collect()  # Force garbage collection before measuring
-
-            print(f"\n[PID {os.getpid()}] === TOP MEMORY ALLOCATIONS (TRACEMALLOC) ===")
-            snapshot = tracemalloc.take_snapshot()
-            top_stats = snapshot.statistics("lineno")
-            for stat in top_stats[:10]:
-                print(stat)
-
-            print(
-                f"\n[PID {os.getpid()}] === LARGEST LIVE OBJECTS IN RAM (PYMPLER) ==="
+        # 5. Execute the Chunked Training Loop
+        for chunk in range(start_chunk, config.train_chunks):
+            # Prevent drift on the last chunk due to integer division
+            steps_this_chunk = (
+                chunk_steps
+                if chunk < config.train_chunks - 1
+                else config.timesteps - (chunk * chunk_steps)
             )
-            try:
-                from pympler import muppy, summary
-
-                all_objects = muppy.get_objects()
-                sum1 = summary.summarize(all_objects)
-                summary.print_(sum1, limit=10)
-            except ImportError:
-                print("pympler not installed. Run 'pip install pympler'.")
-            print(
-                "=====================================================================\n"
+            # Learn seamlessly
+            model.learn(
+                total_timesteps=steps_this_chunk,
+                callback=callbacks,
+                reset_num_timesteps=False,  # Tells SB3 to continue exactly where it left off
             )
-            # =====================================================================
-
-        if callbacks:
-            model.learn(total_timesteps=config.timesteps, callback=callbacks)
-        else:
-            model.learn(total_timesteps=config.timesteps)
-
+            # Stop chunking immediately if Optuna decided to prune the trial
+            if eval_callback and eval_callback.is_pruned:
+                break
+            # Save chunk state mid-fold
+            model.save(chunk_model_path)
+            with open(chunk_meta_path, "w") as f:
+                json.dump({"chunk": chunk + 1}, f)
+        # 6. Cleanup when fold finishes successfully to save SSD space
+        for path in [chunk_model_path, chunk_buffer_path, chunk_meta_path]:
+            if os.path.exists(path):
+                os.remove(path)
+        # =====================================================================
         # Pruning cleanup
         if eval_callback:
             eval_env.close()
@@ -401,6 +425,9 @@ def run_folds(
         shared_env_args_with_logging["config"] = dataclasses.replace(
             env_config, disable_logging=False
         )
+        # With a single fold, the final test runs over the full test fold (TEST_FRACTION-sized) instead of the short eval_length slice.
+        if config.cv_folds == 1:
+            shared_env_args_with_logging["is_fast_eval"] = False
         test_env_raw = ActionMasker(
             MinimalCryptoEnv(**shared_env_args_with_logging), get_action_mask
         )
@@ -495,6 +522,15 @@ def run_folds(
                 "closed_trades": int(eval_closed_trades),
                 "win_rate_pct": float(eval_win_rate_pct),
                 "fees_paid": float(eval_final_fees_paid),
+                "action_type_counts": info.get(
+                    "action_type_counts", base_test_env.action_type_counts
+                ),
+                "traded_coins": sorted(
+                    info.get("traded_coins", base_test_env.traded_coins)
+                ),
+                "portfolio_values": info.get(
+                    "portfolio_values", base_test_env.portfolio_values
+                ),
             }
         )
 

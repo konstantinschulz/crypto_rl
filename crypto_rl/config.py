@@ -9,11 +9,12 @@ class RLConfig:
     action_dead_zone: float = 0.50
     action_space_type: str = "multidiscrete"
     algorithm: str = "PPO"
-    base_run_dir: str = "logs"
+    base_run_dir: str = os.path.abspath("logs")
     batch_size: int = 128
     budget_initial: float = 100.0
     capital_preservation_bonus: float = 0.0001
     checkpoint: bool = True
+    chunks_dir: str = os.path.join(base_run_dir, "chunks")
     clear_cache: bool = False
     clip_range: float = 0.11
     cv_folds: int = 1
@@ -47,7 +48,7 @@ class RLConfig:
     n_envs: int = 9
     n_rows: int = 18000000  # 40000 18000000
     n_steps: int = 512
-    net_arch_dim: int = 128
+    net_arch_dim: int = 256
     optuna_dir: str = os.path.join(logs_dir, "optuna")
     parquet_path: str | None = "binance_spot_1m_last4y_single_htf.parquet"
     profit_bonus: float = 0.0
@@ -56,6 +57,7 @@ class RLConfig:
     target_volatility: float = 0.02  # 2% target volatility baseline
     test_fraction: float = 0.2
     timesteps: int = 25000  # 3000
+    train_chunks: int = 1
     turnover_penalty: float = 0.05
     turnover_penalty_steps_threshold: int = 15
     window_size: int = 120

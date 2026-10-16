@@ -1,3 +1,5 @@
+from __future__ import annotations  # avoid circular import issues with TYPE_CHECKING
+
 import logging
 import os
 import sys
@@ -6,10 +8,16 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import gi
 import optuna
 import pandas as pd
+
+from crypto_rl.enums import ActionType
+
+if TYPE_CHECKING:  # avoid circular import issues
+    from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 gi.require_version("Notify", "0.7")
 from gi.repository import GLib, Notify
@@ -38,7 +46,7 @@ class LoggerBase:
         )
 
 
-def init_log(env, run_id: str = "default") -> None:
+def init_log(env: MinimalCryptoEnv, run_id: str = "default") -> None:
     """Initialize per-run action log path and clear in-memory log buffer."""
     log_root = Path("logs")
     run_log_dir = log_root / run_id
@@ -75,15 +83,14 @@ def log_action(
     """Record step details into the in-memory log buffer."""
     if env.config.disable_logging:
         return
-    action_type_idx = int(action[0])
-    action_types = {0: "HOLD", 1: "BUY", 2: "SELL"}
-    action_type_str = action_types.get(action_type_idx, "UNKNOWN")
+    action_type_str = ActionType(int(action[0])).name
     asset_idx = int(action[1])
     asset_str = (
         env.asset_names[asset_idx]
         if 0 <= asset_idx < len(env.asset_names)
         else "UNKNOWN"
     )
+    env.traded_coins.add(asset_str)
     entry = {
         "episode": int(env.episode_count),
         "step": int(step),

@@ -1,5 +1,7 @@
 import numpy as np
 
+from crypto_rl.enums import ActionType
+
 
 def _get_current_portfolio_value(env):
     """Calculate the current portfolio value based on cash and holdings."""
@@ -22,6 +24,7 @@ def apply_discrete_action(env, action):
     # Initialize/reset the penalty tracker for this step
     env._step_penalty = 0.0
     action_type = action[0]
+    env.action_type_counts[ActionType(action_type).name] += 1
     asset_idx = action[1]
     amount_pct = float(action[2]) / 100.0
     amount_pct = np.clip(amount_pct, 0.0, 1.0)

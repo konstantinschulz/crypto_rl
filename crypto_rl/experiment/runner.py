@@ -17,8 +17,7 @@ from crypto_rl.env.logging_utils import (
     LoggerBase,
     selective_logger,
 )
-from scripts.eval_log_action_counter import eval_log_action_counter
-from scripts.eval_report import eval_report
+from eval_report import eval_report
 
 from .dashboard_utils import update_dashboard_state
 from .data_loading import load_raw_data, prepare_splits
@@ -171,7 +170,7 @@ def run_experiment(
 
             # ── 5. Buy-and-hold baseline ─────────────────────────────────────
             buy_hold_final = compute_buy_and_hold_baseline(
-                config, last_asset_names, last_prices_arr
+                config, last_test_names, last_test_prices
             )
             # ── 6. Multi-seed evaluation ─────────────────────────────────────
             run_multi_seed_eval(
@@ -219,10 +218,11 @@ def run_experiment(
                         trial,
                         f"Error updating dashboard state: {e}",
                     )
-
+            logger.print_if_not_trial(
+                logging.DEBUG, trial, "Results from the final evaluation:"
+            )
             # ── 8. Final reporting (non-trial runs only) ─────────────────────
-            eval_log_action_counter(logger, trial)
-            eval_report(logger, trial)
+            eval_report(logger, config, trial, fold_results, cv_mean_pv, cv_mean_calmar)
 
             # Trial finished all folds successfully: clean up checkpoint file
             if trial is not None:

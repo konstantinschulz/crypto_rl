@@ -13,9 +13,6 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 os.environ["MALLOC_ARENA_MAX"] = "1"
-import tracemalloc
-
-tracemalloc.start()
 import argparse
 import sys
 import traceback
@@ -41,8 +38,10 @@ def get_base_config() -> RLConfig:
         dashboard=False,
         data_seed=42,
         disable_logging=True,
+        net_arch_dim=256,
         n_rows=18_000_000,
         timesteps=1_500_000,  # 3000 / 1_500_000
+        train_chunks=5,
     )
 
 
@@ -77,7 +76,7 @@ def get_optuna_config(
         capital_preservation_bonus=suggest(
             "capital_preservation_bonus", trial.suggest_float, 0.0, 0.001, step=0.0001
         ),
-        clip_range=suggest("clip", trial.suggest_float, 0.10, 0.40),
+        clip_range=suggest("clip_range", trial.suggest_float, 0.10, 0.40),
         drawdown_penalty_coef=suggest(
             "drawdown_penalty_coef", trial.suggest_float, 0.01, 0.30
         ),
