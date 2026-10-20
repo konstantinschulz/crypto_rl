@@ -102,6 +102,11 @@ def _run_episode(
     vec_env.obs_rms = obs_rms
     obs = vec_env.reset()
     base_env: MinimalCryptoEnv = vec_env.venv.envs[0].unwrapped
+    # The VecEnv auto-resets on the terminal step, which points the env at a
+    # fresh log file, so record this episode's path now.
+    action_log_path = (
+        str(base_env.log_file_path) if base_env.log_file_path is not None else None
+    )
     initial_pv = base_env.portfolio_value
     portfolio_values = [{"step": 0, "value": float(initial_pv)}]
     realized_pnl = [{"step": 0, "value": 0.0}]
@@ -169,6 +174,7 @@ def _run_episode(
             "portfolio_values", base_env.portfolio_values
         ),
         "calmar": calculate_calmar_ratio(portfolio_values),
+        "action_log_path": action_log_path,
     }
     vec_env.close()
     return result
@@ -609,6 +615,7 @@ def run_folds(
                 "action_type_counts": result["action_type_counts"],
                 "traded_coins": result["traded_coins"],
                 "portfolio_values": result["env_portfolio_values"],
+                "action_log_path": result["action_log_path"],
             }
         )
 

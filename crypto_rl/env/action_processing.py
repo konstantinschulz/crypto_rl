@@ -97,6 +97,7 @@ def apply_discrete_action(env, action):
                 env.holdings[asset_idx] += trade_units
                 env.fees_paid_total += fee_paid
                 env.trades_count += 1
+                env.traded_coins.add(env.asset_names[asset_idx])
 
                 # Note: `avg_entry_price` and `total_cost_basis` are intentionally left out here.
                 # `minimal_env.py` manages cost basis tracking by observing the resulting `delta`.
@@ -119,6 +120,7 @@ def apply_discrete_action(env, action):
                 env.holdings[asset_idx] -= trade_units
                 env.fees_paid_total += fee_paid
                 env.trades_count += 1
+                env.traded_coins.add(env.asset_names[asset_idx])
 
                 # Calculate internal logging PnL. (Official PnL routing is managed in minimal_env.py)
                 realised_pnl = proceeds - (trade_units * env.avg_entry_price[asset_idx])

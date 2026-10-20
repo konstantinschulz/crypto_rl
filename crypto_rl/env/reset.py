@@ -102,6 +102,7 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
     env.portfolio_values = []
     env.fees_paid_total = 0.0
     env.trades_count = 0
+    env.traded_coins = set()
     env.avg_entry_price = np.zeros(env.num_assets, dtype=np.float32)
     # --- NEW: Reset entry step tracker ---
     env.entry_step.fill(0)

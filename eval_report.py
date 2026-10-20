@@ -1,8 +1,9 @@
 """Compute finance metrics from a saved Parquet action log."""
 
-import glob
 import json
+import sys
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import optuna
@@ -47,6 +48,30 @@ def get_sortino_from_portfolio_series(pv_series: np.ndarray) -> float:
     return sortino
 
 
+def report_action_log(
+    logger: LoggerBase, log_path: str | Path, trial: optuna.Trial | None = None
+) -> None:
+    """Log finance metrics computed from one Parquet action log."""
+    df = pd.read_parquet(log_path)
+    pv_series = df["portfolio"].to_numpy()
+    calmar = get_calmar_from_portfolio_series(pv_series)
+    sortino = get_sortino_from_portfolio_series(pv_series)
+    dd = get_drawdown_from_portfolio_series(pv_series)
+    logger.log(f"Action log: {log_path}", trial)
+    logger.log(str(Counter(df["action_type"])), trial)
+    logger.log(f"Final portfolio: {df['portfolio'].iloc[-1]}", trial)
+    logger.log(
+        f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd * 100:.1f}%  FinalPV={pv_series[-1]:.2f}",
+        trial,
+    )
+    # Only fills count as trades: HOLDs and no-op orders carry zero units.
+    traded_symbols: set[str] = set(df.loc[df["units"] > 0, "symbol"].tolist())
+    logger.log(
+        f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}",
+        trial,
+    )
+
+
 def eval_report(
     logger: LoggerBase,
     config: RLConfig,
@@ -54,10 +79,10 @@ def eval_report(
     fold_results: list[dict] | None = None,
     cv_mean_pv: float | None = None,
     cv_mean_calmar: float | None = None,
+    state_file: Path | None = None,
 ) -> None:
-    if trial is None:
-        f2 = sorted(glob.glob("logs/run-*/state.json"))[-1]
-        with open(f2) as f3:
+    if trial is None and state_file is not None and state_file.exists():
+        with open(state_file) as f3:
             state = json.load(f3)
             keys = ["technical", "finance", "explainability"]
             for key in keys:
@@ -92,25 +117,22 @@ def eval_report(
         )
         logger.log(json.dumps(config.to_dict(), indent=2), trial)
         return
-    f = sorted(glob.glob("logs/run-*/actions_eval_*.parquet"))[-1]
-    df = pd.read_parquet(f)
-    pv_series = df["portfolio"].to_numpy()
-    calmar = get_calmar_from_portfolio_series(pv_series)
-    sortino = get_sortino_from_portfolio_series(pv_series)
-    dd = get_drawdown_from_portfolio_series(pv_series)
-    logger.log(str(Counter(df["action_type"])), trial)
-    logger.log(f"Final portfolio: {df['portfolio'].iloc[-1]}", trial)
-    logger.log(
-        f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd * 100:.1f}%  FinalPV={pv_series[-1]:.2f}",
-        trial,
-    )
-    traded_symbols: set[str] = set(df["symbol"].tolist())
-    logger.log(
-        f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}",
-        trial,
-    )
+    # Report each fold's final-test log explicitly; globbing for the latest
+    # file picks up intermediate eval episodes or other runs' logs.
+    for fold_result in fold_results or []:
+        log_path = fold_result.get("action_log_path")
+        if log_path is None or not Path(log_path).exists():
+            logger.log(
+                f"Fold {fold_result.get('fold')}: no final-test action log found.",
+                trial,
+            )
+            continue
+        logger.log(f"Fold {fold_result.get('fold')} ({fold_result.get('split')}):", trial)
+        report_action_log(logger, log_path, trial)
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit(f"usage: {sys.argv[0]} <actions_eval_*.parquet>")
     with selective_logger("") as logger:
-        eval_report(logger, RLConfig())
+        report_action_log(logger, sys.argv[1])

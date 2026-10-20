@@ -258,7 +258,15 @@ def run_experiment(
                 logging.DEBUG, trial, "Results from the final evaluation:"
             )
             # ── 8. Final reporting (non-trial runs only) ─────────────────────
-            eval_report(logger, config, trial, fold_results, cv_mean_pv, cv_mean_calmar)
+            eval_report(
+                logger,
+                config,
+                trial,
+                fold_results,
+                cv_mean_pv,
+                cv_mean_calmar,
+                state_file=state_file,
+            )
 
             # Trial finished all folds successfully: clean up checkpoint file
             if trial is not None:

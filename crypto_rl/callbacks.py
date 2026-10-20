@@ -39,6 +39,26 @@ except ImportError:  # pragma: no cover
             return lambda *a, **k: None
 
 
+def _every_n_calls(freq_timesteps: int, n_envs: int) -> int:
+    """Convert a period in timesteps to a period in callback calls.
+
+    ``num_timesteps`` advances by ``n_envs`` per call, so ``num_timesteps %
+    freq == 0`` only fires at multiples of ``lcm(n_envs, freq)``. Like SB3's
+    ``EvalCallback``, trigger on ``n_calls`` instead.
+    """
+    return max(1, int(freq_timesteps) // max(1, int(n_envs)))
+
+
+def _resume_n_calls(callback: BaseCallback) -> None:
+    """Re-anchor ``n_calls`` when a model resumed from a saved chunk.
+
+    A resumed run restores ``num_timesteps`` on a fresh callback, so without
+    this the eval schedule would restart from zero.
+    """
+    if callback.n_calls == 0 and callback.model.num_timesteps > 0:
+        callback.n_calls = callback.model.num_timesteps // callback.training_env.num_envs
+
+
 class DashboardCallback(BaseCallback):
     """Write periodic ``state.json`` snapshots for the Streamlit dashboard."""
 
@@ -61,6 +81,7 @@ class DashboardCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.num_data_rows = num_data_rows
         self.check_freq = config.dashboard_freq
+        self._check_every_calls = 1
         self.start_ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         self.last_portfolio_value = config.budget_initial
         self.training_start_str = training_start_str
@@ -98,11 +119,17 @@ class DashboardCallback(BaseCallback):
         except ImportError:
             self.psutil = None
 
+    def _init_callback(self) -> None:
+        self._check_every_calls = _every_n_calls(
+            self.check_freq, self.training_env.num_envs
+        )
+        _resume_n_calls(self)
+
     def _on_training_start(self) -> None:
         self._write_state(status="initializing")
 
     def _on_step(self) -> bool:
-        if self.num_timesteps % self.check_freq == 0:
+        if self.n_calls % self._check_every_calls == 0:
             self._collect_metrics()
             self._write_state(status="running")
         return True
@@ -313,7 +340,8 @@ class UnifiedEvalCallback(BaseCallback):
         self.fold_idx = fold_idx
         self.eval_step_offset = eval_step_offset
 
-        self.eval_freq: int = int(config.eval_freq)
+        self.eval_freq: int = int(config.eval_freq)  # in timesteps
+        self._eval_every_calls = 1  # set in _init_callback once n_envs is known
         self.max_checkpoints = config.max_checkpoints
 
         self.eval_idx = 0
@@ -327,8 +355,15 @@ class UnifiedEvalCallback(BaseCallback):
         self.best_obs_rms: Any = None
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    def _init_callback(self) -> None:
+        if self.eval_freq > 0:
+            self._eval_every_calls = _every_n_calls(
+                self.eval_freq, self.training_env.num_envs
+            )
+        _resume_n_calls(self)
+
     def _on_step(self) -> bool:
-        if self.eval_freq > 0 and self.num_timesteps % self.eval_freq == 0:
+        if self.eval_freq > 0 and self.n_calls % self._eval_every_calls == 0:
             self.eval_idx += 1
             _, calmar = self._run_evaluation()
             total_evals = self.config.timesteps // self.eval_freq
@@ -433,10 +468,10 @@ class UnifiedEvalCallback(BaseCallback):
         )
         self.model.save(str(ckpt_path))
 
-        # Only trim this fold's own ranked checkpoints; never other runs' files
-        # or best_model.zip.
+        # Only trim this fold's own ranked checkpoints; never other runs' or
+        # folds' files, or best_model.zip.
         all_ckpts = sorted(
-            self.checkpoint_dir.glob("fold_*_step_*.zip"),
+            self.checkpoint_dir.glob(f"fold_{self.fold_idx}_step_*.zip"),
             key=lambda p: p.stat().st_mtime,
         )
 

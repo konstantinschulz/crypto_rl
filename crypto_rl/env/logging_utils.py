@@ -90,7 +90,6 @@ def log_action(
         if 0 <= asset_idx < len(env.asset_names)
         else "UNKNOWN"
     )
-    env.traded_coins.add(asset_str)
     entry = {
         "episode": int(env.episode_count),
         "step": int(step),
