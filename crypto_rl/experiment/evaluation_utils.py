@@ -16,29 +16,81 @@ from crypto_rl.env.logging_utils import LoggerBase
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 
-def compute_buy_and_hold_baseline(
-    config: RLConfig,
-    last_asset_names: list[str],
-    last_prices_arr: np.ndarray,
+BASELINE_NAMES = ("equal_weight", "btc", "cash")
+
+
+def _buy_and_hold_value(
+    budgets: np.ndarray,
+    entry_prices: np.ndarray,
+    exit_prices: np.ndarray,
+    fee_rate: float,
 ) -> float:
-    """Calculate the buy-and-hold final portfolio value benchmark.
+    """Final value of spending `budgets` per asset at entry and selling at exit.
 
-    Selects BTCUSDT if present, otherwise locates the first symbol with start_price > 0.
+    Uses the env's fee model: a buy of S cash gets S / ((1 + fee) * price)
+    units, a sell of u units returns u * price * (1 - fee).
     """
-    if "BTCUSDT" in last_asset_names:
-        btc_idx = last_asset_names.index("BTCUSDT")
-        start_price = last_prices_arr[0, btc_idx]
-        end_price = last_prices_arr[-1, btc_idx]
-    else:
-        start_price = last_prices_arr[0, 0]
-        end_price = last_prices_arr[-1, 0]
+    valid = entry_prices > 1e-8
+    units = np.divide(
+        budgets,
+        (1.0 + fee_rate) * entry_prices,
+        out=np.zeros_like(budgets, dtype=float),
+        where=valid,
+    )
+    proceeds = float(np.sum(units * exit_prices * (1.0 - fee_rate)))
+    # Budget that could not be invested (no valid entry price) stays in cash
+    return proceeds + float(np.sum(budgets[~valid]))
 
-    if start_price > 1e-8:
-        buy_hold_return = (end_price - start_price) / start_price
-    else:
-        buy_hold_return = 0.0
 
-    return float(config.budget_initial * (1 + buy_hold_return))
+def compute_window_baselines(
+    prices_arr: np.ndarray,
+    start_step: int,
+    max_steps: int,
+    asset_names: list[str],
+    fee_rate: float,
+    budget_initial: float,
+) -> dict[str, float]:
+    """Final portfolio values of the passive baselines over the bot's window.
+
+    An episode that starts at ``current_step == start_step`` executes its
+    first action at ``prices[start_step - 1]`` and is liquidated at
+    ``prices[max_steps - 1]`` (see `step_env`). The baselines buy at the
+    first of those prices and sell at the last, with the same fees:
+
+    - ``equal_weight``: the budget split equally across all assets.
+    - ``btc``: the whole budget in BTCUSDT (first asset if it is missing).
+    - ``cash``: the budget held, untouched.
+    """
+    entry_prices = np.asarray(prices_arr[start_step - 1], dtype=float)
+    exit_prices = np.asarray(prices_arr[max_steps - 1], dtype=float)
+    n_assets = len(entry_prices)
+
+    btc_idx = asset_names.index("BTCUSDT") if "BTCUSDT" in asset_names else 0
+    btc_budgets = np.zeros(n_assets)
+    btc_budgets[btc_idx] = budget_initial
+
+    return {
+        "equal_weight": _buy_and_hold_value(
+            np.full(n_assets, budget_initial / n_assets),
+            entry_prices,
+            exit_prices,
+            fee_rate,
+        ),
+        "btc": _buy_and_hold_value(btc_budgets, entry_prices, exit_prices, fee_rate),
+        "cash": float(budget_initial),
+    }
+
+
+def excess_returns(
+    final_portfolio_value: float,
+    baselines: dict[str, float],
+    budget_initial: float,
+) -> dict[str, float]:
+    """The bot's return minus each baseline's return, as fractions of the budget."""
+    return {
+        name: (final_portfolio_value - value) / budget_initial
+        for name, value in baselines.items()
+    }
 
 
 def run_multi_seed_eval(
@@ -108,3 +160,25 @@ def run_multi_seed_eval(
         )
 
     return multi_seed_pv
+
+
+def log_baselines(
+    logger: LoggerBase,
+    trial: optuna.trial.Trial | None,
+    title: str,
+    bot_return: float,
+    baselines: dict[str, float],
+    excess: dict[str, float],
+    budget_initial: float,
+) -> None:
+    """Log each baseline's final value and return, and the bot's excess over it."""
+    logger.log(title, trial)
+    logger.log(f"  {'Bot':<13} | Return: {bot_return * 100:+8.2f}%", trial)
+    for name in BASELINE_NAMES:
+        value = baselines[name]
+        ret = (value - budget_initial) / budget_initial
+        logger.log(
+            f"  {name:<13} | Final PV: ${value:<10.2f} | Return: {ret * 100:+8.2f}% "
+            f"| Bot excess: {excess[name] * 100:+8.2f} pp",
+            trial,
+        )

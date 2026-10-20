@@ -48,6 +48,11 @@ from crypto_rl.env.logging_utils import (
 from crypto_rl.env.metrics import calculate_calmar_ratio
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from crypto_rl.experiment.data_loading import load_raw_data
+from crypto_rl.experiment.evaluation_utils import (
+    compute_window_baselines,
+    excess_returns,
+    log_baselines,
+)
 
 
 def build_policy_kwargs(config: RLConfig) -> dict[str, Any]:
@@ -108,6 +113,15 @@ def _run_episode(
     done = False
     # Calculate exactly how many steps this evaluation will take
     total_steps = base_env.max_steps - base_env.current_step
+    # Passive baselines over exactly the steps this episode is scored on
+    baselines = compute_window_baselines(
+        base_env.prices_arr,
+        start_step=base_env.current_step,
+        max_steps=base_env.max_steps,
+        asset_names=base_env.asset_names,
+        fee_rate=base_env.fee_rate,
+        budget_initial=initial_pv,
+    )
     # Progress bars are disabled for headless background Optuna workers
     with tqdm(
         total=total_steps, desc=desc, disable=not show_progress, unit="steps"
@@ -132,11 +146,12 @@ def _run_episode(
                 {"step": steps, "value": float(current_pv - initial_pv)}
             )
 
+    final_pv = info.get("final_portfolio_value", base_env.portfolio_value)
     result = {
         "initial_portfolio_value": initial_pv,
-        "final_portfolio_value": info.get(
-            "final_portfolio_value", base_env.portfolio_value
-        ),
+        "final_portfolio_value": final_pv,
+        "baselines": baselines,
+        "excess_returns": excess_returns(final_pv, baselines, initial_pv),
         "trades_count": info.get("final_trades_count", base_env.trades_count),
         "fees_paid": info.get("final_fees_paid", base_env.fees_paid_total),
         "closed_trades": closed_trades,
@@ -589,6 +604,8 @@ def run_folds(
                 "closed_trades": int(eval_closed_trades),
                 "win_rate_pct": float(eval_win_rate_pct),
                 "fees_paid": float(eval_final_fees_paid),
+                "baselines": result["baselines"],
+                "excess_returns": result["excess_returns"],
                 "action_type_counts": result["action_type_counts"],
                 "traded_coins": result["traded_coins"],
                 "portfolio_values": result["env_portfolio_values"],
@@ -610,6 +627,16 @@ def run_folds(
             logging.INFO,
             trial,
             f"  Trades: {eval_final_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${eval_final_fees_paid:.4f}",
+        )
+        log_baselines(
+            logger,
+            trial,
+            f"Baselines ({reported_split}, same {result['steps']} steps, same fees):",
+            bot_return=(eval_final_portfolio_value - eval_initial_portfolio_value)
+            / eval_initial_portfolio_value,
+            baselines=result["baselines"],
+            excess=result["excess_returns"],
+            budget_initial=eval_initial_portfolio_value,
         )
 
         last_model = eval_model

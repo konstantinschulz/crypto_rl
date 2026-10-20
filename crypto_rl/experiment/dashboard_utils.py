@@ -67,7 +67,8 @@ def update_dashboard_state(
     last_eval_steps: int,
     last_eval_portfolio_values: list[dict[str, Any]],
     last_eval_realized_pnl: list[dict[str, Any]],
-    buy_hold_baseline: float | None = None,
+    baselines: dict[str, float] | None = None,
+    excess_returns: dict[str, float] | None = None,
 ) -> None:
     """Write the evaluation results back to the dashboard ``state.json``.
 
@@ -87,7 +88,9 @@ def update_dashboard_state(
     state.setdefault("run", {})["status"] = "evaluated"
     state["run"]["finished_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    baseline = float(buy_hold_baseline) if buy_hold_baseline is not None else float(cv_mean_pv)
+    baselines = baselines or {}
+    # BTC buy-and-hold over the bot's own window(s); the dashboard's headline baseline
+    baseline = float(baselines.get("btc", cv_mean_pv))
 
     # Finance / evaluation results
     finance = state.setdefault("finance", {})
@@ -98,6 +101,8 @@ def update_dashboard_state(
         "eval_trades": int(cv_total_trades),
         "eval_win_rate_pct": float(cv_mean_win_rate),
         "buy_hold_baseline": baseline,
+        "baselines": baselines,
+        "excess_returns": excess_returns or {},
         "total_fees_paid": float(cv_total_fees),
         "cv_folds": fold_results,
         "per_asset_breakdown": per_asset_stats,

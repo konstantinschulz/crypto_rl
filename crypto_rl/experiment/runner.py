@@ -22,7 +22,11 @@ from eval_report import eval_report
 
 from .dashboard_utils import update_dashboard_state
 from .data_loading import load_raw_data, prepare_splits
-from .evaluation_utils import compute_buy_and_hold_baseline, run_multi_seed_eval
+from .evaluation_utils import (
+    BASELINE_NAMES,
+    log_baselines,
+    run_multi_seed_eval,
+)
 from .fold_runner import run_folds
 
 CLIP_OBS = 10.0  # Clamps normalized inputs to [-10.0, 10.0]
@@ -60,6 +64,14 @@ def _print_cv_summary(
     logger.log(f"Total CV Trades:           {cv_total_trades}", trial)
     logger.log(f"Total {split_name} Fees Paid:           ${cv_total_fees:.4f}", trial)
     logger.log("=" * 40 + "\n", trial)
+
+
+def _mean_over_folds(fold_results: list[dict], key: str) -> dict[str, float]:
+    """Per-baseline mean of `fold_results[i][key]`; empty if no fold has it."""
+    rows = [r[key] for r in fold_results if key in r]
+    if not rows:
+        return {}
+    return {name: float(np.mean([row[name] for row in rows])) for name in BASELINE_NAMES}
 
 
 def run_experiment(
@@ -181,10 +193,20 @@ def run_experiment(
                 split_name="Validation" if trial is not None else "Test",
             )
 
-            # ── 5. Buy-and-hold baseline ─────────────────────────────────────
-            buy_hold_final = compute_buy_and_hold_baseline(
-                config, last_test_names, last_test_prices
-            )
+            # ── 5. Baselines over the same windows the bot was scored on ─────
+            cv_baselines = _mean_over_folds(fold_results, "baselines")
+            cv_excess = _mean_over_folds(fold_results, "excess_returns")
+            if cv_baselines:
+                log_baselines(
+                    logger,
+                    trial,
+                    f"Mean baselines over {len(fold_results)} fold(s), same "
+                    "windows and fees as the bot:",
+                    bot_return=cv_mean_pnl / config.budget_initial,
+                    baselines=cv_baselines,
+                    excess=cv_excess,
+                    budget_initial=config.budget_initial,
+                )
             # ── 6. Multi-seed evaluation ─────────────────────────────────────
             run_multi_seed_eval(
                 config=config,
@@ -218,7 +240,8 @@ def run_experiment(
                         last_eval_steps=last_eval_steps,
                         last_eval_portfolio_values=last_eval_portfolio_values,
                         last_eval_realized_pnl=last_eval_realized_pnl,
-                        buy_hold_baseline=buy_hold_final,
+                        baselines=cv_baselines,
+                        excess_returns=cv_excess,
                     )
                     logger.print_if_not_trial(
                         logging.DEBUG,
