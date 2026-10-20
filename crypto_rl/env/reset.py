@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from crypto_rl.data import get_valid_start_timestamps, read_window_from_timestamps
-from crypto_rl.env.data_utils import pivot_ohlcv
+from crypto_rl.data import get_valid_start_timestamps, load_random_window_wide
+from crypto_rl.env.data_utils import pivot_ohlcv_wide
 from crypto_rl.env.feature_utils import precalculate_static_obs
 from crypto_rl.env.logging_utils import flush_log_parquet, init_log
 
@@ -19,13 +19,14 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
     if not env.config.disable_logging and env.log_buffer:
         flush_log_parquet(env)
     max_valid_start = len(env.prices_arr) - env.config.episode_length - 1
-    if env.is_fast_eval:  # FAST INTERMEDIATE EVALUATION MODE: Run a fixed 2-week slice of the test fold
-        # Start at exactly 25% into the test fold so it's safely past the window_size
+    # A slice shorter than one episode has no room for a 25% offset: evaluate it whole.
+    if env.is_fast_eval and max_valid_start > 0:  # FAST INTERMEDIATE EVALUATION MODE: Run a fixed slice of the validation fold
+        # Start at exactly 25% into the fold so it's safely past the window_size
         start_idx = env.config.window_size + (max_valid_start // 4)
         env.current_step = start_idx
         env.max_steps = min(start_idx + env.config.eval_length, len(env.prices_arr) - 1)
     elif env.is_eval or max_valid_start <= env.config.window_size:
-        # FINAL EVALUATION MODE: Run the entire multi-month test fold start to finish
+        # FULL EVALUATION MODE: Run the entire validation or test fold start to finish
         env.current_step = env.config.window_size
         env.max_steps = len(env.prices_arr) - 1
     else:
@@ -42,13 +43,14 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
                 env._cached_symbols,
                 env._cached_k,
             ) = get_valid_start_timestamps(env.config.parquet_path, n=env.config.n_rows)
-        new_df = read_window_from_timestamps(
+        # Stream one symbol at a time straight into wide frames; the long-format
+        # window (~18M rows) is never materialised, which keeps peak RAM bounded.
+        wide = load_random_window_wide(
             env.config.parquet_path,
             env._cached_valid_open_times,
             env._cached_symbols,
             env._cached_k,
         )
-        # Pivot the OHLCV data
         (
             prices_piv,
             open_piv,
@@ -58,7 +60,8 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
             htf_slope_15m_piv,
             htf_slope_1h_piv,
             htf_regime_24h_piv,
-        ) = pivot_ohlcv(new_df)
+        ) = pivot_ohlcv_wide(wide)
+        del wide
         df_to_piv = {
             "prices_df": prices_piv,
             "open_df": open_piv,

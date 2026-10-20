@@ -278,6 +278,12 @@ Examples:
         help=f"Fraction of data to use for testing (default: {default_config.test_fraction})",
     )
     parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=default_config.val_fraction,
+        help=f"Fraction of data to use for validation: intermediate evals, checkpoint ranking and the Optuna objective (default: {default_config.val_fraction}). It is carved from the end of the training slice; the test slice is only touched in the final report.",
+    )
+    parser.add_argument(
         "--timesteps",
         type=int,
         default=default_config.timesteps,

@@ -9,11 +9,12 @@ the Streamlit dashboard can poll for live metrics.
 
 from __future__ import annotations
 
+import copy
 import json
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import optuna
@@ -319,6 +320,11 @@ class UnifiedEvalCallback(BaseCallback):
         self.is_pruned = False
         self.best_calmar = -float("inf")
         self.ema_score = None
+        # Best model on the validation env, kept so the final report can load
+        # it. Its observation statistics must travel with it: VecNormalize's
+        # running mean/var keep drifting during training.
+        self.best_model_path: Path | None = None
+        self.best_obs_rms: Any = None
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_step(self) -> bool:
@@ -354,6 +360,7 @@ class UnifiedEvalCallback(BaseCallback):
 
             if calmar > self.best_calmar:
                 self.best_calmar = calmar
+                self._save_best_model()
                 if self.config.checkpoint:
                     self._save_checkpoint(calmar)
 
@@ -410,6 +417,13 @@ class UnifiedEvalCallback(BaseCallback):
         calmar = calculate_calmar_ratio(portfolio_values)
         return episode_reward, calmar
 
+    def _save_best_model(self) -> None:
+        """Overwrite the single best-on-validation model and its obs stats."""
+        path = self.checkpoint_dir / "best_model.zip"
+        self.model.save(str(path))
+        self.best_model_path = path
+        self.best_obs_rms = copy.deepcopy(self.eval_env.obs_rms)
+
     def _save_checkpoint(self, calmar: float) -> None:
         """Saves the model with fold metadata and trims old checkpoints."""
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -419,8 +433,10 @@ class UnifiedEvalCallback(BaseCallback):
         )
         self.model.save(str(ckpt_path))
 
+        # Only trim this fold's own ranked checkpoints; never other runs' files
+        # or best_model.zip.
         all_ckpts = sorted(
-            self.checkpoint_dir.parent.parent.glob("**/*.zip"),
+            self.checkpoint_dir.glob("fold_*_step_*.zip"),
             key=lambda p: p.stat().st_mtime,
         )
 

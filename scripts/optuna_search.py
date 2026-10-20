@@ -42,6 +42,7 @@ def get_base_config() -> RLConfig:
         n_rows=18_000_000,
         timesteps=1_500_000,  # 3000 / 1_500_000
         train_chunks=5,
+        val_fraction=0.05,  # use small validation set to speed up Optuna sweeps and reserve more data for training
     )
 
 

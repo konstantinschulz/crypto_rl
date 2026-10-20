@@ -32,9 +32,15 @@ from crypto_rl.callbacks import (
 )
 from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
-from crypto_rl.data import DEFAULT_SYMBOLS
+from crypto_rl.data import DEFAULT_SYMBOLS, FoldSplit
 from crypto_rl.env.action_processing import get_action_mask
-from crypto_rl.env.data_utils import compute_static_obs_from_long_df, is_cache_built
+from crypto_rl.env.data_utils import (
+    build_fold_caches,
+    compute_static_obs_from_long_df,
+    fold_cache_prefixes,
+    is_cache_built,
+    parquet_open_time_range,
+)
 from crypto_rl.env.logging_utils import (
     LoggerBase,
     send_notification,
@@ -42,6 +48,115 @@ from crypto_rl.env.logging_utils import (
 from crypto_rl.env.metrics import calculate_calmar_ratio
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from crypto_rl.experiment.data_loading import load_raw_data
+
+
+def build_policy_kwargs(config: RLConfig) -> dict[str, Any]:
+    """Policy and value network sizes for MaskablePPO.
+
+    SB3 reads the value network from the ``"vf"`` key. A ``"qf"`` key (SAC
+    terminology) is silently ignored, which leaves the critic as a single
+    linear layer.
+    """
+    hidden = [config.net_arch_dim, config.net_arch_dim]
+    return {
+        "net_arch": {"pi": list(hidden), "vf": list(hidden)},
+        "activation_fn": torch.nn.ReLU,
+        "normalize_images": False,
+    }
+
+
+def _eval_env_args(
+    arrays: tuple, *, run_id: str, is_fast_eval: bool, config: RLConfig, logger: LoggerBase
+) -> dict[str, Any]:
+    """Keyword arguments for an evaluation `MinimalCryptoEnv` over one slice."""
+    prices, static, norm_vol, names = arrays
+    return {
+        "prices_arr": prices,
+        "static_obs": static,
+        "norm_vol_arr": norm_vol,
+        "asset_names": names,
+        "run_id": run_id,
+        "is_eval": True,
+        "is_fast_eval": is_fast_eval,
+        "config": config,
+        "logger": logger,
+    }
+
+
+def _run_episode(
+    model: MaskablePPO,
+    env_args: dict[str, Any],
+    obs_rms: Any,
+    dummy_vec_env_args: dict[str, Any],
+    desc: str,
+    show_progress: bool,
+) -> dict[str, Any]:
+    """Run one deterministic episode of `model` and collect its results."""
+    masked_env = ActionMasker(MinimalCryptoEnv(**env_args), get_action_mask)
+    vec_env = VecNormalize(DummyVecEnv([lambda: masked_env]), **dummy_vec_env_args)
+    vec_env.obs_rms = obs_rms
+    obs = vec_env.reset()
+    base_env: MinimalCryptoEnv = vec_env.venv.envs[0].unwrapped
+    initial_pv = base_env.portfolio_value
+    portfolio_values = [{"step": 0, "value": float(initial_pv)}]
+    realized_pnl = [{"step": 0, "value": 0.0}]
+    reward_totals: dict = {}
+    closed_trades = 0
+    winning_trades = 0
+    steps = 0
+    info: dict = {}
+    done = False
+    # Calculate exactly how many steps this evaluation will take
+    total_steps = base_env.max_steps - base_env.current_step
+    # Progress bars are disabled for headless background Optuna workers
+    with tqdm(
+        total=total_steps, desc=desc, disable=not show_progress, unit="steps"
+    ) as pbar:
+        while not done:
+            action_masks = np.expand_dims(vec_env.venv.envs[0].action_masks(), axis=0)
+            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
+            obs, _, dones, infos = vec_env.step(action)
+            done = bool(dones[0])
+            info = infos[0]
+            for k, v in info.get("reward_components", {}).items():
+                reward_totals[k] = reward_totals.get(k, 0) + v
+            if info.get("is_valid_sell", False):
+                closed_trades += 1
+                if info.get("realised_pnl", 0.0) > 0:
+                    winning_trades += 1
+            steps += 1
+            pbar.update(1)
+            current_pv = info.get("final_portfolio_value", base_env.portfolio_value)
+            portfolio_values.append({"step": steps, "value": float(current_pv)})
+            realized_pnl.append(
+                {"step": steps, "value": float(current_pv - initial_pv)}
+            )
+
+    result = {
+        "initial_portfolio_value": initial_pv,
+        "final_portfolio_value": info.get(
+            "final_portfolio_value", base_env.portfolio_value
+        ),
+        "trades_count": info.get("final_trades_count", base_env.trades_count),
+        "fees_paid": info.get("final_fees_paid", base_env.fees_paid_total),
+        "closed_trades": closed_trades,
+        "winning_trades": winning_trades,
+        "steps": steps,
+        "portfolio_values": portfolio_values,
+        "realized_pnl": realized_pnl,
+        "reward_totals": reward_totals,
+        "per_asset_stats": info["per_asset_stats"],
+        "action_type_counts": info.get(
+            "action_type_counts", base_env.action_type_counts
+        ),
+        "traded_coins": sorted(info.get("traded_coins", base_env.traded_coins)),
+        "env_portfolio_values": info.get(
+            "portfolio_values", base_env.portfolio_values
+        ),
+        "calmar": calculate_calmar_ratio(portfolio_values),
+    }
+    vec_env.close()
+    return result
 
 
 def run_folds(
@@ -55,7 +170,7 @@ def run_folds(
     ckpt_mgr: CVCheckpointManager,
     env_config: RLConfig,
     dummy_vec_env_args: dict[str, Any],
-    splits: list[tuple[int, int, int, str, str]],
+    splits: list[FoldSplit],
 ) -> tuple[float, float, float, float, int, float, list[dict], dict, Any, list[tuple]]:
     """Execute all CV folds.
 
@@ -89,16 +204,21 @@ def run_folds(
     # raw_df before the heavy PyTorch neural networks spin up.
     # =========================================================================
     num_assets = len(DEFAULT_SYMBOLS)
-    needs_raw_df = False
-    # Check if ANY fold is missing its cache
-    for fold_idx in range(len(splits)):
-        prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
-        prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
-        if not is_cache_built(config, prefix_train) or not is_cache_built(
-            config, prefix_test
-        ):
-            needs_raw_df = True
-            break
+    data_range = parquet_open_time_range(config.parquet_path)
+    # Splits may come from the JSON cache as plain lists
+    splits = [FoldSplit(*split) for split in splits]
+    # The test slice is only touched by the final report (non-trial runs), so
+    # Optuna trials never build or read it.
+    cache_slices = ("train", "val") if trial is not None else ("train", "val", "test")
+    fold_prefixes = [
+        fold_cache_prefixes(config, num_assets, fold_idx, data_range, split)
+        for fold_idx, split in enumerate(splits)
+    ]
+    needs_raw_df = any(
+        not is_cache_built(config, getattr(prefixes, name))
+        for prefixes in fold_prefixes
+        for name in cache_slices
+    )
     if needs_raw_df:
         logger.print_if_not_trial(
             logging.DEBUG,
@@ -106,31 +226,8 @@ def run_folds(
             "Pre-flight: Loading raw data to build missing caches...",
         )
         raw_df = load_raw_data(config, logger, trial)
-        for fold_idx in range(len(splits)):
-            (t_train_max, t_test_min, t_test_max, _, _) = splits[fold_idx]
-            prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
-            prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
-            if not is_cache_built(config, prefix_train):
-                train_prices_df = (
-                    raw_df[raw_df["open_time"] <= t_train_max]
-                    .copy()
-                    .reset_index(drop=True)
-                )
-                compute_static_obs_from_long_df(
-                    train_prices_df, config, cache_prefix=prefix_train
-                )
-            if not is_cache_built(config, prefix_test):
-                test_prices_df = (
-                    raw_df[
-                        (raw_df["open_time"] >= t_test_min)
-                        & (raw_df["open_time"] <= t_test_max)
-                    ]
-                    .copy()
-                    .reset_index(drop=True)
-                )
-                compute_static_obs_from_long_df(
-                    test_prices_df, config, cache_prefix=prefix_test
-                )
+        for split, prefixes in zip(splits, fold_prefixes):
+            build_fold_caches(raw_df, config, split, prefixes, cache_slices)
         del raw_df
         gc.collect()
         # --- NEW: FORCE C-ALLOCATOR TO RETURN RAM TO LINUX ---
@@ -145,18 +242,13 @@ def run_folds(
     # =========================================================================
     # PHASE 2: EXECUTE FOLDS (TRAINING & EVALUATION)
     # =========================================================================
-    for fold_idx in range(len(splits)):
-        (t_train_max, t_test_min, t_test_max, training_start_str, training_end_str) = (
-            splits[fold_idx]
-        )
-
-        cache_prefix_train = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_train"
+    for fold_idx, split in enumerate(splits):
+        training_start_str, training_end_str = split.train_start_str, split.train_end_str
+        prefixes = fold_prefixes[fold_idx]
 
         # We know the cache exists now, so we pass None safely!
         prices_arr, static_obs, norm_vol_arr, asset_names = (
-            compute_static_obs_from_long_df(
-                None, config, cache_prefix=cache_prefix_train
-            )
+            compute_static_obs_from_long_df(None, config, cache_prefix=prefixes.train)
         )
         str_fold = str(fold_idx)
         # ----- Resume from checkpoint ------------------------------------------------
@@ -252,36 +344,30 @@ def run_folds(
                 training_end_str=training_end_str,
             )
 
-        # ----- Test observations ----------------------------------------------------
+        # ----- Validation observations ----------------------------------------------
+        # Validation drives intermediate evals, checkpoint ranking and pruning.
+        # The test slice is not loaded here.
         logger.print_if_not_trial(
-            logging.DEBUG, trial, "Computing test observations..."
+            logging.DEBUG, trial, "Computing validation observations..."
         )
-        cache_prefix_test = f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}_fold_{fold_idx}_test"
-        (
-            shared_test_prices,
-            shared_test_static,
-            shared_test_norm_vol,
-            shared_test_names,
-        ) = compute_static_obs_from_long_df(
-            None, config, cache_prefix=cache_prefix_test
+        val_arrays = compute_static_obs_from_long_df(
+            None, config, cache_prefix=prefixes.val
         )
         checkpoint_dir = run_dir / f"checkpoints_fold_{fold_idx + 1}"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        shared_env_args = {
-            "prices_arr": shared_test_prices,
-            "static_obs": shared_test_static,
-            "norm_vol_arr": shared_test_norm_vol,
-            "asset_names": shared_test_names,
-            "run_id": run_id,
-            "is_eval": True,
-            "is_fast_eval": True,
-            "config": env_config,
-            "logger": logger,
-        }
+        val_env_args = _eval_env_args(
+            val_arrays,
+            run_id=run_id,
+            # Short slice for the many intermediate evals during training
+            is_fast_eval=True,
+            # Logging stays off: only the final test run writes the eval log
+            config=dataclasses.replace(env_config, disable_logging=True),
+            logger=logger,
+        )
         eval_callback = None
         eval_env = None
         if config.checkpoint or trial is not None:
-            raw_eval_env = MinimalCryptoEnv(**shared_env_args)
+            raw_eval_env = MinimalCryptoEnv(**val_env_args)
             masked_eval_env = ActionMasker(raw_eval_env, get_action_mask)
             eval_env = VecNormalize(
                 DummyVecEnv([lambda: Monitor(masked_eval_env)]), **dummy_vec_env_args
@@ -303,14 +389,7 @@ def run_folds(
             if config.data_seed is not None
             else None
         )
-        policy_kwargs = {
-            "net_arch": {
-                "pi": [config.net_arch_dim, config.net_arch_dim],
-                "qf": [config.net_arch_dim, config.net_arch_dim],
-            },
-            "activation_fn": torch.nn.ReLU,
-            "normalize_images": False,
-        }
+        policy_kwargs = build_policy_kwargs(config)
         sb3_args_common = {
             "device": device,
             "verbose": verbose,
@@ -415,90 +494,77 @@ def run_folds(
                 train_env.close()
                 raise optuna.exceptions.TrialPruned()
 
-        # ----- Testing --------------------------------------------------------------
-        logger.print_if_not_trial(
-            logging.DEBUG,
-            trial,
-            f"4. Testing trained model for Fold {fold_idx + 1}...",
-        )
-        shared_env_args_with_logging = shared_env_args.copy()
-        shared_env_args_with_logging["config"] = dataclasses.replace(
-            env_config, disable_logging=False
-        )
-        # With a single fold, the final test runs over the full test fold (TEST_FRACTION-sized) instead of the short eval_length slice.
-        if config.cv_folds == 1:
-            shared_env_args_with_logging["is_fast_eval"] = False
-        test_env_raw = ActionMasker(
-            MinimalCryptoEnv(**shared_env_args_with_logging), get_action_mask
-        )
-        test_env = VecNormalize(
-            DummyVecEnv([lambda: test_env_raw]), **dummy_vec_env_args
-        )
-        test_env.obs_rms = train_env.obs_rms
-        obs = test_env.reset()
-        done = False
-        eval_steps = 0
-        base_test_env: MinimalCryptoEnv = test_env.venv.envs[0].unwrapped
-        eval_initial_portfolio_value = base_test_env.portfolio_value
-        eval_portfolio_values = [
-            {"step": 0, "value": float(eval_initial_portfolio_value)}
-        ]
-        eval_realized_pnl = [{"step": 0, "value": 0.0}]
-        eval_closed_trades = 0
-        eval_winning_trades = 0
-        eval_reward_totals: dict = {}
-        info: dict = {}
-        # Calculate exactly how many steps this evaluation will take
-        total_eval_steps = base_test_env.max_steps - base_test_env.current_step
-        # Disable the progress bar if we are running headless background Optuna workers
-        pbar: tqdm = tqdm(
-            total=total_eval_steps,
-            desc=f"Evaluating Fold {fold_idx + 1}",
-            disable=trial is not None,
-            unit="steps",
-        )
-        while not done:
-            action_masks = np.expand_dims(test_env.venv.envs[0].action_masks(), axis=0)
-            action, _ = model.predict(
-                obs, action_masks=action_masks, deterministic=True
+        # ----- Final evaluation -----------------------------------------------------
+        # Load the checkpoint that scored best on validation. Its observation
+        # statistics were saved with it; the live train_env.obs_rms has drifted.
+        best_path = eval_callback.best_model_path if eval_callback else None
+        if best_path is not None:
+            logger.print_if_not_trial(
+                logging.DEBUG,
+                trial,
+                f"4. Loading best validation checkpoint for Fold {fold_idx + 1} "
+                f"(val Calmar {eval_callback.best_calmar:.4f})...",
             )
-            obs, _, dones, infos = test_env.step(action)
-            done = bool(dones[0])
-            info = infos[0]
-            if "reward_components" in info:
-                for k, v in info["reward_components"].items():
-                    eval_reward_totals[k] = eval_reward_totals.get(k, 0) + v
-            if info.get("is_valid_sell", False):
-                eval_closed_trades += 1
-                if info.get("realised_pnl", 0.0) > 0:
-                    eval_winning_trades += 1
-            eval_steps += 1
-            pbar.update(1)
-            current_pv = info.get(
-                "final_portfolio_value", base_test_env.portfolio_value
+            eval_model = MaskablePPO.load(best_path, device=device)
+            eval_obs_rms = eval_callback.best_obs_rms
+        else:
+            logger.print_if_not_trial(
+                logging.WARNING,
+                trial,
+                f"No validation checkpoint exists for Fold {fold_idx + 1} (no "
+                "intermediate eval ran); using the final model.",
             )
-            eval_portfolio_values.append(
-                {"step": eval_steps, "value": float(current_pv)}
-            )
-            eval_realized_pnl.append(
-                {
-                    "step": eval_steps,
-                    "value": float(current_pv - eval_initial_portfolio_value),
-                }
-            )
-        pbar.close()
-        per_asset_stats = info["per_asset_stats"]
-        eval_final_portfolio_value = info.get(
-            "final_portfolio_value", base_test_env.portfolio_value
-        )
-        eval_final_trades_count = info.get(
-            "final_trades_count", base_test_env.trades_count
-        )
-        eval_final_fees_paid = info.get(
-            "final_fees_paid", base_test_env.fees_paid_total
-        )
+            eval_model = model
+            eval_obs_rms = train_env.obs_rms
 
-        fold_score = calculate_calmar_ratio(eval_portfolio_values)
+        if trial is not None:
+            # Full-length validation episode: the Optuna objective. Trials
+            # never touch the test slice.
+            result = _run_episode(
+                eval_model,
+                {**val_env_args, "is_fast_eval": False},
+                eval_obs_rms,
+                dummy_vec_env_args,
+                desc=f"Validating Fold {fold_idx + 1}",
+                show_progress=False,
+            )
+            reported_arrays = val_arrays
+            reported_split = "val"
+        else:
+            # The test slice is touched exactly once, for the final report,
+            # and always over the whole test fold (is_fast_eval=False).
+            logger.print_if_not_trial(
+                logging.DEBUG,
+                trial,
+                f"5. Testing best checkpoint on Fold {fold_idx + 1}...",
+            )
+            test_arrays = compute_static_obs_from_long_df(
+                None, config, cache_prefix=prefixes.test
+            )
+            result = _run_episode(
+                eval_model,
+                _eval_env_args(
+                    test_arrays,
+                    run_id=run_id,
+                    is_fast_eval=False,
+                    config=dataclasses.replace(env_config, disable_logging=False),
+                    logger=logger,
+                ),
+                eval_obs_rms,
+                dummy_vec_env_args,
+                desc=f"Testing Fold {fold_idx + 1}",
+                show_progress=True,
+            )
+            reported_arrays = test_arrays
+            reported_split = "test"
+
+        per_asset_stats = result["per_asset_stats"]
+        eval_initial_portfolio_value = result["initial_portfolio_value"]
+        eval_final_portfolio_value = result["final_portfolio_value"]
+        eval_final_trades_count = result["trades_count"]
+        eval_final_fees_paid = result["fees_paid"]
+        eval_closed_trades = result["closed_trades"]
+        fold_score = result["calmar"]
         fold_scores.append(fold_score)
         if trial is not None:
             ckpt_mgr.save_fold_result(
@@ -508,13 +574,14 @@ def run_folds(
                 metrics={"calmar": fold_score},
             )
         eval_win_rate_pct = (
-            (eval_winning_trades / eval_closed_trades * 100.0)
+            (result["winning_trades"] / eval_closed_trades * 100.0)
             if eval_closed_trades > 0
             else 0.0
         )
         fold_results.append(
             {
                 "fold": fold_idx + 1,
+                "split": reported_split,
                 "final_portfolio_value": eval_final_portfolio_value,
                 "pnl": float(eval_final_portfolio_value - eval_initial_portfolio_value),
                 "calmar": float(fold_score),
@@ -522,20 +589,18 @@ def run_folds(
                 "closed_trades": int(eval_closed_trades),
                 "win_rate_pct": float(eval_win_rate_pct),
                 "fees_paid": float(eval_final_fees_paid),
-                "action_type_counts": info.get(
-                    "action_type_counts", base_test_env.action_type_counts
-                ),
-                "traded_coins": sorted(
-                    info.get("traded_coins", base_test_env.traded_coins)
-                ),
-                "portfolio_values": info.get(
-                    "portfolio_values", base_test_env.portfolio_values
-                ),
+                "action_type_counts": result["action_type_counts"],
+                "traded_coins": result["traded_coins"],
+                "portfolio_values": result["env_portfolio_values"],
             }
         )
 
         # Log results --------------------------------------------------------------
-        logger.print_if_not_trial(logging.INFO, trial, f"Fold {fold_idx + 1} Results:")
+        logger.print_if_not_trial(
+            logging.INFO,
+            trial,
+            f"Fold {fold_idx + 1} Results ({reported_split}, best-validation checkpoint):",
+        )
         logger.print_if_not_trial(
             logging.INFO,
             trial,
@@ -547,11 +612,11 @@ def run_folds(
             f"  Trades: {eval_final_trades_count} | Sells: {eval_closed_trades} | Win Rate: {eval_win_rate_pct:.1f}% | Fees: ${eval_final_fees_paid:.4f}",
         )
 
-        last_model = model
-        last_eval_reward_totals = eval_reward_totals
-        last_eval_portfolio_values = eval_portfolio_values
-        last_eval_realized_pnl = eval_realized_pnl
-        last_eval_steps = eval_steps
+        last_model = eval_model
+        last_eval_reward_totals = result["reward_totals"]
+        last_eval_portfolio_values = result["portfolio_values"]
+        last_eval_realized_pnl = result["realized_pnl"]
+        last_eval_steps = result["steps"]
         # Per‑asset breakdown -------------------------------------------------------
         logger.log("\nPer-Asset Performance Breakdown:", trial)
         logger.log(
@@ -564,13 +629,15 @@ def run_folds(
                 f"{sym:<10} | ${stats['realized_pnl']:<12.2f} | ${stats['total_pnl']:<10.2f} | {stats['trades']:<8} | {stats['win_rate_pct']:<9.1f}% | ${stats['fees_paid']:<7.4f}",
                 trial,
             )
-        last_test_prices = shared_test_prices
-        last_test_static = shared_test_static
-        last_test_norm_vol = shared_test_norm_vol
-        last_test_names = shared_test_names
-
-        test_env.close()
-        last_obs_rms = train_env.obs_rms  # Save before closing; used by multi-seed eval
+        # Arrays of the split that was reported (val in trials, test otherwise);
+        # the baseline and multi-seed evaluation must use the same window.
+        (
+            last_test_prices,
+            last_test_static,
+            last_test_norm_vol,
+            last_test_names,
+        ) = reported_arrays
+        last_obs_rms = eval_obs_rms  # Used by multi-seed eval; matches eval_model
         train_env.close()
 
     # ----- Aggregate CV results ---------------------------------------------------

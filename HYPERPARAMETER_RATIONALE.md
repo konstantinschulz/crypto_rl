@@ -205,7 +205,9 @@ process synchronisation with `DummyVecEnv`.
 
 #### `--net-arch-dim 256`
 
-Number of dimensions for the `pi` and `qf` parameters in the network architecture of the PPO algorithm. It was increased from 128 to 256 to allow the model to represent the complexities of a large dataset (about 4 years of 1-minute OHLCV data) more adequately. A value of 512 or higher would probably be too much, as the model might use this capacity to memorize the specific features of the training dataset. Smaller networks in financial reinforcement learning act as a regularizer for noisy crypto data with their very low signal-to-noise ratio. Optuna so far always used 128 dimensions, so the Optuna results may not be fully applicable to the large experiments.
+Width of the hidden layers in the policy (`pi`) and value (`vf`) networks of the PPO algorithm. Each network has two hidden layers of this width, with ReLU activations. It was increased from 128 to 256 to allow the model to represent the complexities of a large dataset (about 4 years of 1-minute OHLCV data) more adequately. A value of 512 or higher would probably be too much, as the model might use this capacity to memorize the specific features of the training dataset. Smaller networks in financial reinforcement learning act as a regularizer for noisy crypto data with their very low signal-to-noise ratio.
+
+The value network is the critic that estimates state values for the advantage calculation. Before the `vf` key fix it was built from the SAC key `qf`, which SB3 ignores for PPO, so the critic was a single linear layer with no hidden layers. Results from before the fix, including all Optuna runs (which used 128 dimensions), were produced with that linear critic and are not comparable to results from the current architecture.
 
 #### `--ent-coef-initial 0.047` and `--ent-coef-final 0.0004`
 
@@ -267,6 +269,10 @@ iteration default, and is suitable for final single large training runs (after O
 #### `--test-fraction 0.1`
 
 The fraction of the dataset that is used for evaluation. For large training runs, it is reduced from 0.2 to 0.1. Given a dataset size of about 1M rows, this still amounts to 100k rows for evaluation, which corresponds to about 70 days of 1-minute OHLCV data. Smaller runs (like in Optuna) still use the higher default value instead.
+
+#### `--val-fraction 0.1`
+
+The fraction of the dataset that is used for validation. Each fold is split into train / validation / test, in that chronological order. The validation slice is carved from the end of what would otherwise be the training slice, directly before the test slice, so the test slices do not depend on this value. Validation drives everything that selects or tunes a model: the intermediate evaluations during training, checkpoint ranking, Optuna pruning, and the Optuna objective (the full-length validation Calmar of the best checkpoint). The test slice is only used for the final report (runs without an Optuna trial), once, over the whole test fold, with the best-on-validation checkpoint loaded together with the observation statistics it was trained with. Optuna trials never build or read the test slice. Because the checkpoint is chosen for its validation score, that score is optimistically biased; the test Calmar is the honest number, and a large gap between the two in the final report is a sign of overfitting to the validation slice.
 
 #### `--timesteps 4500000`
 

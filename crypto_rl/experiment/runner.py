@@ -13,6 +13,7 @@ import optuna
 
 from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
+from crypto_rl.env.data_utils import parquet_open_time_range, split_cache_name
 from crypto_rl.env.logging_utils import (
     LoggerBase,
     selective_logger,
@@ -43,16 +44,21 @@ def _print_cv_summary(
     cv_mean_win_rate: float,
     cv_total_trades: int,
     cv_total_fees: float,
+    split_name: str,
 ) -> None:
-    """Print the walk-forward CV summary to the logger."""
+    """Print the walk-forward CV summary to the logger.
+
+    `split_name` is the slice the numbers come from: "Validation" for Optuna
+    trials (which never touch the test slice), "Test" for the final report.
+    """
     logger.log("\n" + "=" * 40, trial)
     logger.log(f"WALK-FORWARD CV SUMMARY ({n_splits} Folds):", trial)
-    logger.log(f"Mean Test Portfolio Value: ${cv_mean_pv:.2f}", trial)
-    logger.log(f"Mean Test PnL:             ${cv_mean_pnl:.2f}", trial)
-    logger.log(f"Mean Test Calmar:          {cv_mean_calmar:.2f}", trial)
-    logger.log(f"Mean Test Win Rate:        {cv_mean_win_rate:.1f}%", trial)
+    logger.log(f"Mean {split_name} Portfolio Value: ${cv_mean_pv:.2f}", trial)
+    logger.log(f"Mean {split_name} PnL:             ${cv_mean_pnl:.2f}", trial)
+    logger.log(f"Mean {split_name} Calmar:          {cv_mean_calmar:.2f}", trial)
+    logger.log(f"Mean {split_name} Win Rate:        {cv_mean_win_rate:.1f}%", trial)
     logger.log(f"Total CV Trades:           {cv_total_trades}", trial)
-    logger.log(f"Total Test Fees Paid:           ${cv_total_fees:.4f}", trial)
+    logger.log(f"Total {split_name} Fees Paid:           ${cv_total_fees:.4f}", trial)
     logger.log("=" * 40 + "\n", trial)
 
 
@@ -61,7 +67,12 @@ def run_experiment(
     trial: optuna.trial.Trial | None = None,
 ) -> float:
     """Run training and evaluation with walk-forward CV.
-    Returns the mean test Calmar across folds (or multi-seed portfolio value) for Optuna.
+
+    Each fold is split into train / validation / test. Validation drives the
+    intermediate evals, checkpoint ranking and pruning; the best-on-validation
+    checkpoint is evaluated afterwards. Optuna trials return the mean
+    *validation* Calmar and never touch the test slice. Non-trial runs also
+    evaluate that checkpoint once on the full test fold for the final report.
     """
     # Seed for reproducibility of dataset split
     np.random.seed(config.data_seed)
@@ -75,8 +86,9 @@ def run_experiment(
         if config.eval_freq == "auto":
             config.eval_freq = max(2000, config.timesteps // 10)
         # ── 1. Load data & create walk-forward splits ────────────────────────
-        splits_cache = Path(
-            f"{config.data_cache_dir}/seed_{config.data_seed}_rows_{config.n_rows}_splits.json"
+        data_range = parquet_open_time_range(config.parquet_path)
+        splits_cache = Path(config.data_cache_dir) / split_cache_name(
+            config, data_range
         )
         splits_cache.parent.mkdir(parents=True, exist_ok=True)
         raw_df = None  # Default to None to save RAM
@@ -166,6 +178,7 @@ def run_experiment(
                 cv_mean_win_rate,
                 cv_total_trades,
                 cv_total_fees,
+                split_name="Validation" if trial is not None else "Test",
             )
 
             # ── 5. Buy-and-hold baseline ─────────────────────────────────────

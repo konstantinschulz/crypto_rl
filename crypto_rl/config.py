@@ -60,6 +60,10 @@ class RLConfig:
     train_chunks: int = 1
     turnover_penalty: float = 0.05
     turnover_penalty_steps_threshold: int = 15
+    # Fraction of the data used for validation (intermediate evals, checkpoint
+    # ranking, Optuna objective). Carved from the end of what would otherwise be
+    # the training slice, directly before each test slice.
+    val_fraction: float = 0.1
     window_size: int = 120
 
     def to_dict(self):

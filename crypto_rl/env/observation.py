@@ -5,6 +5,13 @@ def build_observation(env) -> np.ndarray:
     """
     Constructs the observation vector on the fly to save memory.
 
+    No lookahead: at env.current_step == t, the agent has only seen bars up to
+    t-1 (the last closed bar). The step that consumes this observation fills
+    at prices[t-1] and is rewarded on prices[t-1] -> prices[t], so every
+    market-derived input here (windows, static features, volatility, portfolio
+    marks) must come from index t-1 or earlier. Reading index t would expose
+    the reward's end price to the policy.
+
     Vector structure (maintains exact backward compatibility for pre-trained weights):
     1. Macro features (5)
     2. Base window price changes (W * N)
@@ -16,17 +23,19 @@ def build_observation(env) -> np.ndarray:
     """
     # Cap t at the maximum index to prevent out-of-bounds on the terminal step
     t = min(env.current_step, len(env.prices_arr) - 1)
+    # Last closed bar: the newest data the agent may observe (see docstring)
+    last = t - 1
 
     N = env.num_assets
     W = env.config.window_size
     prices = env.prices_arr
 
-    last_price = prices[t - 1]
+    last_price = prices[last]
 
     # Avoid division by zero when calculating relative changes
     safe_last = np.where(last_price > 0, last_price, 1e-8)
-    # --- NEW: Extract current step's volatility for normalization ---
-    current_vol = env.norm_vol_arr[t]
+    # --- NEW: Extract last closed bar's volatility for normalization ---
+    current_vol = env.norm_vol_arr[last]
     safe_vol = np.where(current_vol > 1e-8, current_vol, 1e-8)
     # ----------------------------------------------------------------
 
@@ -48,7 +57,7 @@ def build_observation(env) -> np.ndarray:
     # 1. Macro features (stored at indices 0:5 in new precalc_static_obs)
     # ------------------------------------------------------------------
     env.obs_buf[idx : idx + env.macro_dim] = env.precalc_static_obs[
-        t, 0 : env.macro_dim
+        last, 0 : env.macro_dim
     ]
     idx += env.macro_dim
 
@@ -87,7 +96,7 @@ def build_observation(env) -> np.ndarray:
     # ------------------------------------------------------------------
     ind_dim = env.static_per_asset_dim * N
     env.obs_buf[idx : idx + ind_dim] = env.precalc_static_obs[
-        t, env.macro_dim : env.macro_dim + ind_dim
+        last, env.macro_dim : env.macro_dim + ind_dim
     ]
     idx += ind_dim
 
@@ -101,7 +110,8 @@ def build_observation(env) -> np.ndarray:
     idx += 1
 
     # Holdings percentage
-    current_prices = prices[t]
+    # Marked at the last closed bar, matching portfolio_value in step()
+    current_prices = prices[last]
     asset_values = env.holdings * current_prices
     env.obs_buf[idx : idx + N] = asset_values / safe_port_val
     idx += N
