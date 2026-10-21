@@ -9,7 +9,7 @@ import unittest
 import gymnasium as gym
 import numpy as np
 import torch
-from sb3_contrib import MaskablePPO
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 from crypto_rl.config import RLConfig
@@ -18,7 +18,7 @@ from crypto_rl.experiment.fold_runner import build_policy_kwargs
 
 class _TinyEnv(gym.Env):
     observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(8,), dtype=np.float32)
-    action_space = gym.spaces.MultiDiscrete([3, 2, 101])
+    action_space = gym.spaces.MultiDiscrete([6, 6])
 
     def reset(self, seed=None, options=None):
         return np.zeros(8, dtype=np.float32), {}
@@ -37,7 +37,7 @@ class NetArchTest(unittest.TestCase):
         kwargs = build_policy_kwargs(config)
         self.assertEqual(set(kwargs["net_arch"]), {"pi", "vf"})
 
-        model = MaskablePPO(
+        model = PPO(
             "MlpPolicy",
             DummyVecEnv([_TinyEnv]),
             policy_kwargs=kwargs,

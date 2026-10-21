@@ -8,6 +8,7 @@ from gymnasium import spaces
 
 from crypto_rl.config import RLConfig
 from crypto_rl.data import get_valid_start_timestamps
+from crypto_rl.env.action_processing import weight_bins
 from crypto_rl.env.feature_utils import (
     MACRO_DIM,
     STATIC_PER_ASSET_DIM,
@@ -34,12 +35,14 @@ class MinimalCryptoEnv(gym.Env):
 
     Action space
     ------------
-    ``MultiDiscrete([3, num_assets, 101])``
-
-    - Index 0 – ``action_type``: 0 = Hold, 1 = Buy, 2 = Sell
-    - Index 1 – ``asset_idx``: which asset to act on
-    - Index 2 – ``amount_pct``: 0–100, mapped to 0.0–1.0 fraction of
-      available cash (Buy) or holdings (Sell)
+    ``MultiDiscrete([K] * num_assets)``: one target-weight bin per asset.
+    Bin ``k`` means a target of ``k * weight_step`` of portfolio value, up to
+    ``max_asset_allocation`` (K = max_asset_allocation / weight_step + 1).
+    Targets that sum to more than 1 are scaled down proportionally, and the
+    rest is cash. Each step rebalances toward the target at the last closed
+    price, sells first, and skips assets already within ``rebalance_band`` of
+    their target (a target of 0 always closes the position). Every action is
+    valid, so there is no action mask.
 
     Reward
     ------
@@ -95,11 +98,12 @@ class MinimalCryptoEnv(gym.Env):
         self.logger = LoggerBase() if logger is None else logger
         self.fees_paid_total = 0.0
         self.previous_drawdown = 0.0
-        self.last_invalid_sell = False
         self.peak_portfolio_value = config.budget_initial
         self.portfolio_values: list[float] = []
-        if self.config.action_space_type == "multidiscrete":
-            self.action_space = spaces.MultiDiscrete([3, self.num_assets, 101])
+        self.weight_bins: np.ndarray = weight_bins(config)
+        self.action_space = spaces.MultiDiscrete(
+            [len(self.weight_bins)] * self.num_assets
+        )
 
         # Dimension breakdown:
         # 1. Macro features: btc_mom_norm (1), btc_vol_norm (1), btc_trend_regime 1-hot (3) -> 5
@@ -142,9 +146,9 @@ class MinimalCryptoEnv(gym.Env):
 
         self.log_buffer = []
         self.log_file_path: Path | None = None
-        self.action_type_counts: Counter[str] = Counter()
+        # Buy and sell fills in the current episode
+        self.fill_counts: Counter[str] = Counter()
         self.traded_coins: set[str] = set()
-        self.last_remap_note = None
         self.avg_entry_price = np.zeros(self.num_assets, dtype=np.float32)
         # --- NEW: Track entry steps for holding period calculations ---
         self.entry_step = np.zeros(self.num_assets, dtype=np.int32)

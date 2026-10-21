@@ -1,156 +1,106 @@
+"""Target-weight actions (ROADMAP P1-3).
+
+The action holds one bin index per asset. Bin ``k`` is a target weight of
+``k * weight_step`` of portfolio value, up to ``max_asset_allocation``. The
+env rebalances toward the target at the last closed price, skipping assets
+whose weight is already within ``rebalance_band`` of it. Every action is
+valid, so there is no action mask and nothing to remap or penalize.
+"""
+
 import numpy as np
 
-from crypto_rl.enums import ActionType
 
-
-def _get_current_portfolio_value(env):
-    """Calculate the current portfolio value based on cash and holdings."""
-    current_prices = env.prices_arr[env.current_step - 1]
-    safe_prices = np.nan_to_num(current_prices, nan=0.0, posinf=0.0, neginf=0.0)
-    current_asset_values = env.holdings * safe_prices
-    curr_portfolio_val = env.cash + np.sum(current_asset_values)
-    return curr_portfolio_val, current_asset_values
-
-
-def apply_discrete_action(env, action):
-    """Process discrete actions.
-
-    Returns a tuple:
-        (fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price)
-    Side‑effects on ``env`` (cash, holdings, logs) are performed inside this
-    function. ``last_remap_note`` is stored on the environment instance for the
-    caller to use. Illegal or empty actions are remapped to HOLD without a
-    reward penalty.
-    """
-    action_type = action[0]
-    env.action_type_counts[ActionType(action_type).name] += 1
-    asset_idx = action[1]
-    amount_pct = float(action[2]) / 100.0
-    amount_pct = np.clip(amount_pct, 0.0, 1.0)
-
-    # Initialise locals
-    fee_paid = 0.0
-    realised_pnl = 0.0
-    is_valid_sell = False
-    trade_units = 0.0
-    trade_price = env.prices_arr[env.current_step - 1][asset_idx]
-    env.last_remap_note = None
-    curr_portfolio_val, _ = _get_current_portfolio_value(env)
-    # 1. Catch invalid Sells
-    if action_type == 2 and env.holdings[asset_idx] < 1e-8:
-        env.last_remap_note = (
-            f"illegal action (SELL, {env.asset_names[asset_idx]}) remapped to HOLD"
+def weight_bins(config) -> np.ndarray:
+    """Target weights the action space can select, from 0 to the per-asset cap."""
+    n_steps = round(config.max_asset_allocation / config.weight_step)
+    if n_steps < 1 or not np.isclose(
+        n_steps * config.weight_step, config.max_asset_allocation
+    ):
+        raise ValueError(
+            f"max_asset_allocation ({config.max_asset_allocation}) must be a "
+            f"positive multiple of weight_step ({config.weight_step})"
         )
-        action_type = 0  # Force to HOLD to prevent phantom transactions/short selling
+    return np.arange(n_steps + 1) * config.weight_step
 
-    # 2. Catch invalid Buys
-    elif action_type == 1 and env.cash < 1e-8:
-        env.last_remap_note = (
-            f"illegal action (BUY, {env.asset_names[asset_idx]}) remapped to HOLD"
+
+def target_weights(env, action) -> np.ndarray:
+    """Map bin indices to target weights.
+
+    If the targets sum to more than 1, they are scaled down proportionally,
+    so the agent can ask for "fully invested" without picking exact bins.
+    The rest of the portfolio is cash.
+    """
+    weights = env.weight_bins[np.asarray(action, dtype=np.int64)]
+    total = weights.sum()
+    if total > 1.0:
+        weights = weights / total
+    return weights
+
+
+def rebalance(env, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Trade toward ``target`` weights at ``prices[current_step - 1]``.
+
+    Sells execute first so their proceeds can fund the buys. An asset is
+    traded only if its weight is off target by at least ``rebalance_band``,
+    except that a target of 0 always closes the whole position. Buys are
+    scaled down together when cash runs short, which happens when the targets
+    sum to 1, since fees come out of cash.
+
+    Fee model, as for the baselines: a buy of S cash gets S / ((1 + fee) *
+    price) units, and a sell of u units returns u * price * (1 - fee).
+
+    Returns per-asset fees paid and per-asset units traded (negative = sold).
+    """
+    prices = env.prices_arr[env.current_step - 1]
+    tradable = np.isfinite(prices) & (prices > 0)
+    safe_prices = np.where(tradable, prices, 0.0)
+    fee = env.fee_rate
+
+    values = env.holdings * safe_prices
+    pv = env.cash + float(values.sum())
+    fees = np.zeros(env.num_assets)
+    units = np.zeros(env.num_assets)
+    if pv <= 1e-8:
+        return fees, units
+
+    current = values / pv
+    gap = target - current
+    close_out = (target == 0.0) & (env.holdings > 0)
+    trade = tradable & ((np.abs(gap) >= env.config.rebalance_band) | close_out)
+
+    for i in np.flatnonzero(trade & (gap < 0)):
+        sold = (
+            float(env.holdings[i])
+            if target[i] == 0.0
+            else min(-gap[i] * pv / prices[i], float(env.holdings[i]))
         )
-        action_type = 0  # Force to HOLD
+        gross = sold * prices[i]
+        fees[i] = gross * fee
+        units[i] = -sold
+        env.cash += gross - fees[i]
+        env.holdings[i] -= sold
+        if target[i] == 0.0 or env.holdings[i] <= 1e-9:
+            env.holdings[i] = 0.0  # no dust left behind
+        env.fill_counts["SELL"] += 1
 
-    if action_type == 0:
-        amount_pct = 0.0
+    buys = np.flatnonzero(trade & (gap > 0))
+    spend = gap[buys] * pv * (1.0 + fee)
+    if spend.sum() > env.cash:
+        spend *= env.cash / spend.sum()
+    for i, s in zip(buys, spend):
+        if s <= 0:
+            continue
+        cost = s / (1.0 + fee)
+        fees[i] = cost * fee
+        units[i] = cost / prices[i]
+        env.cash -= s
+        env.holdings[i] += units[i]
+        env.fill_counts["BUY"] += 1
+    env.cash = max(env.cash, 0.0)  # float rounding after spending all cash
 
-    if action_type == 1:  # BUY
-        if amount_pct == 0.0:
-            action_type = 0
-            env.last_remap_note = "empty BUY remapped to HOLD"
-        elif asset_idx < env.num_assets:
-            # 2a. Enforce Per-Asset Max Allocation Caps (Volatility Scaled)
-            base_cap = env.config.max_asset_allocation
-            target_vol = env.config.target_volatility
-            if hasattr(env, "asset_volatility"):
-                current_vol = env.asset_volatility[env.current_step - 1][asset_idx]
-                dynamic_cap_pct = base_cap * (target_vol / (current_vol + 1e-8))
-                dynamic_cap_pct = np.clip(dynamic_cap_pct, 0.01, base_cap)
-            else:
-                dynamic_cap_pct = base_cap
-
-            max_cap_usd = curr_portfolio_val * dynamic_cap_pct
-            current_exposure_usd = env.holdings[asset_idx] * trade_price
-            room_to_buy_usd = max(0.0, max_cap_usd - current_exposure_usd)
-
-            # 2b. Enforce Single-Step Spend Cap
-            max_step_spend = env.cash * env.config.max_single_step_allocation
-
-            # Bound the target spend by requested pct, single-step limits, and overall asset exposure limits
-            target_spend_usd = min(
-                env.cash * amount_pct, max_step_spend, room_to_buy_usd
-            )
-
-            if target_spend_usd > 0:
-                # 3. Derive exact units and fee from the constrained target spend
-                fee_multiplier = 1.0 + env.fee_rate
-                cost_before_fee = target_spend_usd / fee_multiplier
-                fee_paid = cost_before_fee * env.fee_rate
-                trade_units = cost_before_fee / trade_price
-
-                # 4. Deduct EXACT cash spent (no leakage)
-                env.cash -= target_spend_usd  # target_spend_usd precisely equals (cost_before_fee + fee_paid)
-                env.holdings[asset_idx] += trade_units
-                env.fees_paid_total += fee_paid
-                env.trades_count += 1
-                env.traded_coins.add(env.asset_names[asset_idx])
-
-                # Note: `avg_entry_price` and `total_cost_basis` are intentionally left out here.
-                # `minimal_env.py` manages cost basis tracking by observing the resulting `delta`.
-
-    elif action_type == 2:  # SELL
-        if amount_pct == 0.0:
-            action_type = 0
-            env.last_remap_note = "empty SELL remapped to HOLD"
-        elif asset_idx < env.num_assets:
-            units_to_sell = env.holdings[asset_idx] * amount_pct
-            if units_to_sell > 0:
-                is_valid_sell = True
-                trade_units = units_to_sell
-                gross_proceeds = units_to_sell * trade_price
-                fee_paid = gross_proceeds * env.fee_rate
-                proceeds = gross_proceeds - fee_paid
-
-                env.cash += proceeds
-                env.holdings[asset_idx] -= trade_units
-                env.fees_paid_total += fee_paid
-                env.trades_count += 1
-                env.traded_coins.add(env.asset_names[asset_idx])
-
-                # Calculate internal logging PnL. (Official PnL routing is managed in minimal_env.py)
-                realised_pnl = proceeds - (trade_units * env.avg_entry_price[asset_idx])
-
-                if env.holdings[asset_idx] <= 1e-9:
-                    # Physically destroy the micro-dust
-                    env.holdings[asset_idx] = 0.0
-
-        else:
-            action_type = 0
-            amount_pct = 0.0
-            env.last_remap_note = "invalid asset index remapped to HOLD"
-
-    return fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price
-
-
-def get_action_mask(env):
-    """
-    Action mask for MultiDiscrete([3, num_assets, 101])
-    Returns a flat boolean array of size (3 + num_assets + 101).
-    """
-    # 1. Action Type Mask [Hold, Buy, Sell] (Length: 3)
-    # Buy is valid if we have cash. Sell is valid if we hold ANY asset.
-    can_buy = env.cash > 1e-8
-    can_sell = np.any(env.holdings > 1e-8)
-    mask_type = [True, can_buy, can_sell]
-
-    # 2. Asset Index Mask (Length: env.num_assets)
-    # All assets must remain True. SB3 evaluates dimensions independently.
-    # If you masked out an unheld asset to prevent an invalid Sell,
-    # you would simultaneously prevent the agent from Buying it.
-    asset_mask = np.ones(env.num_assets, dtype=bool)
-
-    # 3. Trade Amount Mask (Length: 101)
-    # All percentages (0-100) are valid selections.
-    amount_mask = np.ones(101, dtype=bool)
-
-    # Concatenate into the final 1D array required by MaskablePPO
-    return np.concatenate([mask_type, asset_mask, amount_mask], dtype=bool)
+    filled = np.flatnonzero(units != 0)
+    env.trades_count += len(filled)
+    env.fees_paid_total += float(fees.sum())
+    env.per_asset_fees += fees
+    env.traded_coins.update(env.asset_names[i] for i in filled)
+    return fees, units

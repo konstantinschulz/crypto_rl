@@ -25,19 +25,6 @@ Examples:
     default_config: RLConfig = RLConfig()
     # ------------------------------------------------------------------ arguments (alphabetical)
     parser.add_argument(
-        "--action-dead-zone",
-        type=float,
-        default=default_config.action_dead_zone,
-        help=f"Dead zone threshold for continuous actions (default {default_config.action_dead_zone})",
-    )
-    parser.add_argument(
-        "--action-space-type",
-        type=str,
-        default=default_config.action_space_type,
-        choices=["continuous", "multidiscrete"],
-        help=f"Action space representation: continuous (Box) or multidiscrete (MultiDiscrete) (default: {default_config.action_space_type})",
-    )
-    parser.add_argument(
         "--algorithm",
         type=str,
         default=default_config.algorithm,
@@ -159,19 +146,13 @@ Examples:
         "--max-asset-allocation",
         type=float,
         default=default_config.max_asset_allocation,
-        help=f"Maximum fraction of total portfolio value that can be allocated to a single asset (default {default_config.max_asset_allocation})",
+        help=f"Largest target weight per asset, as a fraction of portfolio value; the top bin of the action space. Must be a multiple of --weight-step (default {default_config.max_asset_allocation})",
     )
     parser.add_argument(
         "--max-checkpoints",
         type=int,
         default=default_config.max_checkpoints,
         help=f"Maximum number of checkpoints to retain (default {default_config.max_checkpoints})",
-    )
-    parser.add_argument(
-        "--max-single-step-allocation",
-        type=float,
-        default=default_config.max_single_step_allocation,
-        help=f"Maximum amount of cash to be allocated within a single step (default {default_config.max_single_step_allocation}). Applies only to BUY actions.",
     )
     parser.add_argument(
         "--n-envs",
@@ -190,6 +171,12 @@ Examples:
         type=str,
         default=default_config.parquet_path,
         help=f"Path to Parquet dataset file (default: {default_config.parquet_path})",
+    )
+    parser.add_argument(
+        "--rebalance-band",
+        type=float,
+        default=default_config.rebalance_band,
+        help=f"No-trade band: an asset is only traded when its weight is off target by at least this much; a target of 0 always closes the position (default {default_config.rebalance_band})",
     )
     parser.add_argument(
         "--reward-type",
@@ -237,12 +224,6 @@ Examples:
         help="Skip the slow multi-seed evaluation loop after training (useful for fast smoke tests)",
     )
     parser.add_argument(
-        "--target-volatility",
-        type=float,
-        default=default_config.target_volatility,
-        help=f"Target volatility for the volatility-scaled per-asset allocation cap (default {default_config.target_volatility})",
-    )
-    parser.add_argument(
         "--train-chunks",
         type=int,
         default=default_config.train_chunks,
@@ -259,6 +240,12 @@ Examples:
         type=int,
         default=default_config.turnover_penalty_steps_threshold,
         help=f"Number of steps below which a closed position will incur a turnover penalty (default: {default_config.turnover_penalty_steps_threshold})",
+    )
+    parser.add_argument(
+        "--weight-step",
+        type=float,
+        default=default_config.weight_step,
+        help=f"Width of the target-weight bins; the action picks one of 0, w, 2w, ..., --max-asset-allocation per asset (default {default_config.weight_step})",
     )
     parser.add_argument(
         "--window-size",

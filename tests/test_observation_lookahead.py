@@ -56,9 +56,7 @@ class NoObservationLookaheadTest(unittest.TestCase):
             obs_rows.append(np.array(env._get_obs(), dtype=np.float64))
             # Market move the step is rewarded on: prices[c-1] -> prices[c]
             ret_rows.append(prices[c] / prices[c - 1] - 1.0)
-            action = np.array(
-                [rng.integers(0, 3), rng.integers(0, NUM_ASSETS), rng.integers(0, 101)]
-            )
+            action = rng.integers(0, len(env.weight_bins), size=NUM_ASSETS)
             _, _, _, done, _ = env.step(action)
 
         obs = np.vstack(obs_rows)

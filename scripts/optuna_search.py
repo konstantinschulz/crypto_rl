@@ -66,9 +66,6 @@ def get_optuna_config(
     # Let Optuna overwrite specific targets
     trial_config: RLConfig = replace(
         base_config,
-        action_dead_zone=suggest(
-            "action_dead_zone", trial.suggest_float, 0.35, 0.65, step=0.05
-        ),
         batch_size=suggest(
             "batch_size", trial.suggest_categorical, [64, 128, 256]
         ),  # , 512, 1024
@@ -84,10 +81,8 @@ def get_optuna_config(
             "learning_rate", trial.suggest_float, 5e-6, 5e-5, log=True
         ),
         max_asset_allocation=suggest(
+            # Steps of 0.05 keep it a multiple of the default weight_step
             "max_asset_allocation", trial.suggest_float, 0.10, 0.50, step=0.05
-        ),
-        max_single_step_allocation=suggest(
-            "max_single_step_allocation", trial.suggest_float, 0.30, 0.70, step=0.05
         ),
         n_envs=suggest("n_envs", trial.suggest_int, 6, 12),
         n_steps=suggest(

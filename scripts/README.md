@@ -67,7 +67,7 @@ The augmented parquet file contains:
 ---
 
 ### `reward_ablation.py`
-Short ablation of reward variants (ROADMAP P1-1). It trains MaskablePPO for each arm and seed and scores the policy on the full validation slice. It reports behavior (exposure, turnover, fills, action mix) as well as return. The test fold is never touched. Results go to `logs/reward_ablation/`.
+Short ablation of reward variants (ROADMAP P1-1). It trains PPO for each arm and seed and scores the policy on the full validation slice. It reports behavior (exposure, turnover, fills, share of steps that rebalance) as well as return. The test fold is never touched. Results go to `logs/reward_ablation/`.
 
 ```bash
 python scripts/reward_ablation.py build       # build train/val caches and the split once

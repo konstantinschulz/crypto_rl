@@ -58,14 +58,17 @@ def report_action_log(
     sortino = get_sortino_from_portfolio_series(pv_series)
     dd = get_drawdown_from_portfolio_series(pv_series)
     logger.log(f"Action log: {log_path}", trial)
-    logger.log(str(Counter(df["action_type"])), trial)
+    logger.log(
+        f"Rebalancing steps: {int((df['fills'] > 0).sum())} of {len(df)} | "
+        f"Fills: {int(df['fills'].sum())} | Turnover: {df['turnover'].sum():.2f}x",
+        trial,
+    )
     logger.log(f"Final portfolio: {df['portfolio'].iloc[-1]}", trial)
     logger.log(
         f"Calmar={calmar:.2f}  Sortino={sortino:.2f}  MaxDD={dd * 100:.1f}%  FinalPV={pv_series[-1]:.2f}",
         trial,
     )
-    # Only fills count as trades: HOLDs and no-op orders carry zero units.
-    traded_symbols: set[str] = set(df.loc[df["units"] > 0, "symbol"].tolist())
+    traded_symbols: set[str] = set(df["traded_symbols"].explode().dropna())
     logger.log(
         f"Symbols traded counter: {len(traded_symbols)} , including: {sorted(traded_symbols)}",
         trial,
@@ -97,16 +100,16 @@ def eval_report(
         traded_coins: set[str] = set()
         sortino_values = []
         drawdown_values = []
-        total_action_types = Counter()
+        total_fills = Counter()
         for fold_result in fold_results:
-            total_action_types.update(fold_result["action_type_counts"])
+            total_fills.update(fold_result["fill_counts"])
             traded_coins.update(fold_result["traded_coins"])
             pv_series = np.array(fold_result["portfolio_values"])
             sortino_values.append(get_sortino_from_portfolio_series(pv_series))
             drawdown_values.append(get_drawdown_from_portfolio_series(pv_series))
         cv_mean_sortino = float(np.mean(sortino_values))
         cv_mean_maxdd = float(np.mean(drawdown_values))
-        logger.log(str(total_action_types), trial)
+        logger.log(f"Fills: {dict(total_fills)}", trial)
         logger.log(
             f"Calmar={cv_mean_calmar:.2f}  Sortino={cv_mean_sortino:.2f}  MaxDD={cv_mean_maxdd * 100:.1f}%  FinalPV={cv_mean_pv:.2f}",
             trial,

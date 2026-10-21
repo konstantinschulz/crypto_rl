@@ -134,7 +134,6 @@ def precalculate_static_obs(env) -> None:
 
     # --- rolling volatility (std of returns over W bars) ---------------
     vol_norm_arr = _rolling_std(returns, W)
-    env.asset_volatility = vol_norm_arr
     del returns
     gc.collect()
 

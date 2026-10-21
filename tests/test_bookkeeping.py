@@ -18,7 +18,7 @@ from crypto_rl.callbacks import UnifiedEvalCallback
 from crypto_rl.config import RLConfig
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from crypto_rl.experiment.fold_runner import _eval_env_args, _run_episode
-from tests.test_baselines import DUMMY_VEC_ENV_ARGS, _make_arrays, _ScriptedModel
+from tests.test_baselines import DUMMY_VEC_ENV_ARGS, _ConstantTargetModel, _make_arrays
 
 
 class _StubModel:
@@ -107,13 +107,12 @@ class EpisodeBookkeepingTest(unittest.TestCase):
         os.chdir(self._cwd)
         self._tmp.cleanup()
 
-    def _run(self, first_action: list[int]):
+    def _run(self, action: list[int]):
         config = RLConfig(
             disable_logging=False,
             parquet_path=None,
             window_size=120,
             max_asset_allocation=1.0,
-            max_single_step_allocation=1.0,
         )
         prices, static, vol = _make_arrays(3, 3000, 2)
         env_args = _eval_env_args(
@@ -125,7 +124,7 @@ class EpisodeBookkeepingTest(unittest.TestCase):
         )
         obs_dim = MinimalCryptoEnv(**env_args).observation_space.shape[0]
         return _run_episode(
-            _ScriptedModel(first_action),
+            _ConstantTargetModel(action),
             env_args,
             RunningMeanStd(shape=(obs_dim,)),
             DUMMY_VEC_ENV_ARGS,
@@ -134,13 +133,18 @@ class EpisodeBookkeepingTest(unittest.TestCase):
         )
 
     def test_traded_coins_counts_only_fills(self):
-        # HOLD on asset 0 every step: nothing was traded.
-        self.assertEqual(self._run([0, 0, 0])["traded_coins"], [])
-        # One BUY of BTC, then HOLDs on ETH (asset 0): only BTC was traded.
-        self.assertEqual(self._run([1, 1, 100])["traded_coins"], ["BTCUSDT"])
+        # All cash every step: nothing was traded.
+        self.assertEqual(self._run([0, 0])["traded_coins"], [])
+        # 100% BTC every step: only BTC was traded, though ETH was in every action.
+        self.assertEqual(self._run([0, 20])["traded_coins"], ["BTCUSDT"])
+
+    def test_fill_counts_survive_the_auto_reset(self):
+        # The VecEnv resets the env on the terminal step; the reported counts
+        # must still be the finished episode's.
+        self.assertEqual(self._run([0, 20])["fill_counts"], {"BUY": 1})
 
     def test_reports_its_own_action_log(self):
-        result = self._run([1, 1, 100])
+        result = self._run([0, 20])
         log_path = Path(result["action_log_path"])
         self.assertTrue(log_path.exists())
         self.assertTrue(log_path.name.startswith("actions_eval_ep1_"))

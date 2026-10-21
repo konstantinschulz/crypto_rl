@@ -1,8 +1,8 @@
 """Short reward ablation (ROADMAP P1-1).
 
-Trains MaskablePPO with each reward variant in ARMS and scores the policy on
+Trains PPO with each reward variant in ARMS and scores the policy on
 the full validation slice, reporting behavior (exposure, turnover, fills,
-action mix) as well as return. Only the train and validation slices are built
+rebalancing frequency) as well as return. Only the train and validation slices are built
 and used; the test fold is never touched. Results go to
 logs/reward_ablation/<arm>_s<seed>.json.
 
@@ -32,13 +32,11 @@ sys.path.insert(0, str(REPO))
 
 import numpy as np
 import torch
-from sb3_contrib import MaskablePPO
-from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl.config import RLConfig
 from crypto_rl.data import DEFAULT_SYMBOLS, FoldSplit
-from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import (
     build_fold_caches,
     compute_static_obs_from_long_df,
@@ -90,9 +88,7 @@ def base_config(**overrides) -> RLConfig:
         test_fraction=0.1,
         val_fraction=0.1,
         data_seed=42,
-        action_dead_zone=0.45,
         max_asset_allocation=0.20,
-        max_single_step_allocation=0.40,
         fee_rate=0.001,
         window_size=240,
         gamma=0.992,
@@ -159,7 +155,7 @@ def _env(cfg, arrays, is_eval):
         is_eval=is_eval,
         logger=LOGGER,
     )
-    return ActionMasker(e, get_action_mask)
+    return e
 
 
 def evaluate(model, cfg, val, obs_rms) -> dict:
@@ -185,20 +181,17 @@ def evaluate(model, cfg, val, obs_rms) -> dict:
     )
     pv0 = env.portfolio_value
     pvs, exposure, notional = [pv0], [], 0.0
-    counts = np.zeros(3, dtype=int)
+    rebalance_steps = 0
     held_assets: set[int] = set()
     first_fill = None
     reward_totals: dict[str, float] = {}
     steps, done, info = 0, False, {}
     while not done:
-        masks = np.expand_dims(vec.venv.envs[0].action_masks(), 0)
-        action, _ = model.predict(obs, action_masks=masks, deterministic=True)
+        action, _ = model.predict(obs, deterministic=True)
         h_before = env.holdings.copy()
         px = env.prices_arr[env.current_step - 1]
         obs, _, dones, infos = vec.step(action)
         done, info = bool(dones[0]), infos[0]
-        a = int(action[0][0]) if int(action[0][2]) >= 100 * cfg.action_dead_zone else 0
-        counts[a] += 1
         for k, v in info["reward_components"].items():
             reward_totals[k] = reward_totals.get(k, 0.0) + v
         steps += 1
@@ -206,8 +199,10 @@ def evaluate(model, cfg, val, obs_rms) -> dict:
             pvs.append(info["final_portfolio_value"])
             break
         traded = np.abs(env.holdings - h_before) * px
-        if traded.sum() > 0 and first_fill is None:
-            first_fill = steps
+        if traded.sum() > 0:
+            rebalance_steps += 1
+            if first_fill is None:
+                first_fill = steps
         notional += float(traded.sum())
         held_assets |= set(np.flatnonzero(env.holdings > 0).tolist())
         pv = env.portfolio_value
@@ -235,7 +230,7 @@ def evaluate(model, cfg, val, obs_rms) -> dict:
         "turnover_x": notional / float(np.mean(pvs_a)),  # traded notional / mean PV
         "fills": int(info["final_trades_count"]),
         "fees_pct": float(info["final_fees_paid"]) / pv0,
-        "action_share_hold_buy_sell": (counts / counts.sum()).round(4).tolist(),
+        "rebalance_step_share": rebalance_steps / steps,
         "distinct_assets_held": len(held_assets),
         "first_fill_step": first_fill,
         "reward_totals": reward_totals,
@@ -257,7 +252,7 @@ def cmd_run(args):
         clip_reward=5.0,
     )
     train_env.seed(args.seed)
-    model = MaskablePPO(
+    model = PPO(
         env=train_env,
         policy="MlpPolicy",
         ent_coef=cfg.ent_coef_initial,
@@ -317,7 +312,7 @@ def cmd_summarize(_args):
         print(
             f"  {r['arm']:7s} s{r['seed']}  "
             + "  ".join(f"{k}={e[k]:.4g}" for k in keys)
-            + f"  acts={e['action_share_hold_buy_sell']}"
+            + f"  rebalance_share={e.get('rebalance_step_share', float('nan')):.4g}"
         )
     print("\nper arm, mean ± std over seeds (final eval):")
     for arm in ARMS:

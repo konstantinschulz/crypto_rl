@@ -9,14 +9,16 @@ import unittest
 
 import numpy as np
 
-from tests.test_reward import HOLD, NUM_ASSETS, WINDOW, _build_env
+from tests.test_reward import ALL_IN_0, CASH, N_BINS, NUM_ASSETS, WINDOW, _build_env
 
 
 def _run_to_end(env, actions):
-    """Step through ``actions`` and then HOLD until the episode ends."""
+    """Step through ``actions``, then repeat the last one until the episode ends."""
     actions = list(actions)
+    action = np.array(actions[0])
     while True:
-        action = np.array(actions.pop(0) if actions else HOLD)
+        if actions:
+            action = np.array(actions.pop(0))
         out = env.step(action)
         if out[2] or out[3]:
             return out
@@ -28,7 +30,7 @@ class EpisodeBoundaryTest(unittest.TestCase):
         terminated = truncated = False
         n_steps = 0
         while not (terminated or truncated):
-            _, _, terminated, truncated, _ = env.step(np.array(HOLD))
+            _, _, terminated, truncated, _ = env.step(np.array(CASH))
             n_steps += 1
         self.assertFalse(terminated)
         self.assertTrue(truncated)
@@ -36,8 +38,9 @@ class EpisodeBoundaryTest(unittest.TestCase):
         self.assertGreater(n_steps, 1)
 
     def test_open_positions_are_not_liquidated(self):
-        env = _build_env()
-        _, _, _, _, info = _run_to_end(env, [[1, 0, 50], [1, 1, 50]])
+        # Flat prices: weights never drift, so only the opening buys fill
+        env = _build_env(prices=np.full((WINDOW + 10, NUM_ASSETS), 100.0))
+        _, _, _, _, info = _run_to_end(env, [[10, 10]])
         # Holdings survive the boundary, and no closing sells were recorded
         self.assertTrue(np.all(env.holdings > 0))
         self.assertEqual(env.trades_count, 2)
@@ -52,7 +55,7 @@ class EpisodeBoundaryTest(unittest.TestCase):
         prices = np.full((WINDOW + 10, NUM_ASSETS), 100.0)
         env = _build_env(prices=prices)
         pv0 = env.portfolio_value
-        _, reward, _, _, info = _run_to_end(env, [[1, 0, 100]])
+        _, reward, _, _, info = _run_to_end(env, [ALL_IN_0])
         buy_fee = env.fees_paid_total
         position_value = env.holdings[0] * 100.0
         exit_fee = position_value * env.fee_rate
@@ -70,10 +73,7 @@ class EpisodeBoundaryTest(unittest.TestCase):
     def test_per_asset_pnl_sums_to_final_pnl(self):
         env = _build_env()
         rng = np.random.default_rng(3)
-        actions = [
-            [rng.integers(0, 3), rng.integers(0, NUM_ASSETS), rng.integers(0, 101)]
-            for _ in range(300)
-        ]
+        actions = [rng.integers(0, N_BINS, size=NUM_ASSETS) for _ in range(300)]
         _, _, _, _, info = _run_to_end(env, actions)
         self.assertGreater(env.total_closed_trades, 0)
         total_pnl = sum(s["total_pnl"] for s in info["per_asset_stats"].values())

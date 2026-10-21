@@ -1,5 +1,6 @@
 from __future__ import annotations  # avoid circular import issues with TYPE_CHECKING
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -103,6 +104,8 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
     env.fees_paid_total = 0.0
     env.trades_count = 0
     env.traded_coins = set()
+    # A new object: the final info of the previous episode still refers to the old one
+    env.fill_counts = Counter()
     env.avg_entry_price = np.zeros(env.num_assets, dtype=np.float32)
     # --- NEW: Reset entry step tracker ---
     env.entry_step.fill(0)

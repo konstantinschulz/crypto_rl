@@ -11,14 +11,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-from sb3_contrib import MaskablePPO
-from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl.callbacks import UnifiedEvalCallback
 from crypto_rl.config import RLConfig
 from crypto_rl.data import FoldSplit, make_walk_forward_splits
-from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import (
     assert_chronological_bounds,
     fold_cache_prefixes,
@@ -193,10 +191,10 @@ class RunEpisodeTest(unittest.TestCase):
                 asset_names=names,
                 config=config,
             )
-            return ActionMasker(env, get_action_mask)
+            return env
 
         train_env = VecNormalize(DummyVecEnv([make_train_env]), norm_reward=True)
-        model = MaskablePPO(
+        model = PPO(
             "MlpPolicy",
             train_env,
             n_steps=64,

@@ -19,8 +19,7 @@ from typing import Any
 import numpy as np
 import optuna
 import torch
-from sb3_contrib import MaskablePPO
-from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from tqdm import tqdm
@@ -33,7 +32,6 @@ from crypto_rl.callbacks import (
 from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
 from crypto_rl.data import DEFAULT_SYMBOLS, FoldSplit
-from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.data_utils import (
     build_fold_caches,
     compute_static_obs_from_long_df,
@@ -56,7 +54,7 @@ from crypto_rl.experiment.evaluation_utils import (
 
 
 def build_policy_kwargs(config: RLConfig) -> dict[str, Any]:
-    """Policy and value network sizes for MaskablePPO.
+    """Policy and value network sizes for PPO.
 
     SB3 reads the value network from the ``"vf"`` key. A ``"qf"`` key (SAC
     terminology) is silently ignored, which leaves the critic as a single
@@ -89,7 +87,7 @@ def _eval_env_args(
 
 
 def _run_episode(
-    model: MaskablePPO,
+    model: PPO,
     env_args: dict[str, Any],
     obs_rms: Any,
     dummy_vec_env_args: dict[str, Any],
@@ -97,8 +95,8 @@ def _run_episode(
     show_progress: bool,
 ) -> dict[str, Any]:
     """Run one deterministic episode of `model` and collect its results."""
-    masked_env = ActionMasker(MinimalCryptoEnv(**env_args), get_action_mask)
-    vec_env = VecNormalize(DummyVecEnv([lambda: masked_env]), **dummy_vec_env_args)
+    env = MinimalCryptoEnv(**env_args)
+    vec_env = VecNormalize(DummyVecEnv([lambda: env]), **dummy_vec_env_args)
     vec_env.obs_rms = obs_rms
     obs = vec_env.reset()
     base_env: MinimalCryptoEnv = vec_env.venv.envs[0].unwrapped
@@ -111,8 +109,6 @@ def _run_episode(
     portfolio_values = [{"step": 0, "value": float(initial_pv)}]
     realized_pnl = [{"step": 0, "value": 0.0}]
     reward_totals: dict = {}
-    closed_trades = 0
-    winning_trades = 0
     steps = 0
     info: dict = {}
     done = False
@@ -132,17 +128,12 @@ def _run_episode(
         total=total_steps, desc=desc, disable=not show_progress, unit="steps"
     ) as pbar:
         while not done:
-            action_masks = np.expand_dims(vec_env.venv.envs[0].action_masks(), axis=0)
-            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
+            action, _ = model.predict(obs, deterministic=True)
             obs, _, dones, infos = vec_env.step(action)
             done = bool(dones[0])
             info = infos[0]
             for k, v in info.get("reward_components", {}).items():
                 reward_totals[k] = reward_totals.get(k, 0) + v
-            if info.get("is_valid_sell", False):
-                closed_trades += 1
-                if info.get("realised_pnl", 0.0) > 0:
-                    winning_trades += 1
             steps += 1
             pbar.update(1)
             current_pv = info.get("final_portfolio_value", base_env.portfolio_value)
@@ -159,16 +150,16 @@ def _run_episode(
         "excess_returns": excess_returns(final_pv, baselines, initial_pv),
         "trades_count": info.get("final_trades_count", base_env.trades_count),
         "fees_paid": info.get("final_fees_paid", base_env.fees_paid_total),
-        "closed_trades": closed_trades,
-        "winning_trades": winning_trades,
+        # Every sell fill closes (part of) a position; a win returns more
+        # than the position's fee-inclusive cost basis.
+        "closed_trades": info.get("total_closed_trades", 0),
+        "winning_trades": info.get("winning_trades_count", 0),
         "steps": steps,
         "portfolio_values": portfolio_values,
         "realized_pnl": realized_pnl,
         "reward_totals": reward_totals,
         "per_asset_stats": info["per_asset_stats"],
-        "action_type_counts": info.get(
-            "action_type_counts", base_env.action_type_counts
-        ),
+        "fill_counts": dict(info.get("fill_counts", base_env.fill_counts)),
         "traded_coins": sorted(info.get("traded_coins", base_env.traded_coins)),
         "env_portfolio_values": info.get(
             "portfolio_values", base_env.portfolio_values
@@ -318,7 +309,7 @@ def run_folds(
                 run_id=run_id,
                 logger=logger,
             )
-            return ActionMasker(e, get_action_mask)
+            return e
 
         env_fns = [make_env for _ in range(config.n_envs)]
         train_env = VecNormalize(
@@ -389,9 +380,8 @@ def run_folds(
         eval_env = None
         if config.checkpoint or trial is not None:
             raw_eval_env = MinimalCryptoEnv(**val_env_args)
-            masked_eval_env = ActionMasker(raw_eval_env, get_action_mask)
             eval_env = VecNormalize(
-                DummyVecEnv([lambda: Monitor(masked_eval_env)]), **dummy_vec_env_args
+                DummyVecEnv([lambda: Monitor(raw_eval_env)]), **dummy_vec_env_args
             )
             eval_env.obs_rms = train_env.obs_rms
             eval_callback = UnifiedEvalCallback(
@@ -442,7 +432,7 @@ def run_folds(
         # Break the fold into smaller, frequent save points
         chunk_steps = config.timesteps // config.train_chunks
         start_chunk = 0
-        model: MaskablePPO
+        model: PPO
 
         # 2. Attempt to load an existing chunk from a previous interrupted run
         if os.path.exists(chunk_meta_path):
@@ -452,7 +442,7 @@ def run_folds(
                 logger.debug(
                     f"Resuming Fold {fold_idx + 1} from Chunk {start_chunk}/{config.train_chunks}...",
                 )
-                model = MaskablePPO.load(chunk_model_path, env=train_env)
+                model = PPO.load(chunk_model_path, env=train_env)
                 # CRITICAL: SB3 resets timesteps on load. We must restore it so
                 # your EntropyDecayCallback and UnifiedEvalCallback don't break!
                 model.num_timesteps = start_chunk * chunk_steps
@@ -461,7 +451,7 @@ def run_folds(
                 start_chunk = 0
         # 3. Instantiate fresh model if no chunk exists
         if start_chunk == 0:
-            model = MaskablePPO(
+            model = PPO(
                 env=train_env,
                 policy="MlpPolicy",
                 ent_coef=config.ent_coef_initial,
@@ -526,7 +516,7 @@ def run_folds(
                 f"4. Loading best validation checkpoint for Fold {fold_idx + 1} "
                 f"(val Calmar {eval_callback.best_calmar:.4f})...",
             )
-            eval_model = MaskablePPO.load(best_path, device=device)
+            eval_model = PPO.load(best_path, device=device)
             eval_obs_rms = eval_callback.best_obs_rms
         else:
             logger.print_if_not_trial(
@@ -612,7 +602,7 @@ def run_folds(
                 "fees_paid": float(eval_final_fees_paid),
                 "baselines": result["baselines"],
                 "excess_returns": result["excess_returns"],
-                "action_type_counts": result["action_type_counts"],
+                "fill_counts": result["fill_counts"],
                 "traded_coins": result["traded_coins"],
                 "portfolio_values": result["env_portfolio_values"],
                 "action_log_path": result["action_log_path"],

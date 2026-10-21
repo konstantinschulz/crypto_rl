@@ -4,8 +4,6 @@ from dataclasses import asdict, dataclass
 
 @dataclass
 class RLConfig:
-    action_dead_zone: float = 0.50
-    action_space_type: str = "multidiscrete"
     algorithm: str = "PPO"
     base_run_dir: str = os.path.abspath("logs")
     batch_size: int = 128
@@ -33,15 +31,18 @@ class RLConfig:
     gamma: float = 0.99
     learning_rate: float = 1e-4
     logs_dir: str = os.path.abspath("logs")
+    # Largest target weight per asset; the top bin of the action space
     max_asset_allocation: float = 0.25
     max_checkpoints: int = 5
-    max_single_step_allocation: float = 0.15
     n_envs: int = 9
     n_rows: int = 18000000  # 40000 18000000
     n_steps: int = 512
     net_arch_dim: int = 256
     optuna_dir: str = os.path.join(logs_dir, "optuna")
     parquet_path: str | None = "binance_spot_1m_last4y_single_htf.parquet"
+    # No-trade band: an asset is only traded when its target weight differs
+    # from its current weight by at least this much (ROADMAP P1-3)
+    rebalance_band: float = 0.02
     # "excess_log_return": log(PV_t / PV_{t-1}) minus the equal-weight basket's
     # log return; fees are included in PV.
     # "log_return": the portfolio log return alone.
@@ -49,7 +50,6 @@ class RLConfig:
     # the excess variant roughly halved turnover and fees.
     reward_type: str = "excess_log_return"
     skip_multi_seed_eval: bool = True
-    target_volatility: float = 0.02  # 2% target volatility baseline
     test_fraction: float = 0.2
     timesteps: int = 25000  # 3000
     train_chunks: int = 1
@@ -60,6 +60,8 @@ class RLConfig:
     # ranking, Optuna objective). Carved from the end of what would otherwise be
     # the training slice, directly before each test slice.
     val_fraction: float = 0.1
+    # Width of the target-weight bins: {0, w, 2w, ..., max_asset_allocation}
+    weight_step: float = 0.05
     window_size: int = 120
 
     def to_dict(self):

@@ -7,11 +7,9 @@ from typing import Any
 
 import numpy as np
 import optuna
-from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from crypto_rl.config import RLConfig
-from crypto_rl.env.action_processing import get_action_mask
 from crypto_rl.env.logging_utils import LoggerBase
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
@@ -128,19 +126,13 @@ def run_multi_seed_eval(
             is_eval=True,
             config=dataclasses.replace(config, disable_logging=True),
         )
-        ms_env_masked = ActionMasker(raw_ms_env, get_action_mask)
-        ms_env = VecNormalize(
-            DummyVecEnv([lambda: ms_env_masked]), **dummy_vec_env_args
-        )
+        ms_env = VecNormalize(DummyVecEnv([lambda: raw_ms_env]), **dummy_vec_env_args)
         ms_env.obs_rms = train_env_obs_rms
         ms_obs = ms_env.reset()
         ms_done = False
         final_ms_pv = None
         while not ms_done:
-            action_masks = np.expand_dims(ms_env.venv.envs[0].action_masks(), axis=0)
-            ms_action, _ = last_model.predict(
-                ms_obs, action_masks=action_masks, deterministic=True
-            )
+            ms_action, _ = last_model.predict(ms_obs, deterministic=True)
             ms_obs, _, ms_dones, ms_infos = ms_env.step(ms_action)
             ms_done = ms_dones[0]
             if ms_done:

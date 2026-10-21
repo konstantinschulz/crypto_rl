@@ -12,37 +12,41 @@
 
 ### Action Space
 
-#### `--action-space-type multidiscrete`
+#### Target weights: `--max-asset-allocation 0.20`, `--weight-step 0.05`
 
-`MultiDiscrete([3, num_assets, 101])` encodes action type (Hold/Buy/Sell),
-target asset, and trade size as three independent integers. This is preferred
-over the continuous `Box` alternative because it pairs naturally with
-**action masking** (via `MaskablePPO` + `ActionMasker`): invalid action types
-(e.g., SELL when holding nothing) can be zeroed out at the logit level before
-sampling, giving a clean safety guarantee without relying solely on reward
-penalties. The discrete representation also reduces the policy's output
-dimension compared to per-asset continuous weights.
+The action is `MultiDiscrete([K] * num_assets)`: one target-weight bin per
+asset, with bins `{0, 5, 10, 15, 20%}` of portfolio value
+(`K = max_asset_allocation / weight_step + 1`). `--max-asset-allocation` must
+be a multiple of `--weight-step`. If the targets sum to more than 100%, they
+are scaled down proportionally, so "fully invested" is reachable without
+picking exact bins. The rest is cash.
 
-#### `--action-dead-zone 0.45`
+Each step the env rebalances toward the target at the last closed price.
+Sells execute first so their proceeds fund the buys. If cash still runs short
+(targets summing to 100% leave no room for fees), all buys are scaled down
+together. Fees follow the same model as the baselines.
 
-In the multidiscrete action space, dimension 2 encodes trade size as an
-integer 0–100 (mapped to 0.0–1.0). Any value below `action_dead_zone`
-(i.e., amount_pct < 0.85) is silently converted to a **Hold** before the
-action reaches the environment.
+Every action is valid, so there is no action mask and plain `PPO` is used.
+This replaced `MultiDiscrete([3, num_assets, 101])` (Hold/Buy/Sell × asset ×
+size) with `MaskablePPO`, and with it the dead zone (`--action-dead-zone`),
+the single-step cash cap (`--max-single-step-allocation`) and the
+volatility-scaled cap (`--target-volatility`, which never bound). In that old
+space, selling unheld assets silently became HOLD, the size dimension had no
+effect on buys, and buys spent a fixed share of the remaining cash, giving
+long tails of micro-buys (ROADMAP P1-3). Doing nothing is now "repeat the
+current target". The observation already contains the current weights.
 
-#### `--max-asset-allocation 0.20`
+At 20% per asset at least 5 assets are needed to be fully invested, so the
+bot cannot go all-in on one position.
 
-Hard cap on the fraction of total portfolio value that can be held in any single
-asset at any point in time. Enforced inside `apply_discrete_action` by comparing
-the current exposure to the cap before executing a buy. At 20% this allows
-up to 5 assets to hold equal-weight positions, providing a minimum level of
-diversification while still allowing meaningful concentration bets. Combined
-with 9 tradeable assets, the bot cannot "go all-in" on one position.
+#### `--rebalance-band 0.02`
 
-#### `--max-single-step-allocation 0.40`
-
-Maximum fraction of available **cash** that can be spent in a single buy
-action. At 0.40, it allows the bot to spend a lot of cash at every single step, which gives it the power to commit quickly and heavily once a certain level of confidence is reached.
+No-trade band. An asset is traded only if its current weight is at least 2
+percentage points off its target, so price drift does not cause a stream of
+small, fee-paying rebalancing trades. A target of 0 always closes the whole
+position, even a position smaller than the band. With a band larger than
+`--weight-step`, the smallest bins cannot be reached from 0, so keep it below
+the step.
 
 ---
 
@@ -82,6 +86,8 @@ Both default to 0 (off).
 
 #### Evidence: reward ablation (2026-10-20)
 
+Run with the old Hold/Buy/Sell action space, before P1-3.
+
 `scripts/reward_ablation.py`: 4 arms × 3 seeds × 600k PPO steps on 3.6M rows,
 scored on the 28-day validation slice (2025-12-07 → 2026-01-04). The test
 fold was not used. Over that window the equal-weight basket returned +4.7%.
@@ -110,8 +116,8 @@ Mean ± std over seeds:
 episode return at the end), `profit_bonus`, `loss_cut_bonus`, `hold_cost`
 (`--hold-cost-rate`, `--hold-penalty-threshold`), `capital_preservation_bonus`
 and the illegal/empty BUY/SELL rule penalties are gone. The rule penalties were
-always 0 because of a bookkeeping bug. Illegal and empty actions are still
-remapped to HOLD, with no penalty.
+always 0 because of a bookkeeping bug. The target-weight action space has no
+illegal or empty actions to penalize.
 
 ---
 
@@ -119,12 +125,11 @@ remapped to HOLD, with no penalty.
 
 #### `--algorithm PPO`
 
-Proximal Policy Optimisation with **action masking** (`MaskablePPO` from
-`sb3_contrib`). Chosen over SAC because:
+Proximal Policy Optimisation (`PPO` from `stable_baselines3`). Chosen over
+SAC because:
 
 1. It natively supports discrete/multidiscrete action spaces.
-2. It integrates cleanly with `ActionMasker` for hard constraint enforcement.
-3. On-policy updates are safer for non-stationary financial data than SAC's
+2. On-policy updates are safer for non-stationary financial data than SAC's
    replay buffer, which can mix stale and fresh market regimes.
 
 #### `--gamma 0.992`

@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import gi
+import numpy as np
 import optuna
 import pandas as pd
-
-from crypto_rl.enums import ActionType
 
 if TYPE_CHECKING:  # avoid circular import issues
     from crypto_rl.env.minimal_env import MinimalCryptoEnv
@@ -72,41 +71,36 @@ def flush_log_parquet(env) -> None:
 def log_action(
     env,
     step: int,
-    action,  # np.ndarray
+    target: np.ndarray,
+    units: np.ndarray,
+    fees: np.ndarray,
     reward: float,
     portfolio: float,
-    trade_price: float = 0.0,
-    trade_units: float = 0.0,
-    fee: float = 0.0,
+    prices: np.ndarray,
     reward_components: dict | None = None,
 ) -> None:
-    """Record step details into the in-memory log buffer."""
+    """Record step details into the in-memory log buffer.
+
+    ``target`` is the step's target weights, ``units`` the units traded per
+    asset (negative = sold) and ``fees`` the fees paid per asset.
+    """
     if env.config.disable_logging:
         return
-    action_type_str = ActionType(int(action[0])).name
-    asset_idx = int(action[1])
-    asset_str = (
-        env.asset_names[asset_idx]
-        if 0 <= asset_idx < len(env.asset_names)
-        else "UNKNOWN"
-    )
+    filled = np.flatnonzero(units != 0)
     entry = {
         "episode": int(env.episode_count),
         "step": int(step),
-        "action_type": action_type_str,
-        "symbol": asset_str,
-        "amount_pct": float(action[2]),
+        "target_weights": target.astype(float).tolist(),
+        "traded_symbols": [env.asset_names[i] for i in filled],
+        "fills": len(filled),
+        # Traded notional as a fraction of the pre-trade portfolio value
+        "turnover": float(np.abs(units) @ np.nan_to_num(prices) / max(portfolio, 1e-8)),
         "reward": float(reward),
         "portfolio": float(portfolio),
-        "note": env.last_remap_note if env.last_remap_note else "",
-        "price": float(trade_price),
-        "units": float(trade_units),
-        "fee": float(fee),
+        "fee": float(fees.sum()),
         "reward_components": reward_components,
     }
     env.log_buffer.append(entry)
-    env.last_invalid_sell = False
-    env.last_remap_note = None
 
 
 @contextmanager

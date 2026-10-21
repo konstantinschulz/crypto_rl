@@ -18,12 +18,11 @@ from typing import Any, Optional
 
 import numpy as np
 import optuna
-from sb3_contrib.common.wrappers import ActionMasker
+from stable_baselines3.common.vec_env import VecNormalize
 from tqdm import tqdm
 
 from crypto_rl.config import RLConfig
 from crypto_rl.env.metrics import calculate_calmar_ratio
-from crypto_rl.env.minimal_env import MinimalCryptoEnv
 
 try:
     from stable_baselines3.common.callbacks import BaseCallback
@@ -326,7 +325,7 @@ class UnifiedEvalCallback(BaseCallback):
     def __init__(
         self,
         config: RLConfig,
-        eval_env: MinimalCryptoEnv | ActionMasker,
+        eval_env: VecNormalize,
         trial: optuna.trial.Trial | None,
         checkpoint_dir: Path,
         fold_idx: int = 0,
@@ -334,7 +333,7 @@ class UnifiedEvalCallback(BaseCallback):
     ):
         super().__init__(verbose=0)
         self.config = config
-        self.eval_env: MinimalCryptoEnv | ActionMasker = eval_env
+        self.eval_env: VecNormalize = eval_env
         self.trial = trial
         self.checkpoint_dir = checkpoint_dir
         self.fold_idx = fold_idx
@@ -422,12 +421,7 @@ class UnifiedEvalCallback(BaseCallback):
         portfolio_values = [{"step": 0, "value": float(initial_pv)}]
         steps = 0
         while not done:
-            masks = self.eval_env.env_method("action_masks")[0]
-            current_masks = np.array([masks])
-
-            action, _ = self.model.predict(
-                obs, action_masks=current_masks, deterministic=True
-            )
+            action, _ = self.model.predict(obs, deterministic=True)
 
             obs, reward, done_array, infos = self.eval_env.step(action)
             done = done_array[0]

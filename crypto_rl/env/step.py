@@ -4,9 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from crypto_rl.env.action_processing import (
-    apply_discrete_action,
-)
+from crypto_rl.env.action_processing import rebalance, target_weights
 from crypto_rl.env.logging_utils import log_action
 from crypto_rl.env.metrics import get_per_asset_summary
 
@@ -97,30 +95,10 @@ def step_env(
     current_prices = env.prices_arr[env.current_step - 1]
     next_prices = env.prices_arr[env.current_step]
 
-    fee_paid = 0.0
-    realised_pnl = 0.0
-
-    is_valid_sell = False
-    env.last_remap_note = None
     # --- SNAPSHOT HOLDINGS BEFORE ACTION ---
     old_holdings = np.copy(env.holdings)
-    if env.config.action_space_type == "multidiscrete":
-        # Safely copy the action so we don't mutate Gym's read-only array
-        mod_action = np.copy(action)
-        # action[2] is 0-100. Convert to a 0.0 - 1.0 fraction
-        amount_pct = mod_action[2] / 100.0
-        # Force a HOLD if the requested amount is lower than the dead zone
-        if amount_pct < env.config.action_dead_zone:
-            mod_action[0] = 0  # 0 = Hold
-        # Ensure we use mod_action for logging later
-        action = mod_action
-        # Discrete action processing moved to helper
-        fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price = (
-            apply_discrete_action(env, action)
-        )
-        asset_idx = action[1]
-        if fee_paid > 0:
-            env.per_asset_fees[asset_idx] += fee_paid
+    target = target_weights(env, action)
+    fees, units = rebalance(env, target)
 
     # Reward decomposition; the step reward is the sum of these terms
     reward_components = {
@@ -221,19 +199,16 @@ def step_env(
 
     reward = sum(reward_components.values())
 
-    if (
-        not env.config.disable_logging
-        and env.config.action_space_type == "multidiscrete"
-    ):
+    if not env.config.disable_logging:
         log_action(
             env,
             env.current_step,
-            action,
+            target,
+            units,
+            fees,
             reward,
             prev_portfolio_value,
-            trade_price=trade_price,
-            trade_units=trade_units,
-            fee=fee_paid,
+            current_prices,
             reward_components=reward_components,
         )
 
@@ -242,11 +217,9 @@ def step_env(
         "trades_count": env.trades_count,
         "total_closed_trades": env.total_closed_trades,
         "winning_trades_count": env.winning_trades_count,
-        "realised_pnl": realised_pnl,
-        "is_valid_sell": is_valid_sell,
         "episode_count": env.episode_count,
         "reward_components": reward_components,
-        "action_type_counts": env.action_type_counts,
+        "fill_counts": env.fill_counts,
         "traded_coins": env.traded_coins,
     }
     # Full history is only consumed from the terminal info. Including it every

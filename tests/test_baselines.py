@@ -36,18 +36,14 @@ def _make_arrays(seed: int, n_bars: int, n_assets: int):
     return prices, static, norm_vol
 
 
-class _ScriptedModel:
-    """Returns `first_action` on the first call and HOLD afterwards."""
+class _ConstantTargetModel:
+    """Always asks for the same target-weight bins."""
 
-    def __init__(self, first_action: list[int]):
-        self.first_action = np.array([first_action])
-        self.calls = 0
+    def __init__(self, action: list[int]):
+        self.action = np.array([action])
 
-    def predict(self, obs, action_masks=None, deterministic=True):
-        self.calls += 1
-        if self.calls == 1:
-            return self.first_action, None
-        return np.zeros_like(self.first_action), None
+    def predict(self, obs, deterministic=True):
+        return self.action, None
 
 
 class ComputeWindowBaselinesTest(unittest.TestCase):
@@ -88,13 +84,12 @@ class ComputeWindowBaselinesTest(unittest.TestCase):
 
 
 class RunEpisodeBaselinesTest(unittest.TestCase):
-    def _run(self, first_action: list[int], is_fast_eval: bool):
+    def _run(self, action: list[int], is_fast_eval: bool):
         config = RLConfig(
             disable_logging=True,
             parquet_path=None,
             window_size=120,
             max_asset_allocation=1.0,
-            max_single_step_allocation=1.0,
         )
         prices, static, vol = _make_arrays(3, 12000, 2)
         names = ["ETHUSDT", "BTCUSDT"]
@@ -107,7 +102,7 @@ class RunEpisodeBaselinesTest(unittest.TestCase):
         )
         obs_dim = MinimalCryptoEnv(**env_args).observation_space.shape[0]
         return _run_episode(
-            _ScriptedModel(first_action),
+            _ConstantTargetModel(action),
             env_args,
             RunningMeanStd(shape=(obs_dim,)),
             DUMMY_VEC_ENV_ARGS,
@@ -116,10 +111,11 @@ class RunEpisodeBaselinesTest(unittest.TestCase):
         )
 
     def test_all_in_btc_on_first_step_matches_btc_baseline(self):
-        # BUY asset 1 (BTCUSDT) with 100% of cash, then hold to the end.
+        # Target 100% BTCUSDT (asset 1) on every step: the first step buys
+        # with all cash, and a single holding never drifts off target.
         # Both the full and the fast (offset) window must line up exactly.
         for fast in (False, True):
-            result = self._run([1, 1, 100], is_fast_eval=fast)
+            result = self._run([0, 20], is_fast_eval=fast)
             self.assertAlmostEqual(
                 result["final_portfolio_value"] / result["baselines"]["btc"],
                 1.0,
@@ -131,7 +127,7 @@ class RunEpisodeBaselinesTest(unittest.TestCase):
             )
 
     def test_never_trading_matches_cash_baseline(self):
-        result = self._run([0, 0, 0], is_fast_eval=False)
+        result = self._run([0, 0], is_fast_eval=False)
         self.assertEqual(result["final_portfolio_value"], result["baselines"]["cash"])
         self.assertEqual(result["excess_returns"]["cash"], 0.0)
 
