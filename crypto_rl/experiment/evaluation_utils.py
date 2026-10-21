@@ -53,9 +53,10 @@ def compute_window_baselines(
     """Final portfolio values of the passive baselines over the bot's window.
 
     An episode that starts at ``current_step == start_step`` executes its
-    first action at ``prices[start_step - 1]`` and is liquidated at
-    ``prices[max_steps - 1]`` (see `step_env`). The baselines buy at the
-    first of those prices and sell at the last, with the same fees:
+    first action at ``prices[start_step - 1]`` and its final PV is the
+    liquidation value at ``prices[max_steps - 1]``, net of exit fees (see
+    `step_env`). The baselines buy at the first of those prices and sell at
+    the last, with the same fees:
 
     - ``equal_weight``: the budget split equally across all assets.
     - ``btc``: the whole budget in BTCUSDT (first asset if it is missing).

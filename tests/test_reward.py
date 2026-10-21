@@ -48,21 +48,20 @@ def _build_env(
 
 class LogReturnRewardTest(unittest.TestCase):
     def test_rewards_telescope_to_episode_log_return(self):
-        # Random trading with forced terminal liquidation: the per-step rewards
-        # must sum to the episode's log return, exit fees included, with no
-        # extra terminal term on top.
+        # Random trading: the per-step rewards must sum to the episode's
+        # mark-to-market log return, with no extra terminal term on top.
         env = _build_env()
         rng = np.random.default_rng(1)
-        total, done = 0.0, False
-        while not done:
+        total, truncated = 0.0, False
+        while not truncated:
             action = np.array(
                 [rng.integers(0, 3), rng.integers(0, NUM_ASSETS), rng.integers(0, 101)]
             )
-            _, reward, done, _, info = env.step(action)
+            _, reward, _, truncated, _ = env.step(action)
             total += reward
         self.assertGreater(env.trades_count, 10)
         self.assertGreater(env.fees_paid_total, 0.0)
-        expected = np.log(info["final_portfolio_value"] / env.config.budget_initial)
+        expected = np.log(env.portfolio_value / env.config.budget_initial)
         self.assertAlmostEqual(total, expected, places=6)
 
     def test_fees_are_counted_once(self):

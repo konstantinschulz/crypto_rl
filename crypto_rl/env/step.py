@@ -47,18 +47,16 @@ def _process_sell_accounting(
     amount_sold: float,
     trade_price: float,
     prev_portfolio_value: float,
-    reward_components: dict[str, float] | None = None,
-) -> tuple[float, float]:
+    reward_components: dict[str, float],
+) -> None:
     """
     Core accounting logic for closing positions.
     Calculates PnL, updates win rates, and applies the optional turnover penalty.
-    Used seamlessly during both in-episode sells and terminal liquidations.
     """
     env.total_closed_trades += 1
     env.per_asset_trades[asset_idx] += 1
 
     revenue = amount_sold * trade_price * (1.0 - env.fee_rate)
-    fee = amount_sold * trade_price * env.fee_rate
 
     # Safely compute cost basis (entry drag is already baked into avg_entry_price)
     cost_basis = amount_sold * env.avg_entry_price[asset_idx]
@@ -76,15 +74,12 @@ def _process_sell_accounting(
             env.winning_trades_count += 1
             env.per_asset_wins[asset_idx] += 1
 
-        # Optional turnover shaping; skipped for terminal liquidations
-        if reward_components is not None:
-            holding_period = env.current_step - env.entry_step[asset_idx]
-            if holding_period < env.config.turnover_penalty_steps_threshold:
-                reward_components["turnover_penalty"] -= (
-                    env.config.turnover_penalty * trade_weight
-                )
-
-    return revenue, fee
+        # Optional turnover shaping
+        holding_period = env.current_step - env.entry_step[asset_idx]
+        if holding_period < env.config.turnover_penalty_steps_threshold:
+            reward_components["turnover_penalty"] -= (
+                env.config.turnover_penalty * trade_weight
+            )
 
 
 def step_env(
@@ -94,8 +89,8 @@ def step_env(
     Returns:
         obs: np.ndarray - The next observation after the step.
         reward: float - The reward obtained from the step.
-        done: bool - Whether the episode has ended.
-        truncated: bool - Whether the episode was truncated (not used here).
+        terminated: bool - Always False; the env has no terminal states.
+        truncated: bool - True at the episode's time limit (``max_steps``).
         info: dict - Additional information about the step, including reward components.
     """
     prev_portfolio_value = env.portfolio_value
@@ -162,56 +157,31 @@ def step_env(
 
     # Advance step
     env.current_step += 1
-    # TRIGGER EPISODE END BASED ON THE RANDOMIZED BOUNDARY
-    done = env.current_step >= env.max_steps
+    # The randomized episode boundary is a time limit, not a terminal state:
+    # flag it as truncated so PPO bootstraps the value of the open book.
+    truncated = env.current_step >= env.max_steps
     current_asset_value = np.sum(env.holdings * next_prices)
+    # Mark-to-market PV. Open positions are never force-liquidated.
     env.portfolio_value = env.cash + current_asset_value
     env.portfolio_values.append(env.portfolio_value)
 
     info: dict[str, Any] = {}
 
-    # ==========================================
-    # TERMINAL LIQUIDATION BLOCK
-    # ==========================================
-    if done:
-        liquidation_revenue = 0.0
-        liquidation_fees = 0.0
-        for i in range(env.num_assets):
-            if env.holdings[i] > 1e-8:
-                amount_sold = env.holdings[i]
-
-                # Execute terminal sell through the unified helper (no rewards applied)
-                revenue, fee = _process_sell_accounting(
-                    env,
-                    i,
-                    amount_sold,
-                    next_prices[i],
-                    prev_portfolio_value,
-                    reward_components=None,
-                )
-
-                env.per_asset_fees[i] += fee
-                liquidation_revenue += revenue
-                liquidation_fees += fee
-
-                # Wipe assets from state
-                env.holdings[i] = 0.0
-                env.avg_entry_price[i] = 0.0
-                env.entry_step[i] = 0
-
-        # Convert portfolio entirely to cash based on liquidation
-        env.cash += liquidation_revenue
-        env.fees_paid_total += liquidation_fees
-        env.portfolio_value = env.cash
-        env.portfolio_values.append(env.portfolio_value)
-
+    if truncated:
+        # Reported final PV is the liquidation value: the exit fee is charged
+        # here, as the passive baselines are charged, without executing a sell.
+        # Trade counts and win rates therefore only reflect policy sells.
+        exit_fees = float(current_asset_value * env.fee_rate)
         info["per_asset_stats"] = get_per_asset_summary(env)
-        info["final_portfolio_value"] = env.portfolio_value
+        info["final_portfolio_value"] = env.portfolio_value - exit_fees
+        info["final_exit_fees"] = exit_fees
         info["final_trades_count"] = env.trades_count
-        info["final_fees_paid"] = env.fees_paid_total
+        info["final_fees_paid"] = env.fees_paid_total + exit_fees
 
-        sum_per_asset_pnl = np.sum(env.per_asset_realized_pnl)
-        actual_pnl = env.portfolio_value - env.config.budget_initial
+        sum_per_asset_pnl = sum(
+            s["total_pnl"] for s in info["per_asset_stats"].values()
+        )
+        actual_pnl = info["final_portfolio_value"] - env.config.budget_initial
 
         # Log warning if discrepancy exceeds $0.05
         if abs(sum_per_asset_pnl - actual_pnl) > 0.05:
@@ -223,8 +193,8 @@ def step_env(
     # ==========================================
     # REWARD
     # ==========================================
-    # Computed after any terminal liquidation, so the per-step log returns sum
-    # exactly to log(final PV / initial PV). Fees are already inside PV.
+    # Mark-to-market: the per-step log returns sum to log(PV_T / PV_0), where
+    # PV_T excludes the hypothetical exit fee. Fees paid are already inside PV.
     env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)
     # Range: 0.0 (at peak) down to -1.0 (-100% loss)
     current_drawdown = (
@@ -281,13 +251,13 @@ def step_env(
     }
     # Full history is only consumed from the terminal info. Including it every
     # step makes SB3's DummyVecEnv deepcopy an ever-growing list each step.
-    if done:
+    if truncated:
         info["portfolio_values"] = env.portfolio_values
 
     return (
         env._get_obs(),
         float(reward),
-        done,
         False,
+        truncated,
         info,
     )

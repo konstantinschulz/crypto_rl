@@ -55,8 +55,12 @@ def get_per_asset_summary(env) -> dict[str, dict[str, float]]:
     summary = {}
     for i, sym in enumerate(mce.asset_names):
         realized_pnl = float(mce.per_asset_realized_pnl[i])
+        # Open positions are valued net of the exit fee, so realized plus
+        # unrealized PnL sums to the episode's liquidation-value PnL.
+        exit_fee = float(mce.holdings[i] * last_prices[i] * mce.fee_rate)
         unrealized_pnl = (
-            float(mce.holdings[i] * (last_prices[i] - mce.avg_entry_price[i]))
+            float(mce.holdings[i] * last_prices[i] - exit_fee)
+            - float(mce.holdings[i] * mce.avg_entry_price[i])
             if mce.holdings[i] > 1e-8
             else 0.0
         )
@@ -70,7 +74,8 @@ def get_per_asset_summary(env) -> dict[str, dict[str, float]]:
             "trades": trades,
             "wins": wins,
             "win_rate_pct": win_rate,
-            "fees_paid": float(mce.per_asset_fees[i]),
+            "fees_paid": float(mce.per_asset_fees[i]) + exit_fee,
+            "exit_fee": exit_fee,
             "current_holdings": float(mce.holdings[i]),
         }
     return summary

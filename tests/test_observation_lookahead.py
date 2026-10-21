@@ -59,7 +59,7 @@ class NoObservationLookaheadTest(unittest.TestCase):
             action = np.array(
                 [rng.integers(0, 3), rng.integers(0, NUM_ASSETS), rng.integers(0, 101)]
             )
-            _, _, done, _, _ = env.step(action)
+            _, _, _, done, _ = env.step(action)
 
         obs = np.vstack(obs_rows)
         rets = np.vstack(ret_rows)

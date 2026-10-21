@@ -58,8 +58,14 @@ they are already inside PV and counted exactly once. There is no lump-sum
 terminal reward and no clipping.
 
 `--reward-type log_return` drops the benchmark. Its per-step rewards telescope:
-over an episode they sum to `log(PV_final / PV_initial)`, including the exit
-fees of the terminal liquidation.
+over an episode they sum to `log(PV_final / PV_initial)`, with open positions
+at mark-to-market.
+
+The episode boundary is a time limit, so the last step is flagged `truncated`
+(not `terminated`) and PPO bootstraps the value of the open book. Positions are
+not force-liquidated. The reported final PV (`final_portfolio_value`) charges
+the exit fee on open positions, the same way the passive baselines are charged,
+but no sell is executed and it is not counted as a trade or a closed trade.
 
 Training rewards are scaled by `VecNormalize(norm_reward=True)`, so the absolute
 size of the log return does not matter.
