@@ -43,12 +43,16 @@ class MinimalCryptoEnv(gym.Env):
 
     Reward
     ------
-    Controlled by ``reward_type``:
+    ``log(PV_t / PV_{t-1})``. Fees are paid out of PV, so they are counted
+    exactly once. Controlled by ``reward_type``:
 
-    - ``"pnl"``           – raw $ change in portfolio value per step.
-    - ``"excess_return"`` – portfolio return minus equal-weight market
-      return, scaled by 100 (percentage-point alpha).  A configurable
-      holding-cost term and a profitable-sell bonus are also applied.
+    - ``"excess_log_return"`` (default) – minus the (unfloored) log return
+      of an equal-weight basket over the same bar.
+    - ``"log_return"``        – the portfolio log return alone.
+
+    ``drawdown_penalty_coef`` and ``turnover_penalty`` add optional shaping
+    terms; both are 0 by default. Rewards are normalized by
+    ``VecNormalize(norm_reward=True)`` during training.
     """
 
     def __init__(

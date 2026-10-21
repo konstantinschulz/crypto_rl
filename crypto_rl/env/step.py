@@ -51,7 +51,7 @@ def _process_sell_accounting(
 ) -> tuple[float, float]:
     """
     Core accounting logic for closing positions.
-    Calculates PnL, updates win rates, and applies shaped rewards.
+    Calculates PnL, updates win rates, and applies the optional turnover penalty.
     Used seamlessly during both in-episode sells and terminal liquidations.
     """
     env.total_closed_trades += 1
@@ -67,7 +67,6 @@ def _process_sell_accounting(
     env.per_asset_realized_pnl[asset_idx] += adjusted_pnl
 
     if cost_basis > 1e-8:
-        trade_return = (revenue - cost_basis) / cost_basis
         trade_weight = (
             cost_basis / prev_portfolio_value if prev_portfolio_value > 1e-8 else 0.0
         )
@@ -77,35 +76,13 @@ def _process_sell_accounting(
             env.winning_trades_count += 1
             env.per_asset_wins[asset_idx] += 1
 
-        # Only calculate RL reward bonuses if we are actively stepping (not liquidating)
+        # Optional turnover shaping; skipped for terminal liquidations
         if reward_components is not None:
             holding_period = env.current_step - env.entry_step[asset_idx]
-            # Reward cutting losses early instead of holding to the bottom
-            if trade_return < 0 and holding_period > 15:
-                # Small positive reinforcement for taking the loss and freeing up cash
-                reward_components["loss_cut_bonus"] = (
-                    abs(trade_return) * env.config.loss_cut_bonus
-                )
-            # Turnover Penalty
             if holding_period < env.config.turnover_penalty_steps_threshold:
                 reward_components["turnover_penalty"] -= (
                     env.config.turnover_penalty * trade_weight
                 )
-
-            # Dynamic Profit Bonus Scaling
-            time_mult = 1.0 + min(1.0, holding_period / 240.0)
-            slope_mag = 0.0
-            if env.htf_slope_1h_df is not None and env.current_step < len(
-                env.htf_slope_1h_df
-            ):
-                slope_mag = abs(env.htf_slope_1h_df.iat[env.current_step, asset_idx])
-
-            slope_mult = 1.0 + (slope_mag * 10.0)
-            scaled_profit_bonus = env.config.profit_bonus * time_mult * slope_mult
-
-            reward_components["profit_bonus"] += (
-                scaled_profit_bonus * trade_return * trade_weight
-            )
 
     return revenue, fee
 
@@ -126,8 +103,6 @@ def step_env(
     next_prices = env.prices_arr[env.current_step]
 
     fee_paid = 0.0
-    # Retrieve any step penalty set by discrete action processing
-    step_penalty = getattr(env, "_step_penalty", 0.0)
     realised_pnl = 0.0
 
     is_valid_sell = False
@@ -152,16 +127,12 @@ def step_env(
         if fee_paid > 0:
             env.per_asset_fees[asset_idx] += fee_paid
 
-    # 1. Initialize a decomposition tracker
+    # Reward decomposition; the step reward is the sum of these terms
     reward_components = {
-        "market_alpha": 0.0,
-        "hold_cost": 0.0,
-        "profit_bonus": 0.0,
+        "log_return": 0.0,
+        "benchmark": 0.0,
         "drawdown_penalty": 0.0,
-        "rule_penalties": -step_penalty,  # From invalid buys/sells
-        "terminal_return": 0.0,
         "turnover_penalty": 0.0,
-        "capital_preservation_bonus": 0.0,
     }
 
     # --- CALCULATE PER-ASSET MULTI-TRADE METRICS ---
@@ -196,86 +167,6 @@ def step_env(
     current_asset_value = np.sum(env.holdings * next_prices)
     env.portfolio_value = env.cash + current_asset_value
     env.portfolio_values.append(env.portfolio_value)
-    env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)
-
-    # Range: 0.0 (at peak) down to -1.0 (-100% loss)
-    current_drawdown = (
-        env.portfolio_value - env.peak_portfolio_value
-    ) / env.peak_portfolio_value
-    delta_drawdown = min(0.0, current_drawdown - env.previous_drawdown)
-    env.previous_drawdown = current_drawdown
-    safe_port_val = max(env.portfolio_value, 1e-8)
-    # ==========================================
-    # 1. Hold Cost / Inactivity Penalty
-    # ==========================================
-    for i in range(env.num_assets):
-        if env.holdings[i] > 1e-8 and env.avg_entry_price[i] > 1e-8:
-            unrealized_pnl_pct = (
-                next_prices[i] - env.avg_entry_price[i]
-            ) / env.avg_entry_price[i]
-            if unrealized_pnl_pct < -abs(env.config.hold_penalty_threshold):
-                # Position weight relative to total portfolio
-                position_weight = (env.holdings[i] * next_prices[i]) / safe_port_val
-                # Penalty ramps up as drawdown deepens
-                loss_severity = abs(unrealized_pnl_pct)
-                hold_penalty = (
-                    loss_severity * env.config.hold_cost_rate * 100.0 * position_weight
-                )
-                reward_components["hold_cost"] -= hold_penalty
-
-    # ==========================================
-    # 2. Explicit Fee Penalty in Reward
-    # ==========================================
-    fee_penalty_pct = (
-        (fee_paid / prev_portfolio_value) if prev_portfolio_value > 1e-8 else 0.0
-    )
-    reward_components["fee_penalty"] = -fee_penalty_pct
-
-    # Reward calculation
-    portfolio_return = (
-        (env.portfolio_value - prev_portfolio_value) / prev_portfolio_value
-        if prev_portfolio_value > 0
-        else 0.0
-    )
-    asset_returns = np.divide(
-        next_prices - current_prices,
-        current_prices,
-        out=np.zeros_like(current_prices),
-        where=current_prices > 1e-8,
-    )
-    market_return = np.mean(asset_returns)
-
-    if env.config.reward_type == "excess_return":
-        # Benchmark Floor: In bear markets (market_return < 0),
-        # the baseline switches to 0.0 (Cash), requiring non-negative return for positive alpha.
-        effective_benchmark = max(0.0, market_return)
-        alpha_diff = portfolio_return - effective_benchmark
-        if alpha_diff < 0:
-            alpha_diff *= 1.2
-        reward_components["market_alpha"] = alpha_diff
-        reward_components["drawdown_penalty"] = (
-            delta_drawdown * env.config.drawdown_penalty_coef
-        )
-    else:
-        reward_components["market_alpha"] = portfolio_return
-
-    # ==========================================
-    # 3. Macro Cash Preference in Bear Regimes
-    # ==========================================
-    # Fetch current timestep t bounded to valid precalc matrix bounds
-    t = min(env.current_step, len(env.precalc_static_obs) - 1)
-
-    # Safely retrieve the bear index using the mapping from feature_utils
-    bear_idx = getattr(env, "macro_idx", {}).get("btc_bear", 4)
-    btc_is_bear = env.precalc_static_obs[t, bear_idx] > 0.5
-
-    if btc_is_bear:
-        cash_ratio = env.cash / safe_port_val
-        # Grant micro-bonus for holding >75% in cash during macro bear regimes
-        if cash_ratio > 0.75:
-            reward_components["capital_preservation_bonus"] = (
-                env.config.capital_preservation_bonus
-            )
 
     info: dict[str, Any] = {}
 
@@ -314,11 +205,6 @@ def step_env(
         env.portfolio_value = env.cash
         env.portfolio_values.append(env.portfolio_value)
 
-        terminal_return = (
-            env.portfolio_value - env.config.budget_initial
-        ) / env.config.budget_initial
-        reward_components["terminal_return"] = terminal_return
-
         info["per_asset_stats"] = get_per_asset_summary(env)
         info["final_portfolio_value"] = env.portfolio_value
         info["final_trades_count"] = env.trades_count
@@ -334,11 +220,36 @@ def step_env(
                 f"Sum Per-Asset PnL: ${sum_per_asset_pnl:.2f}"
             )
 
-    if step_penalty >= 0.1:
-        env.logger.debug(f"High step penalty value (>= 0.1): {step_penalty}")
+    # ==========================================
+    # REWARD
+    # ==========================================
+    # Computed after any terminal liquidation, so the per-step log returns sum
+    # exactly to log(final PV / initial PV). Fees are already inside PV.
+    env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)
+    # Range: 0.0 (at peak) down to -1.0 (-100% loss)
+    current_drawdown = (
+        env.portfolio_value - env.peak_portfolio_value
+    ) / env.peak_portfolio_value
+    delta_drawdown = min(0.0, current_drawdown - env.previous_drawdown)
+    env.previous_drawdown = current_drawdown
 
-    # Explicitly clip raw rewards at the source to prevent variance explosion
-    reward = np.clip(sum(reward_components.values()), -1.0, 1.0)
+    reward_components["log_return"] = float(
+        np.log(max(env.portfolio_value, 1e-8) / max(prev_portfolio_value, 1e-8))
+    )
+    if env.config.reward_type == "excess_log_return":
+        # Unfloored log return of an equal-weight basket over the same bar
+        gross = np.divide(
+            next_prices,
+            current_prices,
+            out=np.ones_like(current_prices),
+            where=current_prices > 1e-8,
+        )
+        reward_components["benchmark"] = -float(np.log(np.mean(gross)))
+    reward_components["drawdown_penalty"] = (
+        delta_drawdown * env.config.drawdown_penalty_coef
+    )
+
+    reward = sum(reward_components.values())
 
     if (
         not env.config.disable_logging

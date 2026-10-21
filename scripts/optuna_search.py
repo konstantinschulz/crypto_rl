@@ -63,8 +63,6 @@ def get_optuna_config(
             return override_params[name]
         return method(name, *s_args, **s_kwargs)
 
-    # this is one central value for empty_buy_penalty, empty_sell_penalty, illegal_buy_penalty, illegal_sell_penalty
-    rule_penalty = suggest("rule_penalty", trial.suggest_float, 1e-7, 1e-4, log=True)
     # Let Optuna overwrite specific targets
     trial_config: RLConfig = replace(
         base_config,
@@ -74,15 +72,7 @@ def get_optuna_config(
         batch_size=suggest(
             "batch_size", trial.suggest_categorical, [64, 128, 256]
         ),  # , 512, 1024
-        capital_preservation_bonus=suggest(
-            "capital_preservation_bonus", trial.suggest_float, 0.0, 0.001, step=0.0001
-        ),
         clip_range=suggest("clip_range", trial.suggest_float, 0.10, 0.40),
-        drawdown_penalty_coef=suggest(
-            "drawdown_penalty_coef", trial.suggest_float, 0.01, 0.30
-        ),
-        empty_buy_penalty=rule_penalty,
-        empty_sell_penalty=rule_penalty,
         ent_coef_final=suggest(
             "ent_coef_final", trial.suggest_float, 0.0001, 0.01, log=True
         ),
@@ -90,18 +80,9 @@ def get_optuna_config(
             "ent_coef_initial", trial.suggest_float, 0.03, 0.10, log=True
         ),
         gamma=suggest("gamma", trial.suggest_float, 0.982, 0.995),
-        hold_cost_rate=suggest(
-            "hold_cost_rate", trial.suggest_float, 1e-7, 1e-4, log=True
-        ),
-        hold_penalty_threshold=suggest(
-            "hold_penalty_threshold", trial.suggest_float, -0.10, -0.01
-        ),
-        illegal_buy_penalty=rule_penalty,
-        illegal_sell_penalty=rule_penalty,
         learning_rate=suggest(
             "learning_rate", trial.suggest_float, 5e-6, 5e-5, log=True
         ),
-        loss_cut_bonus=suggest("loss_cut_bonus", trial.suggest_float, 0.0, 0.005),
         max_asset_allocation=suggest(
             "max_asset_allocation", trial.suggest_float, 0.10, 0.50, step=0.05
         ),
@@ -112,13 +93,6 @@ def get_optuna_config(
         n_steps=suggest(
             "n_steps", trial.suggest_categorical, [512, 1024, 2048]
         ),  # 256, 2048, 4096
-        profit_bonus=suggest(
-            "profit_bonus", trial.suggest_float, 0.0, 0.100, step=0.005
-        ),
-        turnover_penalty=suggest("turnover_penalty", trial.suggest_float, 0.010, 0.30),
-        turnover_penalty_steps_threshold=suggest(
-            "turnover_penalty_steps_threshold", trial.suggest_int, 5, 25
-        ),
         window_size=suggest(
             "window_size", trial.suggest_categorical, [30, 60, 120, 240]
         ),
@@ -216,7 +190,9 @@ if __name__ == "__main__":
     study = optuna.create_study(
         direction="maximize",
         storage="sqlite:///optuna.db",
-        study_name="crypto_rl_v1",
+        # v2: reward simplified to the log return (ROADMAP P1-1); v1 trials
+        # used a different reward and search space and are not comparable.
+        study_name="crypto_rl_v2",
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner(),
     )

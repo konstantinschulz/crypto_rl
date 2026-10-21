@@ -63,3 +63,16 @@ The augmented parquet file contains:
     --row-group-size 43200 \
     --compression zstd
 ```
+
+---
+
+### `reward_ablation.py`
+Short ablation of reward variants (ROADMAP P1-1). It trains MaskablePPO for each arm and seed and scores the policy on the full validation slice. It reports behavior (exposure, turnover, fills, action mix) as well as return. The test fold is never touched. Results go to `logs/reward_ablation/`.
+
+```bash
+python scripts/reward_ablation.py build       # build train/val caches and the split once
+python scripts/reward_ablation.py run --arm elr --seed 0 --timesteps 600000 --evals 4
+python scripts/reward_ablation.py summarize
+```
+
+Arms: `lr` (`log_return`), `elr` (`excess_log_return`), and `lr_dd` / `elr_dd` (the same with `drawdown_penalty_coef` 0.5). The module docstring has the command for running all arms in parallel. The 2026-10-20 results are summarized in `HYPERPARAMETER_RATIONALE.md`.

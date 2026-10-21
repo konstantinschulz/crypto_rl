@@ -101,7 +101,7 @@ python main.py --dashboard --rows 50000 --timesteps 100000 --run-dir logs
 A trading environment for reward-tuning experiments:
 - **State:** Last N relative price changes
 - **Action:** 0 = Hold cash, 1 = Hold crypto
-- **Reward:** Direct portfolio PnL per timestep ($ change)
+- **Reward:** Portfolio log return per timestep, `log(PV_t / PV_{t-1})`, net of fees, minus the equal-weight basket's log return (`--reward-type log_return` drops the benchmark)
 - **Training:** 80/20 train/test split; evaluate on test set after training
 
 **CLI arguments:**

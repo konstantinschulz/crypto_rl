@@ -1,8 +1,6 @@
 import os
 from dataclasses import asdict, dataclass
 
-RULE_PENALTY = 0.0005  # This is one central value for empty_buy_penalty, empty_sell_penalty, illegal_buy_penalty, illegal_sell_penalty
-
 
 @dataclass
 class RLConfig:
@@ -12,7 +10,6 @@ class RLConfig:
     base_run_dir: str = os.path.abspath("logs")
     batch_size: int = 128
     budget_initial: float = 100.0
-    capital_preservation_bonus: float = 0.0001
     checkpoint: bool = True
     chunks_dir: str = os.path.join(base_run_dir, "chunks")
     clear_cache: bool = False
@@ -23,9 +20,8 @@ class RLConfig:
     data_cache_dir: str = os.path.join(os.path.abspath("data"), "memmap_cache")
     data_seed: int | None = 42
     disable_logging: bool = False
-    drawdown_penalty_coef: float = 0.1
-    empty_buy_penalty: float = RULE_PENALTY
-    empty_sell_penalty: float = RULE_PENALTY
+    # Optional reward shaping, off by default (ROADMAP P1-1)
+    drawdown_penalty_coef: float = 0.0
     ent_coef_final: float = 0.0005
     ent_coef_initial: float = 0.015
     # how long you want average trades to be held; 1 week of 1-minute data = 10,080 steps
@@ -35,13 +31,8 @@ class RLConfig:
     eval_length: int = 20160
     fee_rate: float = 0.001
     gamma: float = 0.99
-    hold_cost_rate: float = 0.0
-    hold_penalty_threshold: float = -0.03
-    illegal_buy_penalty: float = RULE_PENALTY
-    illegal_sell_penalty: float = RULE_PENALTY
     learning_rate: float = 1e-4
     logs_dir: str = os.path.abspath("logs")
-    loss_cut_bonus: float = 0.001
     max_asset_allocation: float = 0.25
     max_checkpoints: int = 5
     max_single_step_allocation: float = 0.15
@@ -51,14 +42,19 @@ class RLConfig:
     net_arch_dim: int = 256
     optuna_dir: str = os.path.join(logs_dir, "optuna")
     parquet_path: str | None = "binance_spot_1m_last4y_single_htf.parquet"
-    profit_bonus: float = 0.0
-    reward_type: str = "excess_return"
+    # "excess_log_return": log(PV_t / PV_{t-1}) minus the equal-weight basket's
+    # log return; fees are included in PV.
+    # "log_return": the portfolio log return alone.
+    # Default chosen by the 2026-10-20 ablation (scripts/reward_ablation.py):
+    # the excess variant roughly halved turnover and fees.
+    reward_type: str = "excess_log_return"
     skip_multi_seed_eval: bool = True
     target_volatility: float = 0.02  # 2% target volatility baseline
     test_fraction: float = 0.2
     timesteps: int = 25000  # 3000
     train_chunks: int = 1
-    turnover_penalty: float = 0.05
+    # Optional reward shaping, off by default (ROADMAP P1-1)
+    turnover_penalty: float = 0.0
     turnover_penalty_steps_threshold: int = 15
     # Fraction of the data used for validation (intermediate evals, checkpoint
     # ranking, Optuna objective). Carved from the end of what would otherwise be

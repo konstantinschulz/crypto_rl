@@ -48,101 +48,64 @@ action. At 0.40, it allows the bot to spend a lot of cash at every single step, 
 
 ### Reward Function
 
-#### `--reward-type excess_return`
+#### `--reward-type excess_log_return`
 
-The agent is rewarded for its **return over the equal-weight market return**
-(alpha), not raw PnL. This incentivises the bot to actually beat a passive
-index rather than just riding a bull market. A 1.2× asymmetric multiplier
-is applied to negative alpha to slightly penalise underperformance more than
-outperformance is rewarded (see `minimal_env.py` step logic). Rewards are
-clipped to [−1.0, +1.0] to prevent variance explosion.
+The step reward is the portfolio log return minus the log return of an
+equal-weight basket over the same bar:
+`r_t = log(PV_t / PV_{t-1}) − log(mean_i(p_i,t / p_i,t-1))`. The benchmark is
+unfloored, so it is negative in down markets. Fees are paid out of cash, so
+they are already inside PV and counted exactly once. There is no lump-sum
+terminal reward and no clipping.
 
-#### `--profit-bonus 0.065`
+`--reward-type log_return` drops the benchmark. Its per-step rewards telescope:
+over an episode they sum to `log(PV_final / PV_initial)`, including the exit
+fees of the terminal liquidation.
 
-A shaped reward bonus applied on every **sell** that closes a position with
-positive realised PnL. The bonus is proportional to the trade return
-(`profit_bonus × trade_return`), so large profitable trades are rewarded more
-than small ones. At 0.065 this is a modest supplement to the main alpha signal;
-it is intended to reduce the agent's tendency to hold losing positions
-indefinitely.
+Training rewards are scaled by `VecNormalize(norm_reward=True)`, so the absolute
+size of the log return does not matter.
 
-#### `--drawdown-penalty-coef 0.13`
+#### Optional shaping: `--drawdown-penalty-coef` and `--turnover-penalty`
 
-Coefficient applied to the **delta drawdown** each step. Only worsening
-drawdown steps are penalised (i.e., when the portfolio moves further below its
-peak); recoveries are not rewarded to avoid encouraging risk-seeking behaviour.
-It was decreased to 0.13 to allow trades enough breathing room to develop, even through short-term price fluctuations.
+Both default to 0 (off).
 
-#### `--hold-cost-rate 0.0000004`
+- `--drawdown-penalty-coef` multiplies the per-step **increase** in drawdown
+  (recoveries are not rewarded).
+- `--turnover-penalty` with `--turnover-penalty-steps-threshold` charges
+  `turnover_penalty × closed weight` for sells within the threshold number of
+  steps of opening. Fees already penalize turnover through PV.
 
-A micro-penalty applied to any position whose unrealised PnL
-is worse than −5%. At 1-min bars, 4e-7 × 1440 min/day ≈ 0.06% per day — a
-gentle but persistent drag on deeply underwater positions. The previous default
-(1e-4) was catastrophically high (~6%/hour) and caused the agent to immediately
-liquidate all holdings, so the value was reduced dramatically.
+#### Evidence: reward ablation (2026-10-20)
 
-#### `--hold-penalty-threshold -0.014`
+`scripts/reward_ablation.py`: 4 arms × 3 seeds × 600k PPO steps on 3.6M rows,
+scored on the 28-day validation slice (2025-12-07 → 2026-01-04). The test
+fold was not used. Over that window the equal-weight basket returned +4.7%.
+Mean ± std over seeds:
 
-Unrealised-PnL threshold that gates the hold cost above. A position is only
-charged `--hold-cost-rate` once its unrealised loss exceeds `|threshold|`, i.e.
-1.4% below its average entry price. The implementation takes `abs()` of the
-value, so the sign is cosmetic. The previous default (−0.03) waited until a
-3% loss before any drag applied; the tighter −1.4% starts charging for
-underwater positions earlier, which pushes the policy to cut or rework losers
-sooner. Confirmed by Optuna (search range −0.10 to −0.01).
+| Reward | Return | Max DD | Mean exposure | Turnover (× PV) | Fees |
+| --- | --- | --- | --- | --- | --- |
+| `log_return` | −19.4 ± 7.1% | 0.29 | 0.83 | 262 | 22.7% |
+| `log_return` + drawdown 0.5 | −26.8 ± 3.6% | 0.30 | 0.44 | 321 | 27.0% |
+| `excess_log_return` | −11.6 ± 4.9% | 0.22 | 0.82 | 148 | 13.3% |
+| `excess_log_return` + drawdown 0.5 | −10.6 ± 3.0% | 0.11 | 0.13 | 109 | 10.1% |
 
-#### `--capital-preservation-bonus 0.001`
+- `excess_log_return` roughly halved turnover and fees at the same exposure.
+  That is why it is the default. The return gap overlaps across seeds.
+- The drawdown term clearly changes behavior: exposure falls from about 0.83
+  to 0.44 or 0.13, against a seed spread of about 0.03. It hurt with
+  `log_return` and halved max drawdown with the excess reward. It stays
+  opt-in until a longer run shows whether that trade-off is worth it.
+- Every arm lost money to fees. The training runs were short and had not
+  converged, so this shows which way each option pushes behavior, not how a
+  trained agent performs.
 
-A flat per-step reward bonus paid while the BTC macro regime is bearish
-(`btc_bear` feature > 0.5) and cash makes up more than 75% of portfolio value.
-It is not scaled by PnL or position size, so it is a constant incentive to sit
-in cash during downtrends. At 0.001 it is roughly 10× the default (0.0001) and
-large enough to matter against the per-step alpha reward. Confirmed by Optuna
-(search range 0.0 to 0.001).
+#### Removed terms
 
-#### `--loss-cut-bonus 0.0045`
-
-Reward paid when a sell closes a losing trade (`trade_return < 0`) after the
-position has been held for more than 15 steps. The bonus is
-`|trade_return| × loss_cut_bonus`, so it scales with the size of the loss
-realised, and it is intentionally small so it never outweighs avoiding the
-loss in the first place. The 15-step minimum stops the bonus from rewarding
-immediate, impulsive exits. At 0.0045 it is about 4.5× the default (0.001).
-Confirmed by Optuna (search range 0.0 to 0.005).
-
----
-
-### Penalty Structure
-
-> **Design note:** The environment does **not** implement per-asset-conditional
-> action masks (i.e., masking out specific assets on a per-sell basis). The
-> action mask only gates the top-level action type (Buy/Sell). Individual
-> asset-specific illegal actions (e.g., selling an asset you don't hold) are
-> handled via reward penalties and forced remapping to Hold. The penalties must
-> therefore be large enough to train the policy away from these actions without
-> conditional masking.
-
-#### `--illegal-buy-penalty 0.000007` and `--illegal-sell-penalty 0.000007`
-
-Penalty added to the step reward when the agent attempts to:
-
-- **Illegal buy**: BUY when cash ≈ 0 (cannot afford anything)
-- **Illegal sell**: SELL an asset with zero holdings (short-selling attempt)
-
-At 0.000007 these are smaller than the default `RULE_PENALTY` constant (5e-4). The rule_penalties cumulative value was **0.0** in the last eval, confirming the policy has successfully learned to
-avoid illegal actions — the penalties have done their job and could potentially
-be reduced.
-
-#### `--empty-buy-penalty 0.000007` and `--empty-sell-penalty 0.000007`
-
-Penalty for selecting Buy or Sell with a zero `amount_pct` (after the dead-zone
-remap resolves the amount). These catch the edge case where the policy outputs
-action_type=Buy (or action_type=Sell) but amount_pct=0. Like the illegal penalties, these discourage
-semantically empty trades.
-
-#### `--turnover-penalty 0.026` and `--turnover-penalty-steps-threshold 21`
-
-Penalty for selling positions too quickly (1 step = 1 minute). The goal is to punish the agent for executing many quick sells too impatiently. Sells afer an extended period of holding (> threshold) are not affected by this penalty. In the last evaluation, turnover penalties were 0.0, indicating that the model did not sell any assets overly quickly.
+`fee_penalty` (double-counted fees), `terminal_return` (re-paid the whole
+episode return at the end), `profit_bonus`, `loss_cut_bonus`, `hold_cost`
+(`--hold-cost-rate`, `--hold-penalty-threshold`), `capital_preservation_bonus`
+and the illegal/empty BUY/SELL rule penalties are gone. The rule penalties were
+always 0 because of a bookkeeping bug. Illegal and empty actions are still
+remapped to HOLD, with no penalty.
 
 ---
 
@@ -223,8 +186,8 @@ convergence to a near-deterministic policy. Confirmed by Optuna.
 #### `--fee-rate 0.001`
 
 Realistic MEXC spot taker fee (0.1%). Applied to both buy and sell legs
-of every trade. Fees are also explicitly penalised in the reward
-(`fee_penalty` component) to make their cost visible to the agent.
+of every trade. Fees reduce PV directly, so the log-return reward already
+accounts for them.
 
 #### `--budget-initial 100.0`
 

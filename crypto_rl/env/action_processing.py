@@ -17,12 +17,11 @@ def apply_discrete_action(env, action):
 
     Returns a tuple:
         (fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price)
-    Side‑effects on ``env`` (cash, holdings, logs, penalties) are performed
-    inside this function. ``step_penalty`` and ``last_remap_note`` are stored
-    on the environment instance for the caller to use.
+    Side‑effects on ``env`` (cash, holdings, logs) are performed inside this
+    function. ``last_remap_note`` is stored on the environment instance for the
+    caller to use. Illegal or empty actions are remapped to HOLD without a
+    reward penalty.
     """
-    # Initialize/reset the penalty tracker for this step
-    env._step_penalty = 0.0
     action_type = action[0]
     env.action_type_counts[ActionType(action_type).name] += 1
     asset_idx = action[1]
@@ -35,20 +34,17 @@ def apply_discrete_action(env, action):
     is_valid_sell = False
     trade_units = 0.0
     trade_price = env.prices_arr[env.current_step - 1][asset_idx]
-    step_penalty = 0.0
     env.last_remap_note = None
     curr_portfolio_val, _ = _get_current_portfolio_value(env)
-    # 1. Catch and penalize invalid Sells
+    # 1. Catch invalid Sells
     if action_type == 2 and env.holdings[asset_idx] < 1e-8:
-        env._step_penalty += env.config.illegal_sell_penalty
         env.last_remap_note = (
             f"illegal action (SELL, {env.asset_names[asset_idx]}) remapped to HOLD"
         )
         action_type = 0  # Force to HOLD to prevent phantom transactions/short selling
 
-    # 2. Catch and penalize invalid Buys
+    # 2. Catch invalid Buys
     elif action_type == 1 and env.cash < 1e-8:
-        env._step_penalty += env.config.illegal_buy_penalty
         env.last_remap_note = (
             f"illegal action (BUY, {env.asset_names[asset_idx]}) remapped to HOLD"
         )
@@ -59,7 +55,6 @@ def apply_discrete_action(env, action):
 
     if action_type == 1:  # BUY
         if amount_pct == 0.0:
-            step_penalty += env.config.empty_buy_penalty
             action_type = 0
             env.last_remap_note = "empty BUY remapped to HOLD"
         elif asset_idx < env.num_assets:
@@ -104,7 +99,6 @@ def apply_discrete_action(env, action):
 
     elif action_type == 2:  # SELL
         if amount_pct == 0.0:
-            step_penalty += env.config.empty_sell_penalty
             action_type = 0
             env.last_remap_note = "empty SELL remapped to HOLD"
         elif asset_idx < env.num_assets:
@@ -134,8 +128,6 @@ def apply_discrete_action(env, action):
             amount_pct = 0.0
             env.last_remap_note = "invalid asset index remapped to HOLD"
 
-    # Store penalty for caller
-    env._step_penalty = step_penalty
     return fee_paid, realised_pnl, is_valid_sell, trade_units, trade_price
 
 

@@ -66,12 +66,6 @@ Examples:
         help=f"Initial cash budget for the agent (default {default_config.budget_initial})",
     )
     parser.add_argument(
-        "--capital-preservation-bonus",
-        type=float,
-        default=default_config.capital_preservation_bonus,
-        help=f"Bonus reward for preserving capital (default {default_config.capital_preservation_bonus}). Encourages the agent to avoid catastrophic losses and maintain a positive portfolio value.",
-    )
-    parser.add_argument(
         "--checkpoint",
         action="store_true",
         default=default_config.checkpoint,
@@ -117,19 +111,7 @@ Examples:
         "--drawdown-penalty-coef",
         type=float,
         default=default_config.drawdown_penalty_coef,
-        help=f"Coefficient for drawdown penalty term (default {default_config.drawdown_penalty_coef})",
-    )
-    parser.add_argument(
-        "--empty-buy-penalty",
-        type=float,
-        default=default_config.empty_buy_penalty,
-        help=f"Penalty multiplier for empty BUY actions (default {default_config.empty_buy_penalty})",
-    )
-    parser.add_argument(
-        "--empty-sell-penalty",
-        type=float,
-        default=default_config.empty_sell_penalty,
-        help=f"Penalty multiplier for empty SELL actions (default {default_config.empty_sell_penalty})",
+        help=f"Optional shaping: coefficient on the per-step increase in drawdown, added to the log-return reward (default {default_config.drawdown_penalty_coef} = off)",
     )
     parser.add_argument(
         "--ent-coef-final",
@@ -168,45 +150,10 @@ Examples:
         help="Discount factor for PPO model",
     )
     parser.add_argument(
-        "--hold-cost-rate",
-        type=float,
-        default=default_config.hold_cost_rate,
-        help=(
-            "Hold cost rate per step as a fraction of asset value. "
-            "Default 1e-6 ≈ 0.05%% per day at 1-min bars. "
-            "The old default (0.0001) was ~6%%/hr — catastrophically high, "
-            "causing the agent to never hold any position."
-        ),
-    )
-    parser.add_argument(
-        "--hold-penalty-threshold",
-        type=float,
-        default=default_config.hold_penalty_threshold,
-        help=f"Threshold for hold penalty (default: {default_config.hold_penalty_threshold}). If the unrealized PnL percentage is larger than this threshold, a hold cost penalty will be applied.",
-    )
-    parser.add_argument(
-        "--illegal-buy-penalty",
-        type=float,
-        default=default_config.illegal_buy_penalty,
-        help=f"Penalty multiplier for illegal BUY actions (default {default_config.illegal_buy_penalty})",
-    )
-    parser.add_argument(
-        "--illegal-sell-penalty",
-        type=float,
-        default=default_config.illegal_sell_penalty,
-        help=f"Penalty multiplier for illegal SELL actions (default {default_config.illegal_sell_penalty})",
-    )
-    parser.add_argument(
         "--learning-rate",
         type=float,
         default=default_config.learning_rate,
         help="Learning rate for the PPO model",
-    )
-    parser.add_argument(
-        "--loss-cut-bonus",
-        type=float,
-        default=default_config.loss_cut_bonus,
-        help=f"Bonus reward for cutting losses early (default {default_config.loss_cut_bonus}). Encourages the agent to take small losses and free up cash for better opportunities.",
     )
     parser.add_argument(
         "--max-asset-allocation",
@@ -245,17 +192,11 @@ Examples:
         help=f"Path to Parquet dataset file (default: {default_config.parquet_path})",
     )
     parser.add_argument(
-        "--profit-bonus",
-        type=float,
-        default=default_config.profit_bonus,
-        help=f"Bonus reward for profitable trades (default {default_config.profit_bonus}). Encourages the agent to maximize the absolute amount of profit (realized PnL) for each trade.",
-    )
-    parser.add_argument(
         "--reward-type",
         type=str,
         default=default_config.reward_type,
-        choices=["pnl", "excess_return"],
-        help=f"Reward function type to use for training (default: {default_config.reward_type})",
+        choices=["excess_log_return", "log_return"],
+        help=f"Reward: excess_log_return = log(PV_t / PV_t-1), net of fees, minus the equal-weight basket's log return; log_return = the portfolio log return alone (default: {default_config.reward_type})",
     )
     parser.add_argument(
         "--n-rows",
@@ -299,7 +240,7 @@ Examples:
         "--target-volatility",
         type=float,
         default=default_config.target_volatility,
-        help=f"Target volatility for excess return reward calculation (default {default_config.target_volatility})",
+        help=f"Target volatility for the volatility-scaled per-asset allocation cap (default {default_config.target_volatility})",
     )
     parser.add_argument(
         "--train-chunks",
@@ -311,7 +252,7 @@ Examples:
         "--turnover-penalty",
         type=float,
         default=default_config.turnover_penalty,
-        help=f"Penalty for excessive/overly quick turnover (default {default_config.turnover_penalty})",
+        help=f"Optional shaping: penalty per unit of portfolio weight closed within --turnover-penalty-steps-threshold steps of opening (default {default_config.turnover_penalty} = off). Fees already penalize turnover through the log-return reward.",
     )
     parser.add_argument(
         "--turnover-penalty-steps-threshold",
