@@ -100,6 +100,7 @@ class MinimalCryptoEnv(gym.Env):
         self.per_asset_fees = np.zeros(self.num_assets, dtype=np.float32)
         self.logger = LoggerBase() if logger is None else logger
         self.fees_paid_total = 0.0
+        self.turnover_total = 0.0
         self.previous_drawdown = 0.0
         self.peak_portfolio_value = config.budget_initial
         self.portfolio_values: list[float] = []

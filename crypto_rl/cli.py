@@ -56,7 +56,7 @@ Examples:
         "--checkpoint",
         action="store_true",
         default=default_config.checkpoint,
-        help="Enable checkpointing of best Calmar model",
+        help="Enable checkpointing of the best model by validation score (see --objective-drawdown-coef)",
     )
     parser.add_argument(
         "--clear-cache",
@@ -74,7 +74,7 @@ Examples:
         "--cv-folds",
         type=int,
         default=default_config.cv_folds,
-        help=f"Number of walk-forward CV folds (default: {default_config.cv_folds}). Set to 1 for standard single train/test split.",
+        help=f"Number of walk-forward CV folds (default: {default_config.cv_folds}). Results are reported as mean ± spread across folds. Set to 1 for a single train/val/test split.",
     )
     parser.add_argument(
         "--dashboard",
@@ -204,6 +204,12 @@ Examples:
         type=int,
         default=default_config.net_arch_dim,
         help=f"Number of neurons in each layer of the policy/value network (default: {default_config.net_arch_dim})",
+    )
+    parser.add_argument(
+        "--objective-drawdown-coef",
+        type=float,
+        default=default_config.objective_drawdown_coef,
+        help=f"λ in the model-selection score: excess log return over the equal-weight basket − λ·maxDD. Ranks checkpoints, drives Optuna pruning and is the Optuna objective, averaged over the folds' validation slices (default: {default_config.objective_drawdown_coef})",
     )
     parser.add_argument(
         "--test-fraction",

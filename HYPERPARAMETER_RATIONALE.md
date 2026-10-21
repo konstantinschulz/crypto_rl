@@ -289,12 +289,55 @@ multi-scale aggregation from scratch.
 
 ### Cross-validation & Evaluation
 
-#### `--cv-folds 1`
+#### `--cv-folds 3`
 
-A 1-fold train/test split is used. Walk-forward cross-validation with
-multiple folds (`--cv-folds 3`) would produce a more robust estimate of
-out-of-sample performance but triples training time. CV-folds = 1 is the fast
-iteration default, and is suitable for final single large training runs (after Optuna optimization with multi-fold CV per trial).
+Walk-forward cross-validation with 3 expanding-window folds (ROADMAP P2-3). The
+data is cut into 4 equal chunks and fold `i` tests on chunk `i + 1`, so the
+three test folds tile the last three quarters of the data without overlap. Each
+fold trains a fresh model. Its validation slice sits directly before its test
+slice, and its training slice is everything before that. Each fold is scored
+on its **whole** test fold (and on its whole validation slice in Optuna
+trials). With 18M rows (~3.8 years) a test fold is about 347 days.
+
+One fold gave a single window: one 7- or 14-day stretch with a handful of trades
+is close to random. The run now reports, per fold, the excess log return over
+the equal-weight basket, max drawdown, turnover and Calmar, and then the mean ±
+sample std [min, max] of each across folds. Read the spread before the mean: a
+positive mean whose minimum is far below zero is not an edge.
+
+Costs: training time triples. `--test-fraction` is ignored with more than one
+fold. `--val-fraction` is a fraction of the *whole* dataset, so with 3 folds
+and `--val-fraction 0.1` the first fold trains on only about 60% of its chunk
+(~208 days at 18M rows). Lower `--val-fraction` if the first fold's training
+slice is too short. `--cv-folds 1` restores the single train/val/test split
+(last `--test-fraction` of the data as test) for quick iteration.
+
+#### `--objective-drawdown-coef 0.5`
+
+λ in the model-selection score, computed per fold on an evaluation episode:
+
+`score = log(PV_final / EW_final) − λ · maxDD`
+
+`EW_final` is the equal-weight buy-and-hold basket over the same bars with the
+same fees (the `equal_weight` baseline). `PV_final` is the bot's liquidation
+value. maxDD is measured on the bar-by-bar mark-to-market PV. The same score:
+
+- ranks checkpoints during training (on the fast validation slice),
+- is reported, EMA-smoothed, to Optuna's pruner,
+- is the Optuna objective: its mean over the folds' full validation slices.
+
+It replaces the Calmar variant (`get_calmar_from_portfolio_series`), which is
+discontinuous at zero return (gains are multiplied by the raw return, losses
+are not) and annualizes short windows (×52 for 7 days). The new score is
+continuous and monotonic: higher excess return is always better, a deeper
+drawdown always worse, and it is not annualized. Calmar is still logged for
+reference.
+
+λ = 0.5 is a judgment call, not a tuned value. The trade-off it sets: holding the
+basket (excess 0) through a 40% drawdown scores −0.20, while holding cash scores
+−log(basket growth), so cash wins when the basket's log return is below half its
+max drawdown. λ = 0 selects on excess return alone. Changing λ changes the
+Optuna objective, so do it before a study, not during one.
 
 #### `--test-fraction 0.1`
 
@@ -302,7 +345,7 @@ The fraction of the dataset that is used for evaluation. For large training runs
 
 #### `--val-fraction 0.1`
 
-The fraction of the dataset that is used for validation. Each fold is split into train / validation / test, in that chronological order. The validation slice is carved from the end of what would otherwise be the training slice, directly before the test slice, so the test slices do not depend on this value. Validation drives everything that selects or tunes a model: the intermediate evaluations during training, checkpoint ranking, Optuna pruning, and the Optuna objective (the full-length validation Calmar of the best checkpoint). The test slice is only used for the final report (runs without an Optuna trial), once, over the whole test fold, with the best-on-validation checkpoint loaded together with the observation statistics it was trained with. Optuna trials never build or read the test slice. Because the checkpoint is chosen for its validation score, that score is optimistically biased; the test Calmar is the honest number, and a large gap between the two in the final report is a sign of overfitting to the validation slice.
+The fraction of the dataset that is used for validation. Each fold is split into train / validation / test, in that chronological order. The validation slice is carved from the end of what would otherwise be the training slice, directly before the test slice, so the test slices do not depend on this value. Validation drives everything that selects or tunes a model: the intermediate evaluations during training, checkpoint ranking, Optuna pruning, and the Optuna objective (the mean over folds of the full-length validation score of the best checkpoint; see `--objective-drawdown-coef`). The test slice is only used for the final report (runs without an Optuna trial), once, over the whole test fold, with the best-on-validation checkpoint loaded together with the observation statistics it was trained with. Optuna trials never build or read the test slice. Because the checkpoint is chosen for its validation score, that score is optimistically biased; the test score is the honest number, and a large gap between the two in the final report is a sign of overfitting to the validation slice.
 
 #### `--timesteps 4500000`
 
@@ -321,8 +364,10 @@ before deployment decisions.
 
 #### `--checkpoint` and `--max-checkpoints 5`
 
-Best-model checkpointing during training, scored by Calmar ratio. At most 5
-checkpoints are retained. The Calmar ratio is preferred over raw PnL because
-it jointly penalises low returns and high drawdowns.
+Best-model checkpointing during training, ranked by the validation score
+(`--objective-drawdown-coef`): excess log return over the equal-weight basket
+minus λ·maxDD. At most 5 checkpoints are retained. The score is preferred over
+raw PnL because it penalises drawdowns, and over Calmar because it is
+continuous at zero return and not annualized.
 
 ---

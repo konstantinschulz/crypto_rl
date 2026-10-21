@@ -49,6 +49,80 @@ def get_calmar_from_portfolio_series(
     return float(adjusted_score)
 
 
+def max_drawdown(pv_series: np.ndarray) -> float:
+    """Largest peak-to-trough loss of a PV series, as a positive fraction."""
+    pv_series = np.asarray(pv_series, dtype=float)
+    if len(pv_series) < 2:
+        return 0.0
+    peaks = np.maximum.accumulate(pv_series)
+    drawdowns = np.divide(
+        peaks - pv_series, peaks, out=np.zeros_like(pv_series), where=peaks > 1e-8
+    )
+    return float(drawdowns.max())
+
+
+def selection_score(
+    excess_log_return: float, max_dd: float, drawdown_coef: float
+) -> float:
+    """Model-selection objective: ``excess_log_return − λ·maxDD`` (ROADMAP P2-3).
+
+    Unlike the Calmar variant above, it is monotonic in both terms, continuous
+    at zero return, and not annualized, so short windows are not blown up.
+    """
+    return float(excess_log_return - drawdown_coef * max_dd)
+
+
+def episode_metrics(
+    initial_pv: float,
+    final_pv: float,
+    bar_pvs: list[float] | np.ndarray,
+    equal_weight_final_pv: float,
+    turnover: float,
+    n_bars: int,
+    drawdown_coef: float,
+) -> dict[str, float]:
+    """Summary metrics of one evaluation episode.
+
+    ``bar_pvs`` is the env's mark-to-market PV at every held one-minute bar.
+    ``final_pv`` is the liquidation value (exit fee charged) and
+    ``equal_weight_final_pv`` the equal-weight buy-and-hold baseline over the
+    same bars and fees. ``turnover`` is the traded notional summed over the
+    episode, each trade as a fraction of the pre-trade PV.
+    """
+    pv_series = np.concatenate(([initial_pv], np.asarray(bar_pvs, float), [final_pv]))
+    log_return = float(np.log(max(final_pv, 1e-8) / initial_pv))
+    excess = float(np.log(max(final_pv, 1e-8) / max(equal_weight_final_pv, 1e-8)))
+    max_dd = max_drawdown(pv_series)
+    days = max(n_bars, 1) / 1440.0
+    return {
+        "return": float(final_pv / initial_pv - 1.0),
+        "log_return": log_return,
+        "excess_log_return": excess,
+        "max_drawdown": max_dd,
+        "turnover": float(turnover),
+        "turnover_per_day": float(turnover / days),
+        "score": selection_score(excess, max_dd, drawdown_coef),
+    }
+
+
+def summarize_folds(
+    fold_metrics: list[dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Mean, sample std, min and max of each metric across folds."""
+    if not fold_metrics:
+        return {}
+    summary = {}
+    for key in fold_metrics[0]:
+        values = np.array([m[key] for m in fold_metrics], dtype=float)
+        summary[key] = {
+            "mean": float(values.mean()),
+            "std": float(values.std(ddof=1)) if len(values) > 1 else 0.0,
+            "min": float(values.min()),
+            "max": float(values.max()),
+        }
+    return summary
+
+
 def get_per_asset_summary(env) -> dict[str, dict[str, float]]:
     """Returns detailed evaluation metrics broken down by asset symbol."""
     from crypto_rl.env.minimal_env import MinimalCryptoEnv

@@ -185,9 +185,10 @@ if __name__ == "__main__":
     study = optuna.create_study(
         direction="maximize",
         storage="sqlite:///optuna.db",
-        # v2: reward simplified to the log return (ROADMAP P1-1); v1 trials
-        # used a different reward and search space and are not comparable.
-        study_name="crypto_rl_v2",
+        # v3: the objective is the mean validation excess log return − λ·maxDD
+        # over the folds (ROADMAP P2-3), not Calmar. v2 trials (Calmar) and v1
+        # trials (old reward and search space) are not comparable.
+        study_name="crypto_rl_v3",
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner(),
     )

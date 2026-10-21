@@ -69,6 +69,8 @@ def update_dashboard_state(
     last_eval_realized_pnl: list[dict[str, Any]],
     baselines: dict[str, float] | None = None,
     excess_returns: dict[str, float] | None = None,
+    fold_summary: dict[str, dict[str, float]] | None = None,
+    objective: float | None = None,
 ) -> None:
     """Write the evaluation results back to the dashboard ``state.json``.
 
@@ -108,6 +110,10 @@ def update_dashboard_state(
         "per_asset_breakdown": per_asset_stats,
     }
     finance["calmar"] = float(cv_mean_calmar)
+    # Mean ± spread across folds and the selection score (ROADMAP P2-3)
+    finance["fold_summary"] = fold_summary or {}
+    if objective is not None:
+        finance["objective"] = float(objective)
 
     # Explainability – cumulative rewards and hyper‑parameters
     explain = state.setdefault("explainability", {})

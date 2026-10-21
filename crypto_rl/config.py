@@ -12,7 +12,9 @@ class RLConfig:
     chunks_dir: str = os.path.join(base_run_dir, "chunks")
     clear_cache: bool = False
     clip_range: float = 0.11
-    cv_folds: int = 1
+    # Walk-forward folds (ROADMAP P2-3). Each fold has its own train / val /
+    # test slices; results are reported as mean ± spread across folds.
+    cv_folds: int = 3
     dashboard: bool = True
     dashboard_freq: int = 500  # Fast: Write JSON state
     data_cache_dir: str = os.path.join(os.path.abspath("data"), "memmap_cache")
@@ -44,6 +46,10 @@ class RLConfig:
     n_rows: int = 18000000  # 40000 18000000
     n_steps: int = 512
     net_arch_dim: int = 256
+    # λ in the model-selection objective: excess log return over the
+    # equal-weight basket − λ·maxDD on validation (ROADMAP P2-3). Used for
+    # checkpoint ranking, Optuna pruning and the Optuna objective.
+    objective_drawdown_coef: float = 0.5
     optuna_dir: str = os.path.join(logs_dir, "optuna")
     parquet_path: str | None = "binance_spot_1m_last4y_single_htf.parquet"
     # No-trade band: an asset is only traded when its target weight differs
@@ -65,7 +71,7 @@ class RLConfig:
     # Fraction of the data used for validation (intermediate evals, checkpoint
     # ranking, Optuna objective). Carved from the end of what would otherwise be
     # the training slice, directly before each test slice.
-    val_fraction: float = 0.1
+    val_fraction: float = 0.05
     # Width of the target-weight bins: {0, w, 2w, ..., max_asset_allocation}
     weight_step: float = 0.05
     window_size: int = 120

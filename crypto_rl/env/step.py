@@ -166,6 +166,7 @@ def step_env(
         info["final_exit_fees"] = exit_fees
         info["final_trades_count"] = env.trades_count
         info["final_fees_paid"] = env.fees_paid_total + exit_fees
+        info["final_turnover"] = env.turnover_total
 
         sum_per_asset_pnl = sum(
             s["total_pnl"] for s in info["per_asset_stats"].values()

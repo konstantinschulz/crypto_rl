@@ -101,6 +101,8 @@ def rebalance(env, target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     filled = np.flatnonzero(units != 0)
     env.trades_count += len(filled)
     env.fees_paid_total += float(fees.sum())
+    # Traded notional as a fraction of the pre-trade PV, as in the action log
+    env.turnover_total += float(np.abs(units) @ safe_prices / pv)
     env.per_asset_fees += fees
     env.traded_coins.update(env.asset_names[i] for i in filled)
     return fees, units

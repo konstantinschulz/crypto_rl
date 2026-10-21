@@ -43,7 +43,7 @@ from crypto_rl.env.logging_utils import (
     LoggerBase,
     send_notification,
 )
-from crypto_rl.env.metrics import calculate_calmar_ratio
+from crypto_rl.env.metrics import calculate_calmar_ratio, episode_metrics
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from crypto_rl.experiment.data_loading import load_raw_data
 from crypto_rl.experiment.evaluation_utils import (
@@ -153,6 +153,7 @@ def _run_episode(
             )
 
     final_pv = info.get("final_portfolio_value", base_env.portfolio_value)
+    env_portfolio_values = info.get("portfolio_values", base_env.portfolio_values)
     result = {
         "initial_portfolio_value": initial_pv,
         "final_portfolio_value": final_pv,
@@ -172,10 +173,18 @@ def _run_episode(
         "per_asset_stats": info["per_asset_stats"],
         "fill_counts": dict(info.get("fill_counts", base_env.fill_counts)),
         "traded_coins": sorted(info.get("traded_coins", base_env.traded_coins)),
-        "env_portfolio_values": info.get(
-            "portfolio_values", base_env.portfolio_values
-        ),
+        "env_portfolio_values": env_portfolio_values,
         "calmar": calculate_calmar_ratio(portfolio_values, interval),
+        # Excess log return, maxDD, turnover and the selection score
+        "metrics": episode_metrics(
+            initial_pv=initial_pv,
+            final_pv=final_pv,
+            bar_pvs=env_portfolio_values,
+            equal_weight_final_pv=baselines["equal_weight"],
+            turnover=info.get("final_turnover", base_env.turnover_total),
+            n_bars=n_bars,
+            drawdown_coef=base_env.config.objective_drawdown_coef,
+        ),
         "action_log_path": action_log_path,
     }
     vec_env.close()
@@ -224,14 +233,16 @@ def run_folds(
     env_config: RLConfig,
     dummy_vec_env_args: dict[str, Any],
     splits: list[FoldSplit],
-) -> tuple[float, float, float, float, int, float, list[dict], dict, Any, list[tuple]]:
+) -> tuple:
     """Execute all CV folds.
 
     Returns a tuple containing the aggregated metrics that the caller can use
-    to update the dashboard and compute the final Calmar score.
+    to update the dashboard, and per fold the summary metrics of
+    `episode_metrics` plus ``calmar``. Their ``score`` is the selection score
+    on validation in Optuna trials and on test otherwise.
     """
     per_asset_stats: dict[str, dict[str, float]] = {}
-    fold_scores: list[float] = []
+    fold_metrics: list[dict[str, float]] = []
     fold_results: list[dict] = []
     last_model = None
     last_test_prices = None
@@ -305,14 +316,17 @@ def run_folds(
         )
         str_fold = str(fold_idx)
         # ----- Resume from checkpoint ------------------------------------------------
-        if str_fold in completed_folds:
-            cached_score = completed_folds[str_fold]["score"]
+        cached = completed_folds.get(str_fold, {})
+        # Checkpoints written before the selection score (ROADMAP P2-3) hold
+        # a Calmar score and no metrics; retrain those folds.
+        if "excess_log_return" in cached.get("metrics", {}):
+            cached_score = cached["score"]
             logger.print_if_not_trial(
                 logging.DEBUG,
                 None,
                 f"--> [Fold {fold_idx + 1}/{config.cv_folds}] RESUMED from checkpoint. Score: {cached_score:.4f}",
             )
-            fold_scores.append(cached_score)
+            fold_metrics.append(cached["metrics"])
             if trial is not None:
                 report_step = (fold_idx + 1) * evals_per_fold
                 with warnings.catch_warnings():
@@ -555,7 +569,7 @@ def run_folds(
                 logging.DEBUG,
                 trial,
                 f"4. Loading best validation checkpoint for Fold {fold_idx + 1} "
-                f"(val Calmar {eval_callback.best_calmar:.4f})...",
+                f"(val score {eval_callback.best_score:.4f})...",
             )
             eval_model = PPO.load(best_path, device=device)
             eval_obs_rms = eval_callback.best_obs_rms
@@ -624,14 +638,15 @@ def run_folds(
         eval_final_trades_count = result["trades_count"]
         eval_final_fees_paid = result["fees_paid"]
         eval_closed_trades = result["closed_trades"]
-        fold_score = result["calmar"]
-        fold_scores.append(fold_score)
+        metrics = {**result["metrics"], "calmar": float(result["calmar"])}
+        fold_score = metrics["score"]
+        fold_metrics.append(metrics)
         if trial is not None:
             ckpt_mgr.save_fold_result(
                 trial_number=trial.number,
                 fold_idx=fold_idx,
                 score=fold_score,
-                metrics={"calmar": fold_score},
+                metrics=metrics,
             )
         eval_win_rate_pct = (
             (result["winning_trades"] / eval_closed_trades * 100.0)
@@ -644,7 +659,8 @@ def run_folds(
                 "split": reported_split,
                 "final_portfolio_value": eval_final_portfolio_value,
                 "pnl": float(eval_final_portfolio_value - eval_initial_portfolio_value),
-                "calmar": float(fold_score),
+                "calmar": metrics["calmar"],
+                "metrics": metrics,
                 "trades": eval_final_trades_count,
                 "closed_trades": int(eval_closed_trades),
                 "win_rate_pct": float(eval_win_rate_pct),
@@ -677,7 +693,15 @@ def run_folds(
         logger.print_if_not_trial(
             logging.INFO,
             trial,
-            f"  Final PV: ${eval_final_portfolio_value:.2f} | PnL: ${eval_final_portfolio_value - eval_initial_portfolio_value:.2f} | Calmar: {fold_score:.2f}",
+            f"  Final PV: ${eval_final_portfolio_value:.2f} | PnL: ${eval_final_portfolio_value - eval_initial_portfolio_value:.2f} | Calmar: {metrics['calmar']:.2f}",
+        )
+        logger.print_if_not_trial(
+            logging.INFO,
+            trial,
+            f"  Excess log return vs equal-weight: {metrics['excess_log_return']:+.4f} "
+            f"| MaxDD: {metrics['max_drawdown'] * 100:.1f}% "
+            f"| Turnover: {metrics['turnover']:.2f}x ({metrics['turnover_per_day']:.2f}x/day) "
+            f"| Score: {fold_score:+.4f}",
         )
         logger.print_if_not_trial(
             logging.INFO,
@@ -736,7 +760,7 @@ def run_folds(
     # ----- Aggregate CV results ---------------------------------------------------
     cv_mean_pv = float(np.mean([r["final_portfolio_value"] for r in fold_results]))
     cv_mean_pnl = float(np.mean([r["pnl"] for r in fold_results]))
-    cv_mean_calmar = float(np.mean(fold_scores))
+    cv_mean_calmar = float(np.mean([m["calmar"] for m in fold_metrics]))
     cv_mean_win_rate = float(np.mean([r["win_rate_pct"] for r in fold_results]))
     cv_total_trades = sum(r["trades"] for r in fold_results)
     cv_total_fees = sum(r["fees_paid"] for r in fold_results)
@@ -766,4 +790,5 @@ def run_folds(
             last_eval_steps,
         ),
         last_obs_rms,
+        fold_metrics,
     )

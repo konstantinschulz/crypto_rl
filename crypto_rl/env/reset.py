@@ -102,6 +102,7 @@ def reset_env(env: MinimalCryptoEnv, seed=None, options=None):
     env.portfolio_value = env.config.budget_initial
     env.portfolio_values = []
     env.fees_paid_total = 0.0
+    env.turnover_total = 0.0
     env.trades_count = 0
     env.traded_coins = set()
     # A new object: the final info of the previous episode still refers to the old one

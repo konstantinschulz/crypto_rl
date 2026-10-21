@@ -18,6 +18,7 @@ from crypto_rl.env.logging_utils import (
     LoggerBase,
     selective_logger,
 )
+from crypto_rl.env.metrics import summarize_folds
 from eval_report import eval_report
 
 from .dashboard_utils import update_dashboard_state
@@ -66,6 +67,47 @@ def _print_cv_summary(
     logger.log("=" * 40 + "\n", trial)
 
 
+# (key, label, format) of the per-fold metrics in the walk-forward summary
+_SUMMARY_ROWS = (
+    ("excess_log_return", "Excess log return vs EW", "{:+.4f}"),
+    ("return", "Return", "{:+.2%}"),
+    ("max_drawdown", "Max drawdown", "{:.2%}"),
+    ("turnover_per_day", "Turnover (x PV / day)", "{:.3f}"),
+    ("calmar", "Calmar", "{:.2f}"),
+    ("score", "Score (objective)", "{:+.4f}"),
+)
+
+
+def _print_fold_spread(
+    logger: LoggerBase,
+    trial: optuna.trial.Trial | None,
+    summary: dict[str, dict[str, float]],
+    n_folds: int,
+    split_name: str,
+    drawdown_coef: float,
+) -> None:
+    """Log mean ± sample std [min, max] of each metric across folds."""
+    logger.log(
+        f"{split_name} metrics across {n_folds} fold(s): mean ± std [min, max]",
+        trial,
+    )
+    for key, label, fmt in _SUMMARY_ROWS:
+        if key not in summary:
+            continue
+        s = summary[key]
+        logger.log(
+            # The spread is unsigned
+            f"  {label:<24} {fmt.format(s['mean'])} ± {fmt.replace('+', '').format(s['std'])} "
+            f"[{fmt.format(s['min'])}, {fmt.format(s['max'])}]",
+            trial,
+        )
+    logger.log(
+        f"  Score = excess log return − {drawdown_coef}·maxDD; the Optuna "
+        "objective is its mean over the folds' validation slices.",
+        trial,
+    )
+
+
 def _mean_over_folds(fold_results: list[dict], key: str) -> dict[str, float]:
     """Per-baseline mean of `fold_results[i][key]`; empty if no fold has it."""
     rows = [r[key] for r in fold_results if key in r]
@@ -82,9 +124,12 @@ def run_experiment(
 
     Each fold is split into train / validation / test. Validation drives the
     intermediate evals, checkpoint ranking and pruning; the best-on-validation
-    checkpoint is evaluated afterwards. Optuna trials return the mean
-    *validation* Calmar and never touch the test slice. Non-trial runs also
-    evaluate that checkpoint once on the full test fold for the final report.
+    checkpoint is evaluated afterwards. Returns the mean over folds of the
+    selection score (excess log return over the equal-weight basket −
+    λ·maxDD, ROADMAP P2-3). Optuna trials score on the full *validation*
+    slices and never touch the test slice. Non-trial runs evaluate that
+    checkpoint once on each full test fold for the final report, and return
+    the mean test score.
     """
     # Seed for reproducibility of dataset split
     np.random.seed(config.data_seed)
@@ -150,6 +195,7 @@ def run_experiment(
                 test_data_tuple,
                 eval_data_tuple,
                 last_obs_rms,
+                fold_metrics,
             ) = run_folds(
                 config=config,
                 trial=trial,
@@ -192,6 +238,19 @@ def run_experiment(
                 cv_total_fees,
                 split_name="Validation" if trial is not None else "Test",
             )
+
+            fold_summary = summarize_folds(fold_metrics)
+            _print_fold_spread(
+                logger,
+                trial,
+                fold_summary,
+                len(fold_metrics),
+                split_name="Validation" if trial is not None else "Test",
+                drawdown_coef=config.objective_drawdown_coef,
+            )
+            cv_mean_score = fold_summary["score"]["mean"]
+            if trial is not None:
+                trial.set_user_attr("fold_summary", fold_summary)
 
             # ── 5. Baselines over the same windows the bot was scored on ─────
             cv_baselines = _mean_over_folds(fold_results, "baselines")
@@ -242,6 +301,8 @@ def run_experiment(
                         last_eval_realized_pnl=last_eval_realized_pnl,
                         baselines=cv_baselines,
                         excess_returns=cv_excess,
+                        fold_summary=fold_summary,
+                        objective=cv_mean_score,
                     )
                     logger.print_if_not_trial(
                         logging.DEBUG,
@@ -272,7 +333,7 @@ def run_experiment(
             if trial is not None:
                 ckpt_mgr.clear_checkpoint(trial.number)
 
-            return float(cv_mean_calmar)  # Return mean Calmar ratio for Optuna
+            return float(cv_mean_score)
 
         except optuna.exceptions.TrialPruned:
             assert trial is not None, (

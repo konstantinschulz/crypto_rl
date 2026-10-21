@@ -22,7 +22,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 from tqdm import tqdm
 
 from crypto_rl.config import RLConfig
-from crypto_rl.env.metrics import calculate_calmar_ratio
+from crypto_rl.env.metrics import episode_metrics
 
 try:
     from stable_baselines3.common.callbacks import BaseCallback
@@ -319,7 +319,8 @@ class EntropyDecayCallback(BaseCallback):
 class UnifiedEvalCallback(BaseCallback):
     """
     Evaluates the model, reports metrics to Optuna monotonically across CV folds,
-    and saves checkpoints scored by Calmar ratio.
+    and saves checkpoints ranked by the selection score (`selection_score`:
+    excess log return over the equal-weight basket − λ·maxDD).
     """
 
     def __init__(
@@ -345,7 +346,7 @@ class UnifiedEvalCallback(BaseCallback):
 
         self.eval_idx = 0
         self.is_pruned = False
-        self.best_calmar = -float("inf")
+        self.best_score = -float("inf")
         self.ema_score = None
         # Best model on the validation env, kept so the final report can load
         # it. Its observation statistics must travel with it: VecNormalize's
@@ -364,7 +365,7 @@ class UnifiedEvalCallback(BaseCallback):
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self._eval_every_calls == 0:
             self.eval_idx += 1
-            _, calmar = self._run_evaluation()
+            _, score = self._run_evaluation()
             total_evals = self.config.timesteps // self.eval_freq
             # Target a window of 30% of total evaluations (standard in quant fincance), but never less than 1
             smoothing_window: int = max(1, round(total_evals * 0.3))
@@ -372,9 +373,9 @@ class UnifiedEvalCallback(BaseCallback):
             # Alpha of 0.5 means the new score is 50% current eval, 50% historical average.
             alpha = 2.0 / (smoothing_window + 1.0)
             if self.ema_score is None:
-                self.ema_score = calmar
+                self.ema_score = score
             else:
-                self.ema_score = (alpha * calmar) + ((1.0 - alpha) * self.ema_score)
+                self.ema_score = (alpha * score) + ((1.0 - alpha) * self.ema_score)
             if self.trial is not None:
                 # Monotonically unique step across folds
                 report_step = self.eval_step_offset + self.eval_idx
@@ -392,16 +393,19 @@ class UnifiedEvalCallback(BaseCallback):
                     self.is_pruned = True
                     return False
 
-            if calmar > self.best_calmar:
-                self.best_calmar = calmar
+            if score > self.best_score:
+                self.best_score = score
                 self._save_best_model()
                 if self.config.checkpoint:
-                    self._save_checkpoint(calmar)
+                    self._save_checkpoint(score)
 
         return True
 
     def _run_evaluation(self) -> tuple[float, float]:
-        """Runs one episode to extract both total reward and Calmar ratio."""
+        """Runs one episode; returns its total reward and selection score."""
+        # Imported here: crypto_rl.experiment imports this module
+        from crypto_rl.experiment.evaluation_utils import compute_window_baselines
+
         obs = self.eval_env.reset()
         done = False
         episode_reward = 0.0
@@ -419,8 +423,16 @@ class UnifiedEvalCallback(BaseCallback):
             unit="steps"
         )
         initial_pv = base_env.portfolio_value
-        portfolio_values = [{"step": 0, "value": float(initial_pv)}]
-        steps = 0
+        start_step = base_env.current_step
+        max_steps = base_env.max_steps
+        baselines = compute_window_baselines(
+            base_env.prices_arr,
+            start_step=start_step,
+            max_steps=max_steps,
+            asset_names=base_env.asset_names,
+            fee_rate=base_env.fee_rate,
+            budget_initial=initial_pv,
+        )
         while not done:
             action, _ = self.model.predict(obs, deterministic=True)
 
@@ -428,24 +440,20 @@ class UnifiedEvalCallback(BaseCallback):
             done = done_array[0]
             info = infos[0]
             episode_reward += float(reward[0])
-            steps += 1
             pbar.update(1)
-            # Dodge the VecEnv auto-reset bug
-            if done:
-                # On the terminal step, grab the true final PV from info before the reset wiped it
-                current_pv = info.get("final_portfolio_value", base_env.portfolio_value)
-            else:
-                # Otherwise, grab the live PV safely
-                current_pv = base_env.portfolio_value
-            portfolio_values.append(
-                {
-                    "step": steps,
-                    "value": float(current_pv),
-                }
-            )
         pbar.close()
-        calmar = calculate_calmar_ratio(portfolio_values, interval)
-        return episode_reward, calmar
+        # The VecEnv auto-resets on the terminal step, so read the episode's
+        # results from the terminal info rather than from the env
+        metrics = episode_metrics(
+            initial_pv=initial_pv,
+            final_pv=info["final_portfolio_value"],
+            bar_pvs=info["portfolio_values"],
+            equal_weight_final_pv=baselines["equal_weight"],
+            turnover=info["final_turnover"],
+            n_bars=max_steps - start_step,
+            drawdown_coef=self.config.objective_drawdown_coef,
+        )
+        return episode_reward, metrics["score"]
 
     def _save_best_model(self) -> None:
         """Overwrite the single best-on-validation model and its obs stats."""
@@ -454,12 +462,12 @@ class UnifiedEvalCallback(BaseCallback):
         self.best_model_path = path
         self.best_obs_rms = copy.deepcopy(self.eval_env.obs_rms)
 
-    def _save_checkpoint(self, calmar: float) -> None:
+    def _save_checkpoint(self, score: float) -> None:
         """Saves the model with fold metadata and trims old checkpoints."""
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         ckpt_path = (
             self.checkpoint_dir
-            / f"fold_{self.fold_idx}_step_{self.num_timesteps}_calmar_{calmar:.4f}_{timestamp}.zip"
+            / f"fold_{self.fold_idx}_step_{self.num_timesteps}_score_{score:.4f}_{timestamp}.zip"
         )
         self.model.save(str(ckpt_path))
 
