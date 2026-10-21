@@ -229,6 +229,33 @@ Realistic MEXC spot taker fee (0.1%). Applied to both buy and sell legs
 of every trade. Fees reduce PV directly, so the log-return reward already
 accounts for them.
 
+#### Evidence: rule-based reference strategies (2026-10-21)
+
+`scripts/reference_strategies.py` (ROADMAP P2-2) runs simple rules through the
+same env as the agent, on the 28-day validation slice of the reward ablation
+(2025-12-07 → 2026-01-04, 9 assets). `momentum_Xh` holds each asset with a
+positive X-hour return in a fixed 10% sleeve. `basket_trend_Xh` holds the
+equal-weight basket while it is above its X-hour moving average. Over the same
+bars, the equal-weight basket returned +4.7% and BTC +3.3%. Return, with the
+excess over equal weight in brackets:
+
+| Strategy | 15-min decisions, fee 0.1% | Same, fee 0 | 60-min decisions, fee 0.1% | Fills (15 min) |
+| --- | --- | --- | --- | --- |
+| `momentum_1h` | −40.8% | +6.3% (+1.4 pp) | −23.5% | 5835 |
+| `momentum_24h` | −19.2% | −9.6% (−14.5 pp) | −18.6% | 1127 |
+| `basket_trend_1h` | −48.6% | +9.1% (+4.2 pp) | −20.6% | 6768 |
+| `basket_trend_24h` | −17.2% | −6.5% (−11.4 pp) | −16.8% | 1090 |
+
+- Before fees, the 1-hour signals beat equal weight by 1–4 pp over 28 days.
+  The 24-hour signals lose to it even before fees: the window was choppy.
+- With the 0.1% fee, every variant loses 17–49%. That gross edge needs
+  thousands of fills, which cost far more than the edge earns. Deciding hourly
+  halves the fees but still loses.
+- So on this window, simple trend rules have no edge after fees at these
+  horizons. The agent has to find something these rules miss, or trade
+  much less. One 28-day window is a single draw, so check further folds
+  (P2-3) before drawing firm conclusions.
+
 #### `--budget-initial 100.0`
 
 Starting cash in normalised USD units. The nominal value does not affect

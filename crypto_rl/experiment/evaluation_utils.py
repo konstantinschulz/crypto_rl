@@ -175,3 +175,27 @@ def log_baselines(
             f"| Bot excess: {excess[name] * 100:+8.2f} pp",
             trial,
         )
+
+
+def log_reference_strategies(
+    logger: LoggerBase,
+    trial: optuna.trial.Trial | None,
+    title: str,
+    bot_final_value: float,
+    references: dict[str, dict[str, Any]],
+    budget_initial: float,
+) -> None:
+    """Log each rule-based strategy's return, excess and costs (ROADMAP P2-2)."""
+    logger.log(title, trial)
+    for name, ref in references.items():
+        value = ref["final_portfolio_value"]
+        ret = (value - budget_initial) / budget_initial
+        logger.log(
+            f"  {name:<16} | Return: {ret * 100:+8.2f}% "
+            f"| vs equal_weight: {ref['excess_returns']['equal_weight'] * 100:+8.2f} pp "
+            f"| Fills: {ref['trades_count']:<6} "
+            f"| Fees: {ref['fees_paid'] / budget_initial * 100:6.2f}% "
+            f"| Exposure: {ref['mean_exposure']:.2f} "
+            f"| Bot excess: {(bot_final_value - value) / budget_initial * 100:+8.2f} pp",
+            trial,
+        )

@@ -76,3 +76,14 @@ python scripts/reward_ablation.py summarize
 ```
 
 Arms: `lr` (`log_return`), `elr` (`excess_log_return`), and `lr_dd` / `elr_dd` (the same with `drawdown_penalty_coef` 0.5). The module docstring has the command for running all arms in parallel. The 2026-10-20 results are summarized in `HYPERPARAMETER_RATIONALE.md`.
+
+---
+
+### `reference_strategies.py`
+Scores the rule-based reference strategies (ROADMAP P2-2, `crypto_rl/experiment/reference_strategies.py`) on the full validation slice of the reward ablation, next to the passive baselines over the same bars. They run through the same env as the agent, with the same action space, fees, rebalance band and decision interval. No training is involved, and the test fold is never touched. Results go to `logs/reference_strategies/`. The final test report of every run (`main.py`) also logs these strategies over the test window.
+
+```bash
+python scripts/reward_ablation.py build       # the caches, once (shared with the ablation)
+python scripts/reference_strategies.py        # with the configured fee
+python scripts/reference_strategies.py --fee-rate 0 --decision-interval 60
+```

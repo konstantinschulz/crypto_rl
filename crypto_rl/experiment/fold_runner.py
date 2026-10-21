@@ -50,6 +50,11 @@ from crypto_rl.experiment.evaluation_utils import (
     compute_window_baselines,
     excess_returns,
     log_baselines,
+    log_reference_strategies,
+)
+from crypto_rl.experiment.reference_strategies import (
+    RuleBasedStrategy,
+    default_strategies,
 )
 
 
@@ -87,7 +92,7 @@ def _eval_env_args(
 
 
 def _run_episode(
-    model: PPO,
+    model: PPO | RuleBasedStrategy,
     env_args: dict[str, Any],
     obs_rms: Any,
     dummy_vec_env_args: dict[str, Any],
@@ -100,6 +105,8 @@ def _run_episode(
     vec_env.obs_rms = obs_rms
     obs = vec_env.reset()
     base_env: MinimalCryptoEnv = vec_env.venv.envs[0].unwrapped
+    if isinstance(model, RuleBasedStrategy):
+        model.attach(base_env)  # it reads raw prices instead of the observation
     # The VecEnv auto-resets on the terminal step, which points the env at a
     # fresh log file, so record this episode's path now.
     action_log_path = (
@@ -173,6 +180,36 @@ def _run_episode(
     }
     vec_env.close()
     return result
+
+
+def run_reference_strategies(
+    env_args: dict[str, Any],
+    strategies: dict[str, RuleBasedStrategy] | None = None,
+    show_progress: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Run each rule-based strategy over the window of ``env_args`` (ROADMAP P2-2).
+
+    Same env, fees and window as the agent's episode. Each result is
+    `_run_episode`'s, plus ``mean_exposure``: the mean invested fraction of PV
+    at the decisions.
+    """
+    if strategies is None:
+        strategies = default_strategies()
+    # The strategies ignore the observation, so it is left unnormalized
+    vec_env_args = {"norm_obs": False, "norm_reward": False, "training": False}
+    results = {}
+    for name, strategy in strategies.items():
+        result = _run_episode(
+            strategy,
+            env_args,
+            None,
+            vec_env_args,
+            desc=name,
+            show_progress=show_progress,
+        )
+        result["mean_exposure"] = float(np.mean(strategy.exposures))
+        results[name] = result
+    return results
 
 
 def run_folds(
@@ -556,19 +593,27 @@ def run_folds(
             test_arrays = compute_static_obs_from_long_df(
                 None, config, cache_prefix=prefixes.test
             )
+            test_env_args = _eval_env_args(
+                test_arrays,
+                run_id=run_id,
+                is_fast_eval=False,
+                config=dataclasses.replace(env_config, disable_logging=False),
+                logger=logger,
+            )
             result = _run_episode(
                 eval_model,
-                _eval_env_args(
-                    test_arrays,
-                    run_id=run_id,
-                    is_fast_eval=False,
-                    config=dataclasses.replace(env_config, disable_logging=False),
-                    logger=logger,
-                ),
+                test_env_args,
                 eval_obs_rms,
                 dummy_vec_env_args,
                 desc=f"Testing Fold {fold_idx + 1}",
                 show_progress=True,
+            )
+            # Rule-based references over the same window; no action logs
+            result["reference_strategies"] = run_reference_strategies(
+                {
+                    **test_env_args,
+                    "config": dataclasses.replace(env_config, disable_logging=True),
+                }
             )
             reported_arrays = test_arrays
             reported_split = "test"
@@ -606,6 +651,16 @@ def run_folds(
                 "fees_paid": float(eval_final_fees_paid),
                 "baselines": result["baselines"],
                 "excess_returns": result["excess_returns"],
+                "reference_strategies": {
+                    name: {
+                        "final_portfolio_value": ref["final_portfolio_value"],
+                        "excess_returns": ref["excess_returns"],
+                        "trades": ref["trades_count"],
+                        "fees_paid": ref["fees_paid"],
+                        "mean_exposure": ref["mean_exposure"],
+                    }
+                    for name, ref in result.get("reference_strategies", {}).items()
+                },
                 "fill_counts": result["fill_counts"],
                 "traded_coins": result["traded_coins"],
                 "portfolio_values": result["env_portfolio_values"],
@@ -639,6 +694,16 @@ def run_folds(
             excess=result["excess_returns"],
             budget_initial=eval_initial_portfolio_value,
         )
+        if "reference_strategies" in result:
+            log_reference_strategies(
+                logger,
+                trial,
+                f"Reference strategies ({reported_split}, same {result['bars']} bars, "
+                "same fees):",
+                bot_final_value=eval_final_portfolio_value,
+                references=result["reference_strategies"],
+                budget_initial=eval_initial_portfolio_value,
+            )
 
         last_model = eval_model
         last_eval_reward_totals = result["reward_totals"]
