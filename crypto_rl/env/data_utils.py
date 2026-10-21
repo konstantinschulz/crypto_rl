@@ -16,7 +16,7 @@ from crypto_rl.env.feature_utils import precalculate_static_obs
 
 # Bump whenever the static features or the pivot logic change, so that stale
 # memmaps and split files are never picked up under the same name.
-FEATURE_VERSION = 1
+FEATURE_VERSION = 2
 
 
 @dataclass(frozen=True)

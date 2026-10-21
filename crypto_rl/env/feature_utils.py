@@ -13,6 +13,10 @@ MACRO_IDX = {
     "btc_ranging": 3,
     "btc_bear": 4,
 }
+# The data is 1-minute bars, so the BTC regime lags are counted in minutes.
+REGIME_LAG_24H = 1440
+REGIME_LAG_7D = 7 * 1440
+REGIME_THRESHOLD = 0.005
 
 
 def add_volatility_normalized_features(
@@ -218,20 +222,8 @@ def precalculate_static_obs(env) -> None:
     W_60m = min(60, T)
     btc_corr_60m = _rolling_corr(prices, btc_prices[:, None], W_60m)
 
-    # 24h and 7d % change for BTC regime
-    btc_mom_24h = _pct_change_lag(btc_prices, min(24, T))
-    btc_mom_7d  = _pct_change_lag(btc_prices, min(168, T))
+    btc_regime_1hot = btc_regime_one_hot(btc_prices)
     del btc_prices
-    bull_mask    = (btc_mom_24h > 0.005)  & (btc_mom_7d > 0.005)
-    bear_mask    = (btc_mom_24h < -0.005) & (btc_mom_7d < -0.005)
-    ranging_mask = ~(bull_mask | bear_mask)
-    del btc_mom_24h, btc_mom_7d
-
-    btc_regime_1hot = np.zeros((T, 3), dtype=np.float32)
-    btc_regime_1hot[bull_mask, 0] = 1.0
-    btc_regime_1hot[ranging_mask, 1] = 1.0
-    btc_regime_1hot[bear_mask, 2] = 1.0
-    del bull_mask, bear_mask, ranging_mask
 
     # Relative momentum vs BTC
     rel_mom = momentum - btc_mom[:, None]
@@ -404,6 +396,24 @@ def _rolling_zscore(
     valid = (w_len >= min_periods) & (sig > 1e-8)
     safe_sig = np.where(sig > 1e-8, sig, 1.0)
     return np.where(valid, (arr32 - mu) / safe_sig, 0.0).astype(np.float32)
+
+
+def btc_regime_one_hot(btc_prices: np.ndarray) -> np.ndarray:
+    """One-hot (bull, ranging, bear) BTC regime, shape (T, 3) float32.
+
+    Bull/bear needs the 24h and the 7d change to both exceed the threshold in
+    the same direction. A lag longer than the slice yields 0, so the first
+    7 days of every slice count as ranging.
+    """
+    mom_24h = _pct_change_lag(btc_prices, REGIME_LAG_24H)
+    mom_7d = _pct_change_lag(btc_prices, REGIME_LAG_7D)
+    bull = (mom_24h > REGIME_THRESHOLD) & (mom_7d > REGIME_THRESHOLD)
+    bear = (mom_24h < -REGIME_THRESHOLD) & (mom_7d < -REGIME_THRESHOLD)
+    one_hot = np.zeros((len(btc_prices), 3), dtype=np.float32)
+    one_hot[bull, 0] = 1.0
+    one_hot[~(bull | bear), 1] = 1.0
+    one_hot[bear, 2] = 1.0
+    return one_hot
 
 
 def _pct_change_lag(arr: np.ndarray, lag: int) -> np.ndarray:
