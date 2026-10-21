@@ -112,12 +112,15 @@ def _run_episode(
     steps = 0
     info: dict = {}
     done = False
-    # Calculate exactly how many steps this evaluation will take
-    total_steps = base_env.max_steps - base_env.current_step
-    # Passive baselines over exactly the steps this episode is scored on
+    # Calculate exactly how many decision steps this evaluation will take
+    start_step = base_env.current_step
+    n_bars = base_env.max_steps - start_step
+    interval = base_env.config.decision_interval
+    total_steps = -(-n_bars // interval)
+    # Passive baselines over exactly the bars this episode is scored on
     baselines = compute_window_baselines(
         base_env.prices_arr,
-        start_step=base_env.current_step,
+        start_step=start_step,
         max_steps=base_env.max_steps,
         asset_names=base_env.asset_names,
         fee_rate=base_env.fee_rate,
@@ -155,6 +158,7 @@ def _run_episode(
         "closed_trades": info.get("total_closed_trades", 0),
         "winning_trades": info.get("winning_trades_count", 0),
         "steps": steps,
+        "bars": n_bars,
         "portfolio_values": portfolio_values,
         "realized_pnl": realized_pnl,
         "reward_totals": reward_totals,
@@ -164,7 +168,7 @@ def _run_episode(
         "env_portfolio_values": info.get(
             "portfolio_values", base_env.portfolio_values
         ),
-        "calmar": calculate_calmar_ratio(portfolio_values),
+        "calmar": calculate_calmar_ratio(portfolio_values, interval),
         "action_log_path": action_log_path,
     }
     vec_env.close()
@@ -628,7 +632,7 @@ def run_folds(
         log_baselines(
             logger,
             trial,
-            f"Baselines ({reported_split}, same {result['steps']} steps, same fees):",
+            f"Baselines ({reported_split}, same {result['bars']} bars, same fees):",
             bot_return=(eval_final_portfolio_value - eval_initial_portfolio_value)
             / eval_initial_portfolio_value,
             baselines=result["baselines"],

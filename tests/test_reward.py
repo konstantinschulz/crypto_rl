@@ -26,6 +26,9 @@ def _build_env(
     rand_prices, static, norm_vol = _make_arrays(0, n_bars, NUM_ASSETS)
     if prices is None:
         prices = rand_prices
+    # One bar per step, so these tests can check per-bar mechanics;
+    # tests/test_decision_interval.py covers longer intervals
+    config_kwargs.setdefault("decision_interval", 1)
     # parquet_path=None keeps reset() from reloading the real dataset
     config = RLConfig(
         disable_logging=True,

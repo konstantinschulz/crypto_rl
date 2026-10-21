@@ -27,8 +27,10 @@ def get_drawdown_from_portfolio_series(pv_series: np.ndarray) -> float:
     return dd.min()
 
 
-def get_sortino_from_portfolio_series(pv_series: np.ndarray) -> float:
-    """Compute the Sortino ratio from a portfolio value series."""
+def get_sortino_from_portfolio_series(
+    pv_series: np.ndarray, minutes_per_point: int = 1
+) -> float:
+    """Compute the daily Sortino ratio from a portfolio value series."""
     # Safe returns calculation (prevents division by zero when portfolio nears 0)
     denom = pv_series[:-1]
     returns = np.divide(
@@ -44,7 +46,11 @@ def get_sortino_from_portfolio_series(pv_series: np.ndarray) -> float:
         # 2. Check for zero variance (Invalid value encountered in divide)
         std_dev = np.std(returns, ddof=1)
         if std_dev >= 1e-8:
-            sortino = returns.mean() / (downside.std() + 1e-8) * np.sqrt(1440)
+            sortino = (
+                returns.mean()
+                / (downside.std() + 1e-8)
+                * np.sqrt(1440 / minutes_per_point)
+            )
     return sortino
 
 
@@ -54,8 +60,12 @@ def report_action_log(
     """Log finance metrics computed from one Parquet action log."""
     df = pd.read_parquet(log_path)
     pv_series = df["portfolio"].to_numpy()
-    calmar = get_calmar_from_portfolio_series(pv_series)
-    sortino = get_sortino_from_portfolio_series(pv_series)
+    # One row per decision; "step" is in bars, so its spacing is the
+    # decision interval (ROADMAP P2-1). Older logs have one row per bar.
+    steps = df["step"].to_numpy()
+    minutes_per_point = max(1, int(np.median(np.diff(steps)))) if len(steps) > 1 else 1
+    calmar = get_calmar_from_portfolio_series(pv_series, minutes_per_point)
+    sortino = get_sortino_from_portfolio_series(pv_series, minutes_per_point)
     dd = get_drawdown_from_portfolio_series(pv_series)
     logger.log(f"Action log: {log_path}", trial)
     logger.log(
@@ -130,7 +140,9 @@ def eval_report(
                 trial,
             )
             continue
-        logger.log(f"Fold {fold_result.get('fold')} ({fold_result.get('split')}):", trial)
+        logger.log(
+            f"Fold {fold_result.get('fold')} ({fold_result.get('split')}):", trial
+        )
         report_action_log(logger, log_path, trial)
 
 

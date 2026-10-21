@@ -1,7 +1,9 @@
 import numpy as np
 
 
-def calculate_calmar_ratio(portfolio_values: list[dict]) -> float:
+def calculate_calmar_ratio(
+    portfolio_values: list[dict], minutes_per_point: int = 1
+) -> float:
     """
     Calculate the Calmar ratio for a given series of portfolio values.
 
@@ -9,6 +11,9 @@ def calculate_calmar_ratio(portfolio_values: list[dict]) -> float:
     ----------
     portfolio_values : list[dict]
         A list of dictionaries containing portfolio values at each timestep.
+    minutes_per_point : int
+        Minutes between consecutive values, e.g. ``config.decision_interval``
+        for a series recorded once per env step. Used to annualize.
 
     Returns
     -------
@@ -16,17 +21,19 @@ def calculate_calmar_ratio(portfolio_values: list[dict]) -> float:
         The Calmar ratio.
     """
     pv_series = np.array([v["value"] for v in portfolio_values])
-    return get_calmar_from_portfolio_series(pv_series)
+    return get_calmar_from_portfolio_series(pv_series, minutes_per_point)
 
 
-def get_calmar_from_portfolio_series(pv_series: np.ndarray) -> float:
+def get_calmar_from_portfolio_series(
+    pv_series: np.ndarray, minutes_per_point: int = 1
+) -> float:
     """
     Calculate a Return-Scaled Calmar Ratio (Return^2 / Drawdown).
     """
     if len(pv_series) < 2:
         return 0.0
     total_return = (pv_series[-1] - pv_series[0]) / pv_series[0]
-    annualized_return = total_return * (525600 / len(pv_series))
+    annualized_return = total_return * (525600 / (len(pv_series) * minutes_per_point))
     running_max = np.maximum.accumulate(pv_series)
     drawdowns = (running_max - pv_series) / running_max
     max_drawdown = np.max(drawdowns)

@@ -408,8 +408,9 @@ class UnifiedEvalCallback(BaseCallback):
         # Access the unwrapped base environment for fast property lookups
         # (bypassing slow VecEnv get_attr IPC calls)
         base_env = self.eval_env.venv.envs[0].unwrapped
-        # Calculate exactly how many steps this evaluation will take
-        total_eval_steps = base_env.max_steps - base_env.current_step
+        # Calculate exactly how many decision steps this evaluation will take
+        interval = base_env.config.decision_interval
+        total_eval_steps = -(-(base_env.max_steps - base_env.current_step) // interval)
         # Disable the progress bar if we are running headless background Optuna workers
         pbar: tqdm = tqdm(
             total=total_eval_steps, 
@@ -443,7 +444,7 @@ class UnifiedEvalCallback(BaseCallback):
                 }
             )
         pbar.close()
-        calmar = calculate_calmar_ratio(portfolio_values)
+        calmar = calculate_calmar_ratio(portfolio_values, interval)
         return episode_reward, calmar
 
     def _save_best_model(self) -> None:

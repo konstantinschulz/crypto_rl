@@ -60,9 +60,9 @@ class SplitLayoutTest(unittest.TestCase):
         (split,) = make_walk_forward_splits(TIMES, 1, 0.2, 0.1)
         self._check_fold(split)
         b = _bounds(split)
-        n = lambda name: np.searchsorted(TIMES, b[name][1]) - np.searchsorted(
-            TIMES, b[name][0]
-        ) + 1
+        n = lambda name: (
+            np.searchsorted(TIMES, b[name][1]) - np.searchsorted(TIMES, b[name][0]) + 1
+        )
         self.assertEqual(n("test"), 2000)
         self.assertEqual(n("val"), 1000)
         self.assertEqual(n("train"), 7000)
@@ -110,9 +110,7 @@ class SplitLayoutTest(unittest.TestCase):
         config = RLConfig()
         p = fold_cache_prefixes(config, 9, 0, data_range, split)
         self.assertEqual(len({p.train, p.val, p.test}), 3)
-        other = fold_cache_prefixes(
-            RLConfig(val_fraction=0.2), 9, 0, data_range, split
-        )
+        other = fold_cache_prefixes(RLConfig(val_fraction=0.2), 9, 0, data_range, split)
         self.assertTrue(set(p).isdisjoint(set(other)))
         self.assertNotEqual(
             split_cache_name(config, data_range),
@@ -223,9 +221,13 @@ class RunEpisodeTest(unittest.TestCase):
             )
 
         # The full episode covers the whole fold; the fast one is a shorter slice
-        self.assertEqual(results[False]["steps"], 12000 - config.window_size)
-        self.assertLess(results[True]["steps"], results[False]["steps"])
-        self.assertLessEqual(results[True]["steps"], config.eval_length)
+        n_bars = 12000 - config.window_size
+        self.assertEqual(results[False]["bars"], n_bars)
+        self.assertEqual(
+            results[False]["steps"], -(-n_bars // config.decision_interval)
+        )
+        self.assertLess(results[True]["bars"], results[False]["bars"])
+        self.assertLessEqual(results[True]["bars"], config.eval_length)
         for key in ("calmar", "per_asset_stats", "final_portfolio_value"):
             self.assertIn(key, results[False])
 

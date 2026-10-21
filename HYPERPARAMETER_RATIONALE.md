@@ -48,6 +48,34 @@ position, even a position smaller than the band. With a band larger than
 `--weight-step`, the smallest bins cannot be reached from 0, so keep it below
 the step.
 
+#### `--decision-interval 15`
+
+The agent decides every 15 one-minute bars (ROADMAP P2-1). Each env step
+rebalances once at the last closed price, then holds the book for 15 bars;
+the last step of an episode can be shorter. The observation is unchanged: it
+is still built from 1-minute bars up to the last closed one, so the agent
+sees the same fine-grained features but acts less often.
+
+At 1-minute decisions the median absolute bar move was about 1/5 of the
+round-trip fee, so the consequences of a single decision were mostly noise
+and fees, and credit had to be assigned over hundreds of steps. At 15
+minutes each decision moves the book over a span where price moves are
+larger relative to fees, the discount horizon covers about a day in 100
+steps, and each PPO step covers 15× more data.
+
+Inside the interval, PV, the drawdown term and the benchmark are still
+tracked bar by bar. The step reward is the sum of the 15 per-bar rewards,
+which equals the reward of 15 one-minute steps holding the same book
+(`tests/test_decision_interval.py`). `portfolio_values` keeps one mark per
+minute.
+
+Units: `--timesteps`, `--n-steps`, `--eval-freq`, `--batch-size` and
+`--gamma` count decisions. `episode_length` (config only), `--eval-length`,
+`--window-size` and `--turnover-penalty-steps-threshold` stay in one-minute
+bars, so the episodes and eval windows cover the same time as before (a
+7-day episode is 672 decisions). Calmar annualizes by elapsed minutes.
+`--decision-interval 1` restores 1-minute decisions.
+
 ---
 
 ### Reward Function
@@ -82,7 +110,7 @@ Both default to 0 (off).
   (recoveries are not rewarded).
 - `--turnover-penalty` with `--turnover-penalty-steps-threshold` charges
   `turnover_penalty × closed weight` for sells within the threshold number of
-  steps of opening. Fees already penalize turnover through PV.
+  one-minute bars of opening. Fees already penalize turnover through PV.
 
 #### Evidence: reward ablation (2026-10-20)
 
@@ -132,15 +160,16 @@ SAC because:
 2. On-policy updates are safer for non-stationary financial data than SAC's
    replay buffer, which can mix stale and fresh market regimes.
 
-#### `--gamma 0.992`
+#### `--gamma 0.99`
 
-Discount factor controlling the effective planning horizon. At γ = 0.99 the
-effective horizon is approximately 1/(1−γ) = 100 steps. At 1-min bars, this
-corresponds to ~100 minutes of future reward lookahead — long enough to capture
-meaningful price moves but short enough to remain numerically stable. A higher
-gamma (0.999) would extend the horizon to ~1,000 steps but risks credit
-assignment problems with sparse rewards. *The Optuna best-params found
-γ = 0.992 (≈ 125-step horizon).*
+Discount factor per **decision** step. The effective horizon is about
+1/(1−γ) = 100 steps, which at `--decision-interval 15` is 1,500 minutes,
+about 25 hours of lookahead: long enough to value holding a position through
+the intraday moves that have to pay for its round-trip fee. At 1-minute
+decisions the same γ would only look ~100 minutes ahead, and the old
+γ = 0.992 (Optuna, 1-minute steps, with the leaky observation and linear
+critic) only ~125 minutes. If you change `--decision-interval`, scale γ so
+that `interval / (1 − γ)` stays near a day, e.g. γ ≈ 0.96 at 60 minutes.
 
 #### `--learning-rate 0.00002`
 
@@ -252,7 +281,10 @@ The fraction of the dataset that is used for validation. Each fold is split into
 
 Total training steps. 4.5M was chosen as the minimum required for the policy to
 learn meaningful patterns from the 18M-row dataset; preliminary runs with fewer
-steps showed insufficient convergence.
+steps showed insufficient convergence. That was at 1-minute decisions. With
+`--decision-interval 15` a step covers 15 bars, so 4.5M steps cover about 67M
+bars, many passes over the ~1.6M training bars per asset. Fewer steps may be
+enough, and watch the validation curve for overfitting.
 
 #### `--skip-multi-seed-eval`
 

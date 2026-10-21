@@ -95,6 +95,12 @@ Examples:
         help="Seed for data subset selection (default: None = random / no seed)",
     )
     parser.add_argument(
+        "--decision-interval",
+        type=int,
+        default=default_config.decision_interval,
+        help=f"One-minute bars per agent decision; the book is held between decisions while the observation keeps its 1-minute features. --timesteps, --n-steps, --eval-freq and --gamma count decisions; --episode-length, --eval-length and --window-size stay in bars (default: {default_config.decision_interval})",
+    )
+    parser.add_argument(
         "--drawdown-penalty-coef",
         type=float,
         default=default_config.drawdown_penalty_coef,
@@ -122,7 +128,7 @@ Examples:
         "--eval-length",
         type=int,
         default=default_config.eval_length,
-        help=f"Length of evaluation episodes in steps (default: {default_config.eval_length}). This is the number of steps to run for each evaluation episode, which is used to calculate the Calmar ratio and other metrics. It should be long enough to capture meaningful performance, but not so long that it slows down the training process.",
+        help=f"Length of evaluation episodes in one-minute bars (default: {default_config.eval_length}). This is the length of each fast evaluation episode, which is used to calculate the Calmar ratio and other metrics. It should be long enough to capture meaningful performance, but not so long that it slows down the training process.",
     )
     parser.add_argument(
         "--fee-rate",
@@ -134,7 +140,7 @@ Examples:
         "--gamma",
         type=float,
         default=default_config.gamma,
-        help="Discount factor for PPO model",
+        help="Discount factor for PPO model, per decision step (see --decision-interval)",
     )
     parser.add_argument(
         "--learning-rate",
@@ -233,13 +239,13 @@ Examples:
         "--turnover-penalty",
         type=float,
         default=default_config.turnover_penalty,
-        help=f"Optional shaping: penalty per unit of portfolio weight closed within --turnover-penalty-steps-threshold steps of opening (default {default_config.turnover_penalty} = off). Fees already penalize turnover through the log-return reward.",
+        help=f"Optional shaping: penalty per unit of portfolio weight closed within --turnover-penalty-steps-threshold bars of opening (default {default_config.turnover_penalty} = off). Fees already penalize turnover through the log-return reward.",
     )
     parser.add_argument(
         "--turnover-penalty-steps-threshold",
         type=int,
         default=default_config.turnover_penalty_steps_threshold,
-        help=f"Number of steps below which a closed position will incur a turnover penalty (default: {default_config.turnover_penalty_steps_threshold})",
+        help=f"Number of one-minute bars below which a closed position will incur a turnover penalty (default: {default_config.turnover_penalty_steps_threshold})",
     )
     parser.add_argument(
         "--weight-step",

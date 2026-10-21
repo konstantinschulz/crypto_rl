@@ -17,6 +17,11 @@ class RLConfig:
     dashboard_freq: int = 500  # Fast: Write JSON state
     data_cache_dir: str = os.path.join(os.path.abspath("data"), "memmap_cache")
     data_seed: int | None = 42
+    # One-minute bars per agent decision (ROADMAP P2-1). The observation still
+    # uses 1-minute features; the book is held between decisions. Env and PPO
+    # steps (timesteps, n_steps, eval_freq, gamma) count decisions, while
+    # episode_length, eval_length and window_size stay in bars.
+    decision_interval: int = 15
     disable_logging: bool = False
     # Optional reward shaping, off by default (ROADMAP P1-1)
     drawdown_penalty_coef: float = 0.0
@@ -28,6 +33,7 @@ class RLConfig:
     # Evaluate a fixed, deterministic 2-week slice; 14 days * 1440 minutes = 20,160 steps
     eval_length: int = 20160
     fee_rate: float = 0.001
+    # Per decision: at 15-minute decisions, 1 / (1 - 0.99) = 100 steps ≈ 25 h
     gamma: float = 0.99
     learning_rate: float = 1e-4
     logs_dir: str = os.path.abspath("logs")

@@ -91,6 +91,8 @@ def base_config(**overrides) -> RLConfig:
         max_asset_allocation=0.20,
         fee_rate=0.001,
         window_size=240,
+        # The 2026-10-20 ablation ran at 1-minute decisions, before P2-1
+        decision_interval=1,
         gamma=0.992,
         n_steps=1024,
         batch_size=128,

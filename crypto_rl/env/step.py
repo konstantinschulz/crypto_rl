@@ -83,7 +83,14 @@ def _process_sell_accounting(
 def step_env(
     env: MinimalCryptoEnv, action
 ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
-    """Execute one environment step for MinimalCryptoEnv.
+    """Execute one decision step for MinimalCryptoEnv (ROADMAP P2-1).
+
+    The action rebalances once at ``prices[t-1]``, then the book is held for
+    ``config.decision_interval`` one-minute bars, ``t`` to ``t+k-1`` (fewer
+    if the episode ends first). PV, drawdown and the benchmark are tracked
+    per bar, so the step reward is the sum of the per-bar rewards and
+    ``portfolio_values`` keeps one mark per minute.
+
     Returns:
         obs: np.ndarray - The next observation after the step.
         reward: float - The reward obtained from the step.
@@ -93,7 +100,9 @@ def step_env(
     """
     prev_portfolio_value = env.portfolio_value
     current_prices = env.prices_arr[env.current_step - 1]
-    next_prices = env.prices_arr[env.current_step]
+    # Bars held after this decision: t .. t+n_bars-1
+    n_bars = max(1, min(env.config.decision_interval, env.max_steps - env.current_step))
+    held_prices = env.prices_arr[env.current_step : env.current_step + n_bars]
 
     # --- SNAPSHOT HOLDINGS BEFORE ACTION ---
     old_holdings = np.copy(env.holdings)
@@ -133,15 +142,17 @@ def step_env(
                 env.holdings[i] = 0.0
                 env.entry_step[i] = 0
 
-    # Advance step
-    env.current_step += 1
+    # Hold the book over the interval: no trades, so cash and holdings are fixed
+    env.current_step += n_bars
     # The randomized episode boundary is a time limit, not a terminal state:
     # flag it as truncated so PPO bootstraps the value of the open book.
     truncated = env.current_step >= env.max_steps
-    current_asset_value = np.sum(env.holdings * next_prices)
-    # Mark-to-market PV. Open positions are never force-liquidated.
-    env.portfolio_value = env.cash + current_asset_value
-    env.portfolio_values.append(env.portfolio_value)
+    # Mark-to-market PV at every held bar. Open positions are never
+    # force-liquidated.
+    bar_pvs = env.cash + held_prices @ env.holdings.astype(np.float64)
+    current_asset_value = float(bar_pvs[-1] - env.cash)
+    env.portfolio_value = float(bar_pvs[-1])
+    env.portfolio_values.extend(bar_pvs.tolist())
 
     info: dict[str, Any] = {}
 
@@ -173,26 +184,31 @@ def step_env(
     # ==========================================
     # Mark-to-market: the per-step log returns sum to log(PV_T / PV_0), where
     # PV_T excludes the hypothetical exit fee. Fees paid are already inside PV.
-    env.peak_portfolio_value = max(env.peak_portfolio_value, env.portfolio_value)
+    # Drawdown is tracked bar by bar, so a dip inside the interval that
+    # recovers before its end still counts, as it would at 1-minute steps.
+    peaks = np.maximum.accumulate(np.maximum(bar_pvs, env.peak_portfolio_value))
+    env.peak_portfolio_value = float(peaks[-1])
     # Range: 0.0 (at peak) down to -1.0 (-100% loss)
-    current_drawdown = (
-        env.portfolio_value - env.peak_portfolio_value
-    ) / env.peak_portfolio_value
-    delta_drawdown = min(0.0, current_drawdown - env.previous_drawdown)
-    env.previous_drawdown = current_drawdown
+    drawdowns = (bar_pvs - peaks) / peaks
+    delta_drawdown = float(
+        np.minimum(0.0, np.diff(drawdowns, prepend=env.previous_drawdown)).sum()
+    )
+    env.previous_drawdown = float(drawdowns[-1])
 
     reward_components["log_return"] = float(
         np.log(max(env.portfolio_value, 1e-8) / max(prev_portfolio_value, 1e-8))
     )
     if env.config.reward_type == "excess_log_return":
-        # Unfloored log return of an equal-weight basket over the same bar
+        # Unfloored log return of an equal-weight basket, rebalanced every
+        # bar, summed over the held bars
+        bar_prices = env.prices_arr[env.current_step - n_bars - 1 : env.current_step]
         gross = np.divide(
-            next_prices,
-            current_prices,
-            out=np.ones_like(current_prices),
-            where=current_prices > 1e-8,
+            bar_prices[1:],
+            bar_prices[:-1],
+            out=np.ones_like(bar_prices[1:]),
+            where=bar_prices[:-1] > 1e-8,
         )
-        reward_components["benchmark"] = -float(np.log(np.mean(gross)))
+        reward_components["benchmark"] = -float(np.log(gross.mean(axis=1)).sum())
     reward_components["drawdown_penalty"] = (
         delta_drawdown * env.config.drawdown_penalty_coef
     )

@@ -44,9 +44,12 @@ class MinimalCryptoEnv(gym.Env):
     their target (a target of 0 always closes the position). Every action is
     valid, so there is no action mask.
 
+    One step is one decision: after rebalancing, the book is held for
+    ``decision_interval`` one-minute bars (ROADMAP P2-1).
+
     Reward
     ------
-    ``log(PV_t / PV_{t-1})``. Fees are paid out of PV, so they are counted
+    ``log(PV_t / PV_{t-1})`` over the step's bars. Fees are paid out of PV, so they are counted
     exactly once. Controlled by ``reward_type``:
 
     - ``"excess_log_return"`` (default) – minus the (unfloored) log return

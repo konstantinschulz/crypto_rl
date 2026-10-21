@@ -40,7 +40,7 @@ def get_base_config() -> RLConfig:
         disable_logging=True,
         net_arch_dim=256,
         n_rows=18_000_000,
-        timesteps=1_500_000,  # 3000 / 1_500_000
+        timesteps=1_200_000,  # 3000 / 1_200_000
         train_chunks=5,
         val_fraction=0.05,  # use small validation set to speed up Optuna sweeps and reserve more data for training
     )
