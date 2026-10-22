@@ -101,6 +101,12 @@ Examples:
         help=f"One-minute bars per agent decision; the book is held between decisions while the observation keeps its 1-minute features. --timesteps, --n-steps, --eval-freq and --gamma count decisions; --episode-length, --eval-length and --window-size stay in bars (default: {default_config.decision_interval})",
     )
     parser.add_argument(
+        "--device",
+        choices=["auto", "cuda", "cpu"],
+        default=default_config.device,
+        help=f"Torch device for PPO; 'auto' uses CUDA if available. Use 'cpu' when running several training processes at once (default: {default_config.device})",
+    )
+    parser.add_argument(
         "--drawdown-penalty-coef",
         type=float,
         default=default_config.drawdown_penalty_coef,

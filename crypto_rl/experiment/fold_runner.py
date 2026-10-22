@@ -7,7 +7,6 @@ preserving the original behavior.
 """
 
 import dataclasses
-import gc
 import json
 import logging
 import os
@@ -45,7 +44,11 @@ from crypto_rl.env.logging_utils import (
 )
 from crypto_rl.env.metrics import calculate_calmar_ratio, episode_metrics
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
-from crypto_rl.experiment.data_loading import load_raw_data
+from crypto_rl.experiment.data_loading import (
+    load_raw_data,
+    raw_data_lock,
+    release_freed_memory,
+)
 from crypto_rl.experiment.evaluation_utils import (
     compute_window_baselines,
     excess_returns,
@@ -278,31 +281,28 @@ def run_folds(
         fold_cache_prefixes(config, num_assets, fold_idx, data_range, split)
         for fold_idx, split in enumerate(splits)
     ]
-    needs_raw_df = any(
-        not is_cache_built(config, getattr(prefixes, name))
-        for prefixes in fold_prefixes
-        for name in cache_slices
-    )
-    if needs_raw_df:
-        logger.print_if_not_trial(
-            logging.DEBUG,
-            trial,
-            "Pre-flight: Loading raw data to build missing caches...",
-        )
-        raw_df = load_raw_data(config, logger, trial)
-        for split, prefixes in zip(splits, fold_prefixes):
-            build_fold_caches(raw_df, config, split, prefixes, cache_slices)
-        del raw_df
-        gc.collect()
-        # --- NEW: FORCE C-ALLOCATOR TO RETURN RAM TO LINUX ---
-        import ctypes
 
-        try:
-            # malloc_trim(0) forces glibc to release free memory back to the OS
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-            print(f"[PID {os.getpid()}] glibc malloc_trim executed successfully.")
-        except Exception as e:
-            pass
+    def caches_missing() -> bool:
+        return any(
+            not is_cache_built(config, getattr(prefixes, name))
+            for prefixes in fold_prefixes
+            for name in cache_slices
+        )
+
+    if caches_missing():
+        with raw_data_lock(config):
+            # Another worker may have built the caches while this one waited
+            if caches_missing():
+                logger.print_if_not_trial(
+                    logging.DEBUG,
+                    trial,
+                    "Pre-flight: Loading raw data to build missing caches...",
+                )
+                raw_df = load_raw_data(config, logger, trial)
+                for split, prefixes in zip(splits, fold_prefixes):
+                    build_fold_caches(raw_df, config, split, prefixes, cache_slices)
+                del raw_df
+                release_freed_memory()
     # =========================================================================
     # PHASE 2: EXECUTE FOLDS (TRAINING & EVALUATION)
     # =========================================================================
@@ -448,7 +448,7 @@ def run_folds(
                 eval_step_offset=eval_step_offset,
             )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = config.device
         verbose = 1 if trial is None else 0
         seed = (
             (config.data_seed + fold_idx * 100)
@@ -497,7 +497,7 @@ def run_folds(
                 logger.debug(
                     f"Resuming Fold {fold_idx + 1} from Chunk {start_chunk}/{config.train_chunks}...",
                 )
-                model = PPO.load(chunk_model_path, env=train_env)
+                model = PPO.load(chunk_model_path, env=train_env, device=device)
                 # CRITICAL: SB3 resets timesteps on load. We must restore it so
                 # your EntropyDecayCallback and UnifiedEvalCallback don't break!
                 model.num_timesteps = start_chunk * chunk_steps
@@ -515,11 +515,12 @@ def run_folds(
                 **sb3_args_common,
             )
         # 4. Setup Callbacks
-        total_training_steps = int(config.timesteps * (1.0 - config.test_fraction))
+        # Decay over the whole run; the old horizon of timesteps · (1 −
+        # test_fraction) hit the floor at 80–90% of training (ROADMAP P2-4)
         entropy_callback = EntropyDecayCallback(
             ent_coef_initial=config.ent_coef_initial,
             ent_coef_final=config.ent_coef_final,
-            total_timesteps=total_training_steps,
+            total_timesteps=config.timesteps,
             verbose=verbose,
         )
         callbacks = [entropy_callback]

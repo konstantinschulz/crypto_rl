@@ -37,13 +37,35 @@ def get_base_config() -> RLConfig:
         cv_folds=3,
         dashboard=False,
         data_seed=42,
+        # Concurrent workers time-slice the GPU: 8 CPU workers train ~1.6×
+        # faster in total than 8 CUDA workers (HYPERPARAMETER_RATIONALE.md)
+        device="cpu",
         disable_logging=True,
         net_arch_dim=256,
         n_rows=18_000_000,
         timesteps=1_200_000,  # 3000 / 1_200_000
         train_chunks=5,
         val_fraction=0.05,  # use small validation set to speed up Optuna sweeps and reserve more data for training
+        # No longer searched (ROADMAP P2-4): SB3's clip, and the rollout and
+        # env settings of scripts/run_large.sh. n_envs stays fixed so every
+        # trial uses the same compute per step.
+        batch_size=128,
+        clip_range=0.2,
+        max_asset_allocation=0.20,
+        n_envs=9,
+        n_steps=1024,
+        window_size=240,
     )
+
+
+# The ROADMAP P2-4 starting point. It is enqueued as the study's first trial,
+# so every other trial is compared against it.
+BASELINE_PARAMS = {
+    "learning_rate": 3e-4,
+    "ent_coef": 0.01,
+    "gamma": 0.99,
+    "drawdown_penalty_coef": 0.0,
+}
 
 
 def get_optuna_config(
@@ -63,33 +85,21 @@ def get_optuna_config(
             return override_params[name]
         return method(name, *s_args, **s_kwargs)
 
-    # Let Optuna overwrite specific targets
+    # The search is narrowed to what remains after P1-1 (ROADMAP P2-4): the
+    # learning rate, a constant entropy coefficient, the horizon, and the one
+    # shaping term the reward ablation showed to change behavior.
+    ent_coef = suggest("ent_coef", trial.suggest_float, 1e-3, 3e-2, log=True)
     trial_config: RLConfig = replace(
         base_config,
-        batch_size=suggest(
-            "batch_size", trial.suggest_categorical, [64, 128, 256]
-        ),  # , 512, 1024
-        clip_range=suggest("clip_range", trial.suggest_float, 0.10, 0.40),
-        ent_coef_final=suggest(
-            "ent_coef_final", trial.suggest_float, 0.0001, 0.01, log=True
+        drawdown_penalty_coef=suggest(
+            "drawdown_penalty_coef", trial.suggest_categorical, [0.0, 0.25, 0.5]
         ),
-        ent_coef_initial=suggest(
-            "ent_coef_initial", trial.suggest_float, 0.03, 0.10, log=True
-        ),
-        gamma=suggest("gamma", trial.suggest_float, 0.982, 0.995),
+        ent_coef_final=ent_coef,
+        ent_coef_initial=ent_coef,
+        # Per 15-minute decision: horizon 1 / (1 − γ) ≈ 12.5 h to 50 h
+        gamma=suggest("gamma", trial.suggest_float, 0.98, 0.995),
         learning_rate=suggest(
-            "learning_rate", trial.suggest_float, 5e-6, 5e-5, log=True
-        ),
-        max_asset_allocation=suggest(
-            # Steps of 0.05 keep it a multiple of the default weight_step
-            "max_asset_allocation", trial.suggest_float, 0.10, 0.50, step=0.05
-        ),
-        n_envs=suggest("n_envs", trial.suggest_int, 6, 12),
-        n_steps=suggest(
-            "n_steps", trial.suggest_categorical, [512, 1024, 2048]
-        ),  # 256, 2048, 4096
-        window_size=suggest(
-            "window_size", trial.suggest_categorical, [30, 60, 120, 240]
+            "learning_rate", trial.suggest_float, 5e-5, 1e-3, log=True
         ),
     )
     return trial_config
@@ -150,7 +160,7 @@ def resume_running_trials(study: optuna.Study):
         # Check if another terminal is actively processing this trial right now
         if worker_pid is not None and is_pid_alive(worker_pid):
             print(
-                f"\n[Optuna] Trial {fresh_t.number} is actively running in another terminal (PID {worker_pid}). Skipping."
+                f"[Optuna] Trial {fresh_t.number} is actively running in another terminal (PID {worker_pid}). Skipping."
             )
             continue
 
@@ -185,13 +195,15 @@ if __name__ == "__main__":
     study = optuna.create_study(
         direction="maximize",
         storage="sqlite:///optuna.db",
-        # v3: the objective is the mean validation excess log return − λ·maxDD
-        # over the folds (ROADMAP P2-3), not Calmar. v2 trials (Calmar) and v1
-        # trials (old reward and search space) are not comparable.
-        study_name="crypto_rl_v3",
+        # v4: the narrowed PPO search space of ROADMAP P2-4. Older trials are
+        # not comparable: v3 trained with the old entropy-decay horizon, v2
+        # used Calmar as the objective, and v1 used the old reward.
+        study_name="crypto_rl_v4",
         load_if_exists=True,
         pruner=optuna.pruners.MedianPruner(),
     )
+    # Run the baseline first; a no-op if a worker already enqueued or ran it
+    study.enqueue_trial(BASELINE_PARAMS, skip_if_exists=True)
     # 1. Manually resolve any interrupted trials from a previous session
     resume_running_trials(study)
     completed_statuses = (

@@ -11,7 +11,10 @@ class RLConfig:
     checkpoint: bool = True
     chunks_dir: str = os.path.join(base_run_dir, "chunks")
     clear_cache: bool = False
-    clip_range: float = 0.11
+    # PPO defaults from ROADMAP P2-4: SB3's lr 3e-4 and clip 0.2, and a
+    # constant ent_coef (initial == final). Set ent_coef_final lower for a
+    # linear decay over the whole run.
+    clip_range: float = 0.2
     # Walk-forward folds (ROADMAP P2-3). Each fold has its own train / val /
     # test slices; results are reported as mean ± spread across folds.
     cv_folds: int = 3
@@ -24,11 +27,15 @@ class RLConfig:
     # steps (timesteps, n_steps, eval_freq, gamma) count decisions, while
     # episode_length, eval_length and window_size stay in bars.
     decision_interval: int = 15
+    # Torch device for PPO: "auto" (CUDA if available), "cuda" or "cpu".
+    # CUDA is faster for one run, but CPU is faster with several concurrent
+    # workers, which time-slice the GPU (HYPERPARAMETER_RATIONALE.md).
+    device: str = "auto"
     disable_logging: bool = False
     # Optional reward shaping, off by default (ROADMAP P1-1)
     drawdown_penalty_coef: float = 0.0
-    ent_coef_final: float = 0.0005
-    ent_coef_initial: float = 0.015
+    ent_coef_final: float = 0.01
+    ent_coef_initial: float = 0.01
     # how long you want average trades to be held; 1 week of 1-minute data = 10,080 steps
     episode_length: int = 10080
     eval_freq: int | str = "auto"
@@ -37,7 +44,7 @@ class RLConfig:
     fee_rate: float = 0.001
     # Per decision: at 15-minute decisions, 1 / (1 - 0.99) = 100 steps ≈ 25 h
     gamma: float = 0.99
-    learning_rate: float = 1e-4
+    learning_rate: float = 3e-4
     logs_dir: str = os.path.abspath("logs")
     # Largest target weight per asset; the top bin of the action space
     max_asset_allocation: float = 0.25
@@ -62,7 +69,7 @@ class RLConfig:
     # the excess variant roughly halved turnover and fees.
     reward_type: str = "excess_log_return"
     skip_multi_seed_eval: bool = True
-    test_fraction: float = 0.2
+    test_fraction: float = 0.1
     timesteps: int = 25000  # 3000
     train_chunks: int = 1
     # Optional reward shaping, off by default (ROADMAP P1-1)

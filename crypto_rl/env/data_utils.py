@@ -119,12 +119,15 @@ def fold_cache_prefixes(
     """Memmap prefixes (train, val, test) for one walk-forward fold.
 
     The train slice spans the start of the data up to `split.t_train_max`; the
-    val and test slices span their own `[min, max]` ranges.
+    val and test slices span their own `[min, max]` ranges. The static features
+    depend on `window_size` (rolling volatility, momentum, z-scores, VWAP), so
+    it is part of the name.
     """
     base = (
         f"seed_{config.data_seed}_rows_{config.n_rows}_assets_{num_assets}"
         f"_folds_{config.cv_folds}_val_{config.val_fraction}"
-        f"_test_{config.test_fraction}_feat_v{FEATURE_VERSION}_fold_{fold_idx}"
+        f"_test_{config.test_fraction}_win_{config.window_size}"
+        f"_feat_v{FEATURE_VERSION}_fold_{fold_idx}"
     )
     return FoldCachePrefixes(
         train=f"{base}_train_{format_date_range(data_range[0], split.t_train_max)}",

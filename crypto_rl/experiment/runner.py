@@ -1,6 +1,4 @@
 import dataclasses
-import gc
-import json
 import logging
 import os
 import sys
@@ -13,7 +11,6 @@ import optuna
 
 from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
-from crypto_rl.env.data_utils import parquet_open_time_range, split_cache_name
 from crypto_rl.env.logging_utils import (
     LoggerBase,
     selective_logger,
@@ -22,7 +19,14 @@ from crypto_rl.env.metrics import summarize_folds
 from eval_report import eval_report
 
 from .dashboard_utils import update_dashboard_state
-from .data_loading import load_raw_data, prepare_splits
+from .data_loading import (
+    load_raw_data,
+    prepare_splits,
+    raw_data_lock,
+    read_cached_splits,
+    release_freed_memory,
+    write_cached_splits,
+)
 from .evaluation_utils import (
     BASELINE_NAMES,
     log_baselines,
@@ -139,35 +143,29 @@ def run_experiment(
             config.optuna_dir, f"optuna_trial_{trial.number}.log"
         )
     with selective_logger(log_file_name) as logger:
-        ckpt_mgr: CVCheckpointManager = CVCheckpointManager(logger)
+        ckpt_mgr: CVCheckpointManager = CVCheckpointManager(
+            logger, checkpoint_dir=config.optuna_dir
+        )
         if config.eval_freq == "auto":
             config.eval_freq = max(2000, config.timesteps // 10)
         # ── 1. Load data & create walk-forward splits ────────────────────────
-        data_range = parquet_open_time_range(config.parquet_path)
-        splits_cache = Path(config.data_cache_dir) / split_cache_name(
-            config, data_range
-        )
-        splits_cache.parent.mkdir(parents=True, exist_ok=True)
-        raw_df = None  # Default to None to save RAM
-        if splits_cache.exists():
-            with open(splits_cache, "r") as f:
-                splits = json.load(f)
+        splits = read_cached_splits(config)
+        if splits is None:
+            with raw_data_lock(config):
+                # Another worker may have written the splits while this one waited
+                splits = read_cached_splits(config)
+                if splits is None:
+                    raw_df = load_raw_data(config, logger, trial)
+                    splits = prepare_splits(raw_df, config, logger, trial)
+                    write_cached_splits(config, splits)
+                    del raw_df
+                    release_freed_memory()
+        else:
             logger.print_if_not_trial(
                 logging.DEBUG,
                 trial,
                 "1. Loaded walk-forward splits from cache.",
             )
-        else:
-            raw_df_tmp = load_raw_data(config, logger, trial)
-            splits = prepare_splits(raw_df_tmp, config, logger, trial)
-            # Save splits atomically for the next workers
-            tmp_json = splits_cache.with_suffix(".tmp")
-            with open(tmp_json, "w") as f:
-                json.dump(splits, f)
-            tmp_json.rename(splits_cache)
-            # DESTROY THE CALLER REFERENCE BEFORE LAUNCHING RUN_FOLDS
-            del raw_df_tmp
-            gc.collect()
         n_splits = len(splits)
         # ── 2. Set up run directory ──────────────────────────────────────────
         run_id = datetime.now(UTC).strftime("run-%Y%m%d-%H%M%S-minimal")

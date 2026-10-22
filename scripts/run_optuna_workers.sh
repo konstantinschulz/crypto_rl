@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Usage: ./scripts/run_optuna_workers.sh [NUM_WORKERS] [OPTUNA_ARGS...]
-# Example: ./scripts/run_optuna_workers.sh 4 --n-trials 20
+# Example: ./scripts/run_optuna_workers.sh 8 --n-trials 20
+#
+# Workers train on CPU (optuna_search.py). Measured 2026-10-22 on the
+# i7-12800H: total throughput keeps rising up to 8 workers (2,262 steps/s vs
+# 1,529 with 4), and 8 workers peak at ~7 GB RAM (~0.8 GB private each plus
+# the shared memmap caches). Use 6 or fewer if you need more RAM headroom.
 
-NUM_WORKERS=${1:-4}  # Default to 4 workers if not specified
+NUM_WORKERS=${1:-8}  # Default to 8 workers if not specified
 shift 1 2>/dev/null || true
 
 PIDS=()
@@ -50,7 +55,7 @@ fi
 echo "Starting $NUM_WORKERS parallel Optuna workers with stagger..."
 
 for i in $(seq 1 "$NUM_WORKERS"); do
-    python scripts/optuna_search.py "$@" &
+    ./.conda/bin/python scripts/optuna_search.py "$@" &
     PID=$!
     PIDS+=("$PID")
     echo " -> Worker $i launched (PID $PID)"

@@ -171,33 +171,38 @@ decisions the same γ would only look ~100 minutes ahead, and the old
 critic) only ~125 minutes. If you change `--decision-interval`, scale γ so
 that `interval / (1 − γ)` stays near a day, e.g. γ ≈ 0.96 at 60 minutes.
 
-#### `--learning-rate 0.00002`
+#### `--learning-rate 0.0003`
 
-Conservative learning rate (1e-5). The low rate reflects the noisy,
-non-stationary nature of financial time-series: large gradient steps risk
-catastrophic forgetting of previously learned patterns. The Optuna best-params
-suggested 2e-5; the current value is conservative relative to the SB3 PPO default (3e-4).
+The SB3 PPO default, chosen as the starting point of the re-tune (ROADMAP
+P2-4). The earlier 2e-5 came from Optuna studies that were optimized on
+training data, with a leaky observation and a linear critic. At that rate PPO
+learns next to nothing in a few hundred thousand steps; the 2026-10-20 reward
+ablation used 3e-4 for that reason, and its policies were still changing when
+training stopped. The Optuna study searches 5e-5 to 1e-3 (log scale) around it.
 
-#### `--clip-range 0.32`
+#### `--clip-range 0.2`
 
-PPO's trust-region clipping parameter ε. At 0.32 this allows moderately large policy updates per
-iteration while staying within the PPO stability bound. A typical ε of 0.2 is
-the SB3 default; 0.32 gives slightly more aggressive updates per rollout.
+PPO's trust-region clipping parameter ε, at the SB3 default. The earlier 0.32
+(and 0.11 as a `config.py` default) came from the discarded Optuna studies.
+Clip is no longer searched: with the learning rate searched, the two mostly
+trade off against each other, and 0.2 is the well-tested middle.
 
 #### `--batch-size 128`
 
 Minibatch size for each gradient update within a PPO epoch. The rollout buffer
-holds `n_steps × n_envs = 1024 × 8 = 8,192` transitions; these are divided into
-`8,192 / 128 = 64` minibatches per epoch. A smaller batch would
+holds `n_steps × n_envs = 1024 × 9 = 9,216` transitions; these are divided into
+`9,216 / 128 = 72` minibatches per epoch. A smaller batch would
 introduce more gradient noise, which can act as a regulariser in high-dimensional
-financial observation spaces. Confirmed by Optuna.
+financial observation spaces. Not searched since ROADMAP P2-4; the earlier
+"confirmed by Optuna" came from the discarded studies.
 
 #### `--n-steps 1024`
 
 Number of environment steps collected per environment before a PPO update.
-Together with `n_envs = 8`, each update uses 8,192 total transitions. Shorter
+Together with `n_envs = 9`, each update uses 9,216 total transitions. Shorter
 rollouts (e.g., 256) would mean more frequent policy updates, improving
-responsiveness to non-stationary data. Confirmed by Optuna as optimal.
+responsiveness to non-stationary data. At 15-minute decisions, 1,024 steps
+cover about 10.7 days per env. Not searched since ROADMAP P2-4.
 
 #### `--n-envs 9`
 
@@ -212,12 +217,82 @@ Width of the hidden layers in the policy (`pi`) and value (`vf`) networks of the
 
 The value network is the critic that estimates state values for the advantage calculation. Before the `vf` key fix it was built from the SAC key `qf`, which SB3 ignores for PPO, so the critic was a single linear layer with no hidden layers. Results from before the fix, including all Optuna runs (which used 128 dimensions), were produced with that linear critic and are not comparable to results from the current architecture.
 
-#### `--ent-coef-initial 0.047` and `--ent-coef-final 0.0004`
+#### `--ent-coef-initial 0.01` and `--ent-coef-final 0.01`
 
-Entropy coefficient schedule, decayed linearly over the
-training run via `EntropyDecayCallback`. High initial entropy encourages broad
-exploration of the action space early in training; the low final value forces
-convergence to a near-deterministic policy. Confirmed by Optuna.
+A constant entropy coefficient of 0.01 (ROADMAP P2-4). `EntropyDecayCallback`
+decays the coefficient linearly from the initial to the final value over
+`--timesteps`, so equal values mean no decay. For a gentler decay, set
+`--ent-coef-final` below the initial value, e.g. 0.01 → 0.003.
+
+The old schedule, 0.047 → 0.0004, had two problems:
+
+- **The floor was too low.** At 4e-4 the entropy bonus is negligible next to
+  the normalized reward, which encouraged collapse into a near-deterministic
+  "buy everything and hold" policy.
+- **The floor came too early.** The decay targeted `timesteps · (1 −
+  test_fraction)`, so it hit the floor at 80–90% of training. It now spans the
+  whole run.
+
+For scale: with 9 assets and 5 weight bins the policy's maximum entropy is
+9 · ln 5 ≈ 14.5 nats, so 0.01 is worth at most about 0.15 per step against a
+reward that `VecNormalize` scales to roughly unit variance.
+
+#### Optuna search space (`scripts/optuna_search.py`, study `crypto_rl_v4`)
+
+The study is narrowed to the hyperparameters that remain after P1-1, and its
+first trial is the baseline above (lr 3e-4, ent 0.01, γ 0.99, no drawdown term):
+
+| Parameter | Range |
+| --- | --- |
+| `learning_rate` | 5e-5 – 1e-3, log |
+| `ent_coef` (constant: initial = final) | 1e-3 – 3e-2, log |
+| `gamma` | 0.98 – 0.995 (12.5 h – 50 h at 15-minute decisions) |
+| `drawdown_penalty_coef` | {0, 0.25, 0.5} |
+
+The drawdown term is the only shaping term that the reward ablation showed to
+change behavior, which is why it is searched. Fixed at the `run_large.sh`
+values: clip 0.2, batch 128, `n_steps` 1024, `n_envs` 9, `window_size` 240,
+`max_asset_allocation` 0.20. `n_envs` used to be searched, but it changes the
+compute per step, so trials weren't comparable at equal timesteps. The other
+parameters are env or rollout settings, not PPO tuning. If the study
+consistently pushes a parameter to the edge of its range, widen the range
+rather than adding new parameters.
+
+#### `--device auto` (Optuna: `cpu`, 8 workers)
+
+The device only changes speed, not the algorithm. SB3 warns that PPO with an
+MLP policy belongs on the CPU. That holds for one run of a small MLP, but not
+here: the observation has 3,013 features (window 240), so the first layer
+alone is 3013 × 256 and the update (10 epochs × 72 minibatches of 128) is
+real matrix work. The rollout is the opposite case: every env step runs one
+forward pass on 9 rows plus a host↔device copy, which is slower on the GPU.
+
+Benchmark (2026-10-22, i7-12800H with 14 cores, RTX A2000 8 GB laptop GPU;
+Optuna PPO settings; seconds per 9,216-step iteration):
+
+| Setup | Rollout | Update | Steps/s |
+| --- | --- | --- | --- |
+| 1 process, CPU, 1 thread | 4.8 | 13.2 | 510 |
+| 1 process, CPU, 4 threads | 5.1 | 6.8 | 769 |
+| 1 process, CUDA | 6.4 | 3.9 | **897** |
+| 4 workers, CPU / CUDA (total) | | | **1,529** / 1,277 |
+| 8 workers, CPU / CUDA (total) | | | **2,262** / 1,437 |
+| 8 workers, 2 on CUDA + 6 on CPU (total) | | | 2,501 |
+
+- **One run** (`main.py`, `run_large.sh`): `auto` (CUDA), ~17% faster than
+  the best CPU setting. More than 4 CPU threads is slower on this hybrid CPU.
+- **Several concurrent runs** (Optuna, ablations): `cpu` with one thread per
+  worker. Processes time-slice the GPU, so the CUDA rollout grows from 6 s to
+  15 s (4 workers) and 25 s (8 workers). CPU workers scale almost linearly up
+  to the physical cores. Mixing 2 CUDA workers into 8 gains another ~10%, but
+  `run_optuna_workers.sh` doesn't support that.
+
+RAM of real CPU Optuna workers (3 folds, eval callback), peak: 4 workers
+3.3 GB, 6 workers 5.1–5.5 GB, 8 workers 6.0–7.1 GB. Each worker holds about
+0.75–0.85 GB of private memory; the memmap caches (1.7 GB for all three
+folds) are shared through the page cache. 8 workers therefore stay below a
+10 GB budget, with a worst case of about 8.5 GB if all of them train on
+fold 2 at once. That is why `run_optuna_workers.sh` defaults to 8.
 
 ---
 

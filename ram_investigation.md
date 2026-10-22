@@ -1,5 +1,15 @@
 # RAM Investigation: Optuna Workers
 
+> **Status (2026-10-21):** The OOM when starting 4 workers was not a leak in
+> training. `scripts/prebuild_cache.py` built the memmaps but not the split
+> JSON, so every worker still loaded the 18M raw rows to compute the splits:
+> ~4.9 GB peak each, ~1.6 GB of it kept by glibc afterwards. Fixes: the
+> prebuild now writes the splits too, and every raw-data load in a worker runs
+> under `raw_data_lock` (`crypto_rl/experiment/data_loading.py`), so at most
+> one process loads at a time. Measured with 4 workers after a prebuild: 2.3 GB
+> anonymous memory in total (≈550 MB per training worker); without a prebuild:
+> 5.9 GB peak while one worker builds. The analysis below predates these fixes.
+
 ## Why Tracemalloc Shows ~500 MB but htop Shows ~6 GB
 
 Tracemalloc only instruments **Python's own `malloc` heap**. It is blind to four major memory consumers:
