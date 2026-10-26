@@ -42,6 +42,9 @@ class RLConfig:
     # Evaluate a fixed, deterministic 2-week slice; 14 days * 1440 minutes = 20,160 steps
     eval_length: int = 20160
     fee_rate: float = 0.001
+    # Split of the final report in non-trial runs: "test", or "val" for
+    # diagnostics that must not use up the test slice (ROADMAP P0-4)
+    final_eval_split: str = "test"
     # Per decision: at 15-minute decisions, 1 / (1 - 0.99) = 100 steps ≈ 25 h
     gamma: float = 0.99
     learning_rate: float = 3e-4

@@ -143,6 +143,13 @@ Examples:
         help="Trading fee rate (flat percentage of trade volume, e.g. 0.001 for 0.1%%)",
     )
     parser.add_argument(
+        "--final-eval-split",
+        type=str,
+        default=default_config.final_eval_split,
+        choices=["test", "val"],
+        help=f"Split for the final report of a non-trial run. Use val for diagnostic runs, so the test slice stays reserved for the final model (default: {default_config.final_eval_split})",
+    )
+    parser.add_argument(
         "--gamma",
         type=float,
         default=default_config.gamma,

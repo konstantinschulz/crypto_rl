@@ -11,10 +11,21 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from crypto_rl.config import RLConfig
 from crypto_rl.env.logging_utils import LoggerBase
 
 logger = logging.getLogger(__name__)
+
+
+def _to_builtin(value: Any) -> Any:
+    """JSON fallback for the numpy scalars and arrays in fold results."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Not JSON serializable: {type(value).__name__}")
 
 
 class CVCheckpointManager:
@@ -45,8 +56,13 @@ class CVCheckpointManager:
         fold_idx: int,
         score: float,
         metrics: dict[str, Any] | None = None,
+        result: dict[str, Any] | None = None,
     ) -> None:
-        """Persist a completed fold score and metrics to disk."""
+        """Persist a completed fold score and metrics to disk.
+
+        ``result`` is the fold's ``fold_results`` entry, so a resumed trial
+        can rebuild its CV summary and baselines over all folds.
+        """
         ckpt_path = self.get_checkpoint_path(trial_number)
         data = self.load_checkpoint(trial_number) or {
             "trial_number": trial_number,
@@ -57,8 +73,10 @@ class CVCheckpointManager:
             "score": float(score),
             "metrics": metrics or {},
         }
+        if result is not None:
+            data["completed_folds"][str(fold_idx)]["result"] = result
         with open(ckpt_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, default=_to_builtin)
 
     def clear_checkpoint(self, trial_number: int) -> None:
         """Remove checkpoint file once all folds for a trial complete or prune."""

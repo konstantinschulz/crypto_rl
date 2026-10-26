@@ -10,7 +10,8 @@ import dataclasses
 import json
 import logging
 import os
-import warnings
+import pickle
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -275,8 +276,9 @@ def run_folds(
     # Splits may come from the JSON cache as plain lists
     splits = [FoldSplit(*split) for split in splits]
     # The test slice is only touched by the final report (non-trial runs), so
-    # Optuna trials never build or read it.
-    cache_slices = ("train", "val") if trial is not None else ("train", "val", "test")
+    # Optuna trials and --final-eval-split val runs never build or read it.
+    uses_test = trial is None and config.final_eval_split == "test"
+    cache_slices = ("train", "val", "test") if uses_test else ("train", "val")
     fold_prefixes = [
         fold_cache_prefixes(config, num_assets, fold_idx, data_range, split)
         for fold_idx, split in enumerate(splits)
@@ -327,15 +329,13 @@ def run_folds(
                 f"--> [Fold {fold_idx + 1}/{config.cv_folds}] RESUMED from checkpoint. Score: {cached_score:.4f}",
             )
             fold_metrics.append(cached["metrics"])
-            if trial is not None:
-                report_step = (fold_idx + 1) * evals_per_fold
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore",
-                        category=UserWarning,
-                        message=".*is already reported.*",
-                    )
-                    trial.report(cached_score, report_step)
+            # Checkpoints from before results were stored only have the score;
+            # those folds are missing from the summary and baseline means.
+            if "result" in cached:
+                fold_results.append(cached["result"])
+            # No trial.report here: the fold's smoothed intermediate scores are
+            # already in the study, and its full-length score is a different
+            # quantity that would distort the pruner's comparisons.
             continue
 
         # ----- Live training --------------------------------------------------------
@@ -484,6 +484,13 @@ def run_folds(
         chunk_model_path = os.path.join(chunk_dir, f"fold_{fold_idx}_model.zip")
         chunk_buffer_path = os.path.join(chunk_dir, f"fold_{fold_idx}_buffer.pkl")
         chunk_meta_path = os.path.join(chunk_dir, f"fold_{fold_idx}_meta.json")
+        # VecNormalize statistics, and the eval callback's best model with its
+        # observation statistics; PPO.load restores none of them
+        chunk_vecnorm_path = os.path.join(chunk_dir, f"fold_{fold_idx}_vecnorm.pkl")
+        chunk_best_path = os.path.join(chunk_dir, f"fold_{fold_idx}_best_model.zip")
+        chunk_best_rms_path = os.path.join(
+            chunk_dir, f"fold_{fold_idx}_best_obs_rms.pkl"
+        )
         # Break the fold into smaller, frequent save points
         chunk_steps = config.timesteps // config.train_chunks
         start_chunk = 0
@@ -493,14 +500,32 @@ def run_folds(
         if os.path.exists(chunk_meta_path):
             try:
                 with open(chunk_meta_path, "r") as f:
-                    start_chunk = json.load(f).get("chunk", 0)
+                    meta = json.load(f)
+                start_chunk = meta.get("chunk", 0)
                 logger.debug(
                     f"Resuming Fold {fold_idx + 1} from Chunk {start_chunk}/{config.train_chunks}...",
                 )
                 model = PPO.load(chunk_model_path, env=train_env, device=device)
-                # CRITICAL: SB3 resets timesteps on load. We must restore it so
-                # your EntropyDecayCallback and UnifiedEvalCallback don't break!
-                model.num_timesteps = start_chunk * chunk_steps
+                # SB3 resets timesteps on load. Restore the actual count (each
+                # chunk overshoots to a whole rollout), so the entropy decay and
+                # the eval schedule continue where they left off.
+                model.num_timesteps = meta.get(
+                    "num_timesteps", start_chunk * chunk_steps
+                )
+                if os.path.exists(chunk_vecnorm_path):
+                    with open(chunk_vecnorm_path, "rb") as f:
+                        train_env.obs_rms, train_env.ret_rms = pickle.load(f)
+                if eval_callback and "eval_callback" in meta:
+                    best_rms = None
+                    has_best = os.path.exists(chunk_best_path)
+                    if has_best:
+                        with open(chunk_best_rms_path, "rb") as f:
+                            best_rms = pickle.load(f)
+                    eval_callback.restore(
+                        meta["eval_callback"],
+                        Path(chunk_best_path) if has_best else None,
+                        best_rms,
+                    )
             except Exception as e:
                 logger.debug(f"Failed to load chunk: {e}. Starting fresh.")
                 start_chunk = 0
@@ -545,12 +570,29 @@ def run_folds(
             # Stop chunking immediately if Optuna decided to prune the trial
             if eval_callback and eval_callback.is_pruned:
                 break
-            # Save chunk state mid-fold
+            # Save chunk state mid-fold; the meta file goes last, so a crash
+            # in between leaves the previous chunk's meta in charge
             model.save(chunk_model_path)
+            with open(chunk_vecnorm_path, "wb") as f:
+                pickle.dump((train_env.obs_rms, train_env.ret_rms), f)
+            meta = {"chunk": chunk + 1, "num_timesteps": int(model.num_timesteps)}
+            if eval_callback:
+                meta["eval_callback"] = eval_callback.resume_state()
+                if eval_callback.best_model_path is not None:
+                    shutil.copyfile(eval_callback.best_model_path, chunk_best_path)
+                    with open(chunk_best_rms_path, "wb") as f:
+                        pickle.dump(eval_callback.best_obs_rms, f)
             with open(chunk_meta_path, "w") as f:
-                json.dump({"chunk": chunk + 1}, f)
+                json.dump(meta, f)
         # 6. Cleanup when fold finishes successfully to save SSD space
-        for path in [chunk_model_path, chunk_buffer_path, chunk_meta_path]:
+        for path in [
+            chunk_model_path,
+            chunk_buffer_path,
+            chunk_meta_path,
+            chunk_vecnorm_path,
+            chunk_best_path,
+            chunk_best_rms_path,
+        ]:
             if os.path.exists(path):
                 os.remove(path)
         # =====================================================================
@@ -600,16 +642,24 @@ def run_folds(
         else:
             # The test slice is touched exactly once, for the final report,
             # and always over the whole test fold (is_fast_eval=False).
+            # --final-eval-split val reports on the whole validation fold
+            # instead and leaves the test slice unread.
+            reported_split = "test" if uses_test else "val"
             logger.print_if_not_trial(
                 logging.DEBUG,
                 trial,
-                f"5. Testing best checkpoint on Fold {fold_idx + 1}...",
+                f"5. Evaluating best checkpoint on Fold {fold_idx + 1} "
+                f"({reported_split})...",
             )
-            test_arrays = compute_static_obs_from_long_df(
-                None, config, cache_prefix=prefixes.test
+            final_arrays = (
+                compute_static_obs_from_long_df(
+                    None, config, cache_prefix=prefixes.test
+                )
+                if uses_test
+                else val_arrays
             )
-            test_env_args = _eval_env_args(
-                test_arrays,
+            final_env_args = _eval_env_args(
+                final_arrays,
                 run_id=run_id,
                 is_fast_eval=False,
                 config=dataclasses.replace(env_config, disable_logging=False),
@@ -617,21 +667,20 @@ def run_folds(
             )
             result = _run_episode(
                 eval_model,
-                test_env_args,
+                final_env_args,
                 eval_obs_rms,
                 dummy_vec_env_args,
-                desc=f"Testing Fold {fold_idx + 1}",
+                desc=f"Evaluating Fold {fold_idx + 1} ({reported_split})",
                 show_progress=True,
             )
             # Rule-based references over the same window; no action logs
             result["reference_strategies"] = run_reference_strategies(
                 {
-                    **test_env_args,
+                    **final_env_args,
                     "config": dataclasses.replace(env_config, disable_logging=True),
                 }
             )
-            reported_arrays = test_arrays
-            reported_split = "test"
+            reported_arrays = final_arrays
 
         per_asset_stats = result["per_asset_stats"]
         eval_initial_portfolio_value = result["initial_portfolio_value"]
@@ -642,13 +691,6 @@ def run_folds(
         metrics = {**result["metrics"], "calmar": float(result["calmar"])}
         fold_score = metrics["score"]
         fold_metrics.append(metrics)
-        if trial is not None:
-            ckpt_mgr.save_fold_result(
-                trial_number=trial.number,
-                fold_idx=fold_idx,
-                score=fold_score,
-                metrics=metrics,
-            )
         eval_win_rate_pct = (
             (result["winning_trades"] / eval_closed_trades * 100.0)
             if eval_closed_trades > 0
@@ -684,6 +726,14 @@ def run_folds(
                 "action_log_path": result["action_log_path"],
             }
         )
+        if trial is not None:
+            ckpt_mgr.save_fold_result(
+                trial_number=trial.number,
+                fold_idx=fold_idx,
+                score=fold_score,
+                metrics=metrics,
+                result=fold_results[-1],
+            )
 
         # Log results --------------------------------------------------------------
         logger.print_if_not_trial(

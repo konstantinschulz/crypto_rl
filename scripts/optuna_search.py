@@ -200,7 +200,12 @@ if __name__ == "__main__":
         # used Calmar as the objective, and v1 used the old reward.
         study_name="crypto_rl_v4",
         load_if_exists=True,
-        pruner=optuna.pruners.MedianPruner(),
+        # Intermediate values are the EMA validation score, reported once per
+        # eval (10 per fold at the default eval_freq). With no warmup, v4
+        # pruned 16 of 31 trials after 1–2 evals, before any policy had
+        # learned; every completed curve was still rising at 1.2M steps.
+        # Wait for half of fold 1.
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5),
     )
     # Run the baseline first; a no-op if a worker already enqueued or ran it
     study.enqueue_trial(BASELINE_PARAMS, skip_if_exists=True)

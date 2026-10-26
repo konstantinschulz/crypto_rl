@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -454,6 +455,33 @@ class UnifiedEvalCallback(BaseCallback):
             drawdown_coef=self.config.objective_drawdown_coef,
         )
         return episode_reward, metrics["score"]
+
+    def resume_state(self) -> dict[str, Any]:
+        """Eval bookkeeping that must survive a mid-fold resume.
+
+        A resumed fold gets a fresh callback. Without this its report steps
+        restart inside the fold (Optuna drops them as duplicates), the EMA
+        restarts, and the first post-resume eval overwrites a better
+        best_model.zip.
+        """
+        return {
+            "eval_idx": self.eval_idx,
+            "ema_score": self.ema_score,
+            "best_score": self.best_score,
+        }
+
+    def restore(
+        self, state: dict[str, Any], best_model_path: Path | None, best_obs_rms: Any
+    ) -> None:
+        """Undo `resume_state`; the best model is copied into checkpoint_dir."""
+        self.eval_idx = int(state["eval_idx"])
+        self.ema_score = state["ema_score"]
+        self.best_score = float(state["best_score"])
+        if best_model_path is not None:
+            path = self.checkpoint_dir / "best_model.zip"
+            shutil.copyfile(best_model_path, path)
+            self.best_model_path = path
+            self.best_obs_rms = best_obs_rms
 
     def _save_best_model(self) -> None:
         """Overwrite the single best-on-validation model and its obs stats."""

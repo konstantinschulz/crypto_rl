@@ -11,10 +11,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from crypto_rl.callbacks import UnifiedEvalCallback
+from crypto_rl.checkpoint_manager import CVCheckpointManager
 from crypto_rl.config import RLConfig
 from crypto_rl.env.minimal_env import MinimalCryptoEnv
 from crypto_rl.experiment.fold_runner import _eval_env_args, _run_episode
@@ -153,6 +155,89 @@ class EpisodeBookkeepingTest(unittest.TestCase):
         self.assertAlmostEqual(
             df["portfolio"].iloc[0], result["initial_portfolio_value"]
         )
+
+
+class _RecordingTrial:
+    """Keeps the first value per step, like Optuna's duplicate-step handling."""
+
+    def __init__(self):
+        self.number = 0
+        self.reports: dict[int, float] = {}
+
+    def report(self, value, step):
+        self.reports.setdefault(step, value)
+
+    def should_prune(self):
+        return False
+
+
+class MidFoldResumeTest(unittest.TestCase):
+    """A fold interrupted between chunks continues its eval bookkeeping."""
+
+    def _run(self, cb, model, scores, saves):
+        cb._run_evaluation = lambda: (0.0, scores.pop(0))
+        cb._save_best_model = lambda: saves.append(model.num_timesteps)
+        while scores:
+            model.num_timesteps += 4
+            cb.on_step()
+
+    def test_resumed_callback_continues_steps_ema_and_best(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            trial = _RecordingTrial()
+            config = RLConfig(eval_freq=100, timesteps=1000, checkpoint=False)
+
+            def make_cb():
+                return UnifiedEvalCallback(
+                    config=config,
+                    eval_env=None,
+                    trial=trial,
+                    checkpoint_dir=Path(tmp) / "run",
+                    eval_step_offset=10,
+                )
+
+            first, saves = make_cb(), []
+            model = _StubModel(n_envs=4)
+            first.init_callback(model)
+            self._run(first, model, [-0.5, -0.1, -0.3], saves)
+            state = first.resume_state()
+            chunk_best = Path(tmp) / "chunk_best.zip"
+            chunk_best.write_bytes(b"best of the first session")
+
+            # New session: fresh callback, model restored at the same step count
+            second, saves = make_cb(), []
+            resumed = _StubModel(n_envs=4, num_timesteps=model.num_timesteps)
+            second.restore(state, chunk_best, best_obs_rms="rms")
+            second.init_callback(resumed)
+            self._run(second, resumed, [-0.2, -0.4], saves)
+
+            # Steps continue after the offset instead of restarting at 11
+            self.assertEqual(sorted(trial.reports), [11, 12, 13, 14, 15])
+            # The EMA carries over: one restarted from -0.2 would report -0.2
+            self.assertNotAlmostEqual(trial.reports[14], -0.2)
+            # Worse post-resume evals keep the first session's best model
+            self.assertEqual(saves, [])
+            self.assertEqual(second.best_score, -0.1)
+            self.assertEqual(
+                second.best_model_path.read_bytes(), b"best of the first session"
+            )
+            self.assertEqual(second.best_obs_rms, "rms")
+
+
+class FoldResultCheckpointTest(unittest.TestCase):
+    def test_fold_result_round_trips_with_numpy_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mgr = CVCheckpointManager(logger=None, checkpoint_dir=tmp)
+            result = {
+                "final_portfolio_value": np.float64(101.5),
+                "trades": np.int64(7),
+                "baselines": {"equal_weight": np.float32(0.5)},
+                "portfolio_values": np.array([100.0, 101.5]),
+            }
+            mgr.save_fold_result(3, 0, score=-0.25, metrics={}, result=result)
+            cached = mgr.load_checkpoint(3)["completed_folds"]["0"]
+            self.assertEqual(cached["result"]["trades"], 7)
+            self.assertEqual(cached["result"]["portfolio_values"], [100.0, 101.5])
+            self.assertAlmostEqual(cached["result"]["baselines"]["equal_weight"], 0.5)
 
 
 if __name__ == "__main__":

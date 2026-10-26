@@ -234,7 +234,11 @@ def run_experiment(
                 cv_mean_win_rate,
                 cv_total_trades,
                 cv_total_fees,
-                split_name="Validation" if trial is not None else "Test",
+                split_name=(
+                    "Test"
+                    if trial is None and config.final_eval_split == "test"
+                    else "Validation"
+                ),
             )
 
             fold_summary = summarize_folds(fold_metrics)
@@ -243,7 +247,11 @@ def run_experiment(
                 trial,
                 fold_summary,
                 len(fold_metrics),
-                split_name="Validation" if trial is not None else "Test",
+                split_name=(
+                    "Test"
+                    if trial is None and config.final_eval_split == "test"
+                    else "Validation"
+                ),
                 drawdown_coef=config.objective_drawdown_coef,
             )
             cv_mean_score = fold_summary["score"]["mean"]
@@ -254,10 +262,11 @@ def run_experiment(
             cv_baselines = _mean_over_folds(fold_results, "baselines")
             cv_excess = _mean_over_folds(fold_results, "excess_returns")
             if cv_baselines:
+                n_baseline_folds = sum("baselines" in r for r in fold_results)
                 log_baselines(
                     logger,
                     trial,
-                    f"Mean baselines over {len(fold_results)} fold(s), same "
+                    f"Mean baselines over {n_baseline_folds} fold(s), same "
                     "windows and fees as the bot:",
                     bot_return=cv_mean_pnl / config.budget_initial,
                     baselines=cv_baselines,
