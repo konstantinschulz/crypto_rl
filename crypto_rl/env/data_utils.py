@@ -16,7 +16,8 @@ from crypto_rl.env.feature_utils import precalculate_static_obs
 
 # Bump whenever the static features or the pivot logic change, so that stale
 # memmaps and split files are never picked up under the same name.
-FEATURE_VERSION = 2
+# 3: rolling helpers accumulate in float64 (macd, btc_corr_60m, vwap_dev fix)
+FEATURE_VERSION = 3
 
 
 @dataclass(frozen=True)

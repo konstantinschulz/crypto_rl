@@ -41,7 +41,8 @@ class RLConfig:
     eval_freq: int | str = "auto"
     # Evaluate a fixed, deterministic 2-week slice; 14 days * 1440 minutes = 20,160 steps
     eval_length: int = 20160
-    fee_rate: float = 0.001
+    # MEXC spot taker fee (HYPERPARAMETER_RATIONALE.md)
+    fee_rate: float = 0.0005
     # Split of the final report in non-trial runs: "test", or "val" for
     # diagnostics that must not use up the test slice (ROADMAP P0-4)
     final_eval_split: str = "test"

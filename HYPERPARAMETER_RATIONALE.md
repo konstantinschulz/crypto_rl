@@ -298,11 +298,15 @@ fold 2 at once. That is why `run_optuna_workers.sh` defaults to 8.
 
 ### Environment & Data
 
-#### `--fee-rate 0.001`
+#### `--fee-rate 0.0005`
 
-Realistic MEXC spot taker fee (0.1%). Applied to both buy and sell legs
-of every trade. Fees reduce PV directly, so the log-return reward already
-accounts for them.
+MEXC spot taker fee (0.05%; maker is 0%, as of 2026). The bot trades at
+decision time with market orders, so it pays the taker rate. Applied to both
+buy and sell legs of every trade. Fees reduce PV directly, so the log-return
+reward already accounts for them. Spread and slippage are not modeled; for
+the smaller coins they can add several basis points, so check results at
+0.001 as a stress case. Until 2026-10-26 the default was 0.001, so earlier
+results (Optuna v4, the reward ablation, the reference strategies) used it.
 
 #### Evidence: rule-based reference strategies (2026-10-21)
 

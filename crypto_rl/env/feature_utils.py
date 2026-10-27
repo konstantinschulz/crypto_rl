@@ -309,39 +309,52 @@ def _ewm(arr: np.ndarray, alpha: float) -> np.ndarray:
     return out
 
 
+# The rolling helpers below difference cumulative sums over the whole slice.
+# Those sums reach ~1e11 (prices, price × volume) to ~1e16 (squared prices)
+# over 2M bars, where float32 keeps ~7 digits, so a window's sum came out as
+# noise (macd, btc_corr_60m and vwap_dev were corrupted before
+# FEATURE_VERSION 3). They accumulate in float64 and return float32.
+
+
 def _rolling_sum(arr: np.ndarray, W: int) -> np.ndarray:
     """Sliding window sum along axis 0, result in float32."""
     T, N = arr.shape
     W = min(W, T)
-    out = np.zeros((T, N), dtype=np.float32)
-    cs = np.cumsum(arr, axis=0, dtype=np.float32)
+    out = np.zeros((T, N), dtype=np.float64)
+    cs = np.cumsum(arr, axis=0, dtype=np.float64)
     out[W - 1 :] = cs[W - 1 :]
     if W > 1:
         out[W:] -= cs[:-W]
-    return out
+    return out.astype(np.float32)
 
 
-def _rolling_mean_std(arr: np.ndarray, W: int):
-    """Returns (mean, std) arrays of shape (T, N) float32, window W."""
+def _rolling_moments64(arr: np.ndarray, W: int) -> tuple[np.ndarray, np.ndarray]:
+    """Rolling (mean, std) of shape (T, N) in float64, window W."""
     T, N = arr.shape
     W = min(W, T)
-    arr32 = arr.astype(np.float32)
-    cs = np.cumsum(arr32, axis=0)
-    cs2 = np.cumsum(arr32**2, axis=0)
+    arr64 = arr.astype(np.float64)
+    cs = np.cumsum(arr64, axis=0)
+    cs2 = np.cumsum(arr64**2, axis=0)
 
-    mean = np.zeros((T, N), dtype=np.float32)
-    std = np.zeros((T, N), dtype=np.float32)
+    mean = np.zeros((T, N))
+    std = np.zeros((T, N))
 
     s = cs[W - 1 :]
     s2 = cs2[W - 1 :]
     if W > 1:
-        s = s - np.vstack([np.zeros((1, N), dtype=np.float32), cs[:-W]])
-        s2 = s2 - np.vstack([np.zeros((1, N), dtype=np.float32), cs2[:-W]])
+        s = s - np.vstack([np.zeros((1, N)), cs[:-W]])
+        s2 = s2 - np.vstack([np.zeros((1, N)), cs2[:-W]])
 
     mean[W - 1 :] = s / W
     var = np.clip(s2 / W - (s / W) ** 2, 0, None)
     std[W - 1 :] = np.sqrt(var)
     return mean, std
+
+
+def _rolling_mean_std(arr: np.ndarray, W: int):
+    """Returns (mean, std) arrays of shape (T, N) float32, window W."""
+    mean, std = _rolling_moments64(arr, W)
+    return mean.astype(np.float32), std.astype(np.float32)
 
 
 def _rolling_std(arr: np.ndarray, W: int) -> np.ndarray:
@@ -353,9 +366,15 @@ def _rolling_std(arr: np.ndarray, W: int) -> np.ndarray:
 def _rolling_corr(A: np.ndarray, B: np.ndarray, W: int) -> np.ndarray:
     """Rolling Pearson correlation matrix between two broadcastable arrays."""
     W = min(W, A.shape[0])
-    mean_A, std_A = _rolling_mean_std(A, W)
-    mean_B, std_B = _rolling_mean_std(B, W)
-    mean_AB, _ = _rolling_mean_std(A * B, W)
+    # Correlation is shift-invariant: centering on the first value keeps the
+    # sums of squares and products small, so their window differences stay
+    # accurate (no information from later bars is used)
+    A = A.astype(np.float64) - A[:1].astype(np.float64)
+    B = B.astype(np.float64) - B[:1].astype(np.float64)
+    # float64 throughout: cov is a small difference of large window means
+    mean_A, std_A = _rolling_moments64(A, W)
+    mean_B, std_B = _rolling_moments64(B, W)
+    mean_AB, _ = _rolling_moments64(A * B, W)
 
     cov = mean_AB - (mean_A * mean_B)
     corr = cov / (std_A * std_B + 1e-8)
@@ -372,16 +391,16 @@ def _rolling_zscore(
         return np.zeros((T, N), dtype=np.float32)
 
     window = min(window, T)
-    arr32 = arr.astype(np.float32)
-    cs = np.cumsum(arr32, axis=0)
-    cs2 = np.cumsum(arr32**2, axis=0)
+    arr64 = arr.astype(np.float64)
+    cs = np.cumsum(arr64, axis=0)
+    cs2 = np.cumsum(arr64**2, axis=0)
 
     t_idx = np.arange(T)
     w_start = np.maximum(0, t_idx - window + 1)
     w_len = (t_idx - w_start + 1)[:, None]
 
-    cs_prev = np.zeros((T, N), dtype=np.float32)
-    cs2_prev = np.zeros((T, N), dtype=np.float32)
+    cs_prev = np.zeros((T, N))
+    cs2_prev = np.zeros((T, N))
     if window < T:
         cs_prev[window:] = cs[:-window]
         cs2_prev[window:] = cs2[:-window]
@@ -395,7 +414,7 @@ def _rolling_zscore(
 
     valid = (w_len >= min_periods) & (sig > 1e-8)
     safe_sig = np.where(sig > 1e-8, sig, 1.0)
-    return np.where(valid, (arr32 - mu) / safe_sig, 0.0).astype(np.float32)
+    return np.where(valid, (arr64 - mu) / safe_sig, 0.0).astype(np.float32)
 
 
 def btc_regime_one_hot(btc_prices: np.ndarray) -> np.ndarray:

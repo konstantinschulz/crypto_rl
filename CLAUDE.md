@@ -45,3 +45,9 @@ example the env's end-of-episode PnL-mismatch debug message.
 
 Use the validation slice for experiments, ablations and model selection. The
 test slice is only for the final report (ROADMAP P0-4).
+
+On 2026-10-26 the test slices of folds 1–2 of the 18M-row, 3-fold layout
+(2023-03-27 → 2025-02-18) were used for signal research
+(`scripts/signal_walk_forward.py`). Only the fold-3 test slice
+(2025-02-18 → 2026-01-31) is still an untouched holdout; report final results
+on it alone.
