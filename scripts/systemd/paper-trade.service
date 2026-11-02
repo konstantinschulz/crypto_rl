@@ -1,0 +1,22 @@
+# Daily paper-trading step (scripts/paper_trade.py). Install with
+#   cp scripts/systemd/paper-trade.* ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now paper-trade.timer
+# On a VM, scripts/vm/setup.sh installs them for its checkout and venv.
+# Logs: journalctl --user -u paper-trade
+[Unit]
+Description=Crypto RL paper trading: daily step
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/dev/crypto_rl
+# A Kraken spread snapshot first (feeds the cost model); its failure must not
+# stop the step
+ExecStart=-%h/dev/crypto_rl/.conda/bin/python scripts/kraken_costs.py
+ExecStart=%h/dev/crypto_rl/.conda/bin/python scripts/paper_trade.py step
+# The step peaks at ~370 MB (2026-10-28, warm cache or cold); the cap protects
+# the machine if that changes
+MemoryMax=800M
+# A cold start fills 30 days of data from the APIs (~45 min on the desktop)
+TimeoutStartSec=3h

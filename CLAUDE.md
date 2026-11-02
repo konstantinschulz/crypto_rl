@@ -49,5 +49,10 @@ test slice is only for the final report (ROADMAP P0-4).
 On 2026-10-26 the test slices of folds 1–2 of the 18M-row, 3-fold layout
 (2023-03-27 → 2025-02-18) were used for signal research
 (`scripts/signal_walk_forward.py`). Only the fold-3 test slice
-(2025-02-18 → 2026-01-31) is still an untouched holdout; report final results
-on it alone.
+(2025-02-18 → 2026-01-31) was still an untouched holdout after that.
+
+On 2026-10-28 that fold-3 slice was used once, for the frozen Kraken
+low-turnover strategy (`scripts/kraken_backtest.py --include-holdout`, full
+panel `data/coin_panel_15m_full.npz`). No untouched historical test data
+remains. New ideas need fresh data (after 2026-01-31) or forward/paper
+trading for an unbiased check.

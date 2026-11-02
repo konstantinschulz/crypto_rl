@@ -1,0 +1,8 @@
+# The paper (and later live) trading step only: scripts/paper_trade.py step,
+# scripts/live_data.py, scripts/kraken_costs.py. Pinned to the research
+# environment's versions, so the live features match the training features.
+# Python 3.12.
+numpy==1.26.4
+pandas==2.3.3
+pyarrow==23.0.1
+requests==2.32.5

@@ -1,0 +1,12 @@
+[Unit]
+Description=Crypto RL paper trading: daily after the 01:27 UTC decision time
+
+[Timer]
+OnCalendar=*-*-* 01:35:00 UTC
+# Catch up after the laptop was off or asleep; the step uses that day's
+# 01:27 UTC data and today's Kraken quotes
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

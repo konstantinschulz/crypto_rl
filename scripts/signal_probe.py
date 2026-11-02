@@ -34,8 +34,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
-from scipy.stats import rankdata
 
 repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
@@ -170,6 +168,8 @@ def fit_mlp(X: np.ndarray, y: np.ndarray, gap: int, seed: int = 0, loss: str = "
     ``loss="huber"`` down-weights large moves, so predictions lean toward the
     median outcome; ``"mse"`` targets the mean, which is what a portfolio earns.
     """
+    import torch  # imported here: paper trading uses the ridge only (~500 MB)
+
     loss_fn = {
         "huber": torch.nn.functional.huber_loss,
         "mse": torch.nn.functional.mse_loss,
@@ -219,6 +219,8 @@ def fit_mlp(X: np.ndarray, y: np.ndarray, gap: int, seed: int = 0, loss: str = "
 
 def xs_rank_ic(pred: np.ndarray, target: np.ndarray, step: int):
     """Mean per-time Spearman IC across assets; t-stat over times ``step`` apart."""
+    from scipy.stats import rankdata
+
     rp = np.apply_along_axis(rankdata, 1, pred)
     rt = np.apply_along_axis(rankdata, 1, target)
     rp -= rp.mean(axis=1, keepdims=True)
@@ -230,6 +232,8 @@ def xs_rank_ic(pred: np.ndarray, target: np.ndarray, step: int):
 
 def ts_ic(pred: np.ndarray, target: np.ndarray, step: int):
     """Spearman correlation over non-overlapping times and its t-stat."""
+    from scipy.stats import rankdata
+
     a, b = rankdata(pred[::step]), rankdata(target[::step])
     r = np.corrcoef(a, b)[0, 1]
     return r, r * np.sqrt((len(a) - 2) / max(1e-12, 1 - r**2))

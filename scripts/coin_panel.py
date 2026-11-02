@@ -14,9 +14,12 @@ returns over the observation's lags (1 minute to 24 hours).
 
 The panel is cut at HOLDOUT_START, the start of the fold-3 test slice of the
 3-fold layout; that slice stays sealed for the final report (CLAUDE.md).
+`--build --include-holdout` writes a separate panel through the end of the
+dataset, for that final report only; research code loads the cut panel.
 
-Build once (about 15 minutes with 2 worker processes, ~5 GB RAM each):
+Build once (about 15 minutes with 2 worker processes, ~2 GB RAM each):
     .conda/bin/python scripts/coin_panel.py --build
+    .conda/bin/python scripts/coin_panel.py --build --include-holdout
 """
 
 import argparse
@@ -28,7 +31,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 
 repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
@@ -40,6 +45,8 @@ from crypto_rl.env.feature_utils import MACRO_DIM, STATIC_PER_ASSET_DIM
 
 PARQUET_PATH = repo_root / "binance_spot_1m_last4y_single_htf.parquet"
 PANEL_PATH = repo_root / "data" / "coin_panel_15m.npz"
+# Through the end of the dataset, holdout included: final report only
+FULL_PANEL_PATH = repo_root / "data" / "coin_panel_15m_full.npz"
 # First bar of the fold-3 test slice (18M rows, 3 folds): sealed holdout
 HOLDOUT_START = pd.Timestamp("2025-02-18 18:40", tz="UTC")
 DECISION_MINUTES = 15
@@ -79,25 +86,45 @@ OHLCV_COLUMNS = [
 ]
 
 
-def read_symbol(symbol: str) -> pd.DataFrame:
-    """1-minute bars of one coin before the holdout, indexed by time."""
-    dataset = ds.dataset(PARQUET_PATH, format="parquet")
-    df = dataset.to_table(
-        columns=OHLCV_COLUMNS, filter=ds.field("symbol") == symbol
-    ).to_pandas()
+def read_symbol(symbol: str, include_holdout: bool = False) -> pd.DataFrame:
+    """1-minute bars of one coin (before the holdout), indexed by time."""
+    # Row groups hold one coin each; reading just those keeps memory at the
+    # coin's size (a filtered dataset scan peaked near 4 GB for one coin)
+    parquet = pq.ParquetFile(PARQUET_PATH)
+    symbol_column = parquet.schema_arrow.get_field_index("symbol")
+    row_groups = [
+        i
+        for i in range(parquet.metadata.num_row_groups)
+        if parquet.metadata.row_group(i).column(symbol_column).statistics.min
+        <= symbol
+        <= parquet.metadata.row_group(i).column(symbol_column).statistics.max
+    ]
+    table = parquet.read_row_groups(row_groups, columns=OHLCV_COLUMNS + ["symbol"])
+    df = table.filter(pc.equal(table["symbol"], symbol)).drop(["symbol"]).to_pandas()
     df = df.set_index("open_time_dt").sort_index()
     df = df[~df.index.duplicated()]
-    return df[df.index < HOLDOUT_START]
+    return df if include_holdout else df[df.index < HOLDOUT_START]
 
 
-def coin_features(symbol: str, minute_grid: pd.DatetimeIndex) -> dict | None:
+def coin_features(
+    symbol: str,
+    minute_grid: pd.DatetimeIndex,
+    include_holdout: bool = False,
+    read=None,
+) -> dict | None:
     """Features of one coin on the global minute grid, sampled every 15 minutes.
 
     The coin is paired with BTC because `precalculate_static_obs` derives
     BTC-relative features (relative momentum, BTC correlation) and the macro
-    block from it.
+    block from it. ``read(symbol)`` returns a coin's 1-minute bars (default:
+    from the dataset parquet; paper trading passes live bars).
     """
-    coin = read_symbol(symbol)
+    if read is None:
+
+        def read(s):
+            return read_symbol(s, include_holdout)
+
+    coin = read(symbol)
     if len(coin) < 2 * 1440:
         return None
     # The coin's own listed span on the global grid; gaps inside it are
@@ -105,7 +132,7 @@ def coin_features(symbol: str, minute_grid: pd.DatetimeIndex) -> dict | None:
     span = minute_grid[(minute_grid >= coin.index[0]) & (minute_grid <= coin.index[-1])]
     frames = {symbol: coin.reindex(span).ffill()}
     if symbol != "BTCUSDT":
-        frames["BTCUSDT"] = read_symbol("BTCUSDT").reindex(span).ffill().bfill()
+        frames["BTCUSDT"] = read("BTCUSDT").reindex(span).ffill().bfill()
     long_df = pd.concat(
         [f.assign(symbol=s, open_time=np.arange(len(span))) for s, f in frames.items()],
         ignore_index=True,
@@ -156,18 +183,17 @@ def coin_features(symbol: str, minute_grid: pd.DatetimeIndex) -> dict | None:
 
 
 def _worker(args):
-    symbol, minute_grid = args
-    return symbol, coin_features(symbol, minute_grid)
+    symbol, minute_grid, include_holdout = args
+    return symbol, coin_features(symbol, minute_grid, include_holdout)
 
 
-def build(workers: int) -> None:
-    dataset = ds.dataset(PARQUET_PATH, format="parquet")
-    symbols = sorted(
-        dataset.to_table(columns=["symbol"]).column("symbol").unique().to_pylist()
-    )
-    # BTC's minute timestamps define the global grid (it is complete from the
-    # dataset's first day; one 81-minute gap is kept as is)
-    minute_grid = read_symbol("BTCUSDT").index
+def assemble_panel(
+    symbols: list[str], minute_grid: pd.DatetimeIndex, coin_outputs
+) -> dict:
+    """The panel dict (as `load_panel` returns it) from `coin_features` outputs.
+
+    ``coin_outputs`` yields (symbol, output or None) pairs.
+    """
     decision_times = minute_grid[::DECISION_MINUTES]
     n_times, n_coins = len(decision_times), len(symbols)
     close = np.full((n_times, n_coins), np.nan, np.float32)
@@ -177,57 +203,69 @@ def build(workers: int) -> None:
     tradable = np.zeros((n_times, n_coins), bool)
     macro = np.full((n_times, MACRO_DIM), np.nan, np.float32)
 
-    with ProcessPoolExecutor(workers) as pool:
-        jobs = [(s, minute_grid) for s in symbols]
-        for symbol, out in pool.map(_worker, jobs):
-            j = symbols.index(symbol)
-            if out is None:
-                print(
-                    f"{symbol}: too little data before the holdout, skipped", flush=True
-                )
-                continue
-            rows = out["decision_index"]
-            close[rows, j] = out["close"]
-            features[rows, j] = out["features"]
-            lag_returns[rows, j] = out["lag_returns"]
-            norm_vol[rows, j] = out["norm_vol"]
-            tradable[rows, j] = decision_times[rows] >= (
-                out["listed_from"] + TRADABLE_AFTER_LISTING
-            )
-            if out["macro"] is not None:
-                macro[rows] = out["macro"]
-            print(
-                f"{symbol}: {len(rows)} decision rows from {out['listed_from']:%Y-%m-%d}",
-                flush=True,
-            )
+    for symbol, out in coin_outputs:
+        j = symbols.index(symbol)
+        if out is None:
+            print(f"{symbol}: too little data, skipped", flush=True)
+            continue
+        rows = out["decision_index"]
+        close[rows, j] = out["close"]
+        features[rows, j] = out["features"]
+        lag_returns[rows, j] = out["lag_returns"]
+        norm_vol[rows, j] = out["norm_vol"]
+        tradable[rows, j] = decision_times[rows] >= (
+            out["listed_from"] + TRADABLE_AFTER_LISTING
+        )
+        if out["macro"] is not None:
+            macro[rows] = out["macro"]
 
-    PANEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        PANEL_PATH,
-        decision_times=decision_times.tz_convert(None).values.astype("datetime64[m]"),
-        symbols=np.array(symbols),
-        close=close,
-        features=features,
-        lag_returns=lag_returns,
-        norm_vol=norm_vol,
-        tradable=tradable,
-        macro=macro,
-        feature_names=np.array(STATIC_NAMES),
-        lag_names=np.array([f"ret_{lag}" for lag in RETURN_LAGS]),
-        macro_names=np.array(MACRO_NAMES),
+    return {
+        "decision_times": decision_times.tz_convert(None).values.astype(
+            "datetime64[m]"
+        ),
+        "symbols": np.array(symbols),
+        "close": close,
+        "features": features,
+        "lag_returns": lag_returns,
+        "norm_vol": norm_vol,
+        "tradable": tradable,
+        "macro": macro,
+        "feature_names": np.array(STATIC_NAMES),
+        "lag_names": np.array([f"ret_{lag}" for lag in RETURN_LAGS]),
+        "macro_names": np.array(MACRO_NAMES),
+    }
+
+
+def build(workers: int, include_holdout: bool = False) -> None:
+    dataset = ds.dataset(PARQUET_PATH, format="parquet")
+    symbols = sorted(
+        dataset.to_table(columns=["symbol"]).column("symbol").unique().to_pylist()
     )
-    print(f"Saved {PANEL_PATH}: {n_times} decision times × {n_coins} coins")
+    # BTC's minute timestamps define the global grid (it is complete from the
+    # dataset's first day; one 81-minute gap is kept as is)
+    minute_grid = read_symbol("BTCUSDT", include_holdout).index
+    with ProcessPoolExecutor(workers) as pool:
+        jobs = [(s, minute_grid, include_holdout) for s in symbols]
+        panel = assemble_panel(symbols, minute_grid, pool.map(_worker, jobs))
+
+    path = FULL_PANEL_PATH if include_holdout else PANEL_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **panel)
+    n_times, n_coins = panel["close"].shape
+    print(f"Saved {path}: {n_times} decision times × {n_coins} coins")
 
 
-def load_panel(symbols: list[str] | None = None) -> dict:
+def load_panel(symbols: list[str] | None = None, include_holdout: bool = False) -> dict:
     """Load the panel, optionally restricted to ``symbols``.
 
-    Times are naive UTC ``datetime64[m]``; every time is before HOLDOUT_START.
+    Times are naive UTC ``datetime64[m]``; every time is before HOLDOUT_START
+    unless ``include_holdout`` (final report only).
     """
-    with np.load(PANEL_PATH) as f:
+    with np.load(FULL_PANEL_PATH if include_holdout else PANEL_PATH) as f:
         panel = {k: f[k] for k in f.files}
-    holdout = np.datetime64(HOLDOUT_START.tz_convert(None), "m")
-    assert panel["decision_times"].max() < holdout, "panel reaches into the holdout"
+    if not include_holdout:
+        holdout = np.datetime64(HOLDOUT_START.tz_convert(None), "m")
+        assert panel["decision_times"].max() < holdout, "panel reaches into the holdout"
     if symbols is not None:
         idx = [list(panel["symbols"]).index(s) for s in symbols]
         for key in (
@@ -293,24 +331,189 @@ def holding_returns(close: np.ndarray, horizon_rows: int) -> np.ndarray:
     return out
 
 
-def model_features(panel: dict) -> tuple[np.ndarray, list[str]]:
+DERIVATIVES_DIR = repo_root / "data" / "binance_derivatives"
+METRICS_ROWS_PER_DAY = 288  # 5-minute snapshots
+DERIVATIVE_NAMES = [
+    "funding_8h",
+    "funding_7d",
+    "premium_1h",
+    "premium_24h",
+    "oi_change_1d",
+    "oi_change_7d",
+    "long_short_ratio",
+    "top_trader_ratio",
+    "taker_ratio_1h",
+    "taker_ratio_1d",
+]
+
+
+def _read_derivatives(
+    name: str,
+    columns: list[str],
+    symbols: list[str],
+    end: pd.Timestamp,
+    directory: Path = DERIVATIVES_DIR,
+) -> pd.DataFrame:
+    """One downloaded derivatives table, up to ``end`` (the panel's end)."""
+    # Streamed in batches and filtered before keeping: reading the 24M-row
+    # metrics table in one go peaked ~4 GB above its ~1 GB result. The symbol
+    # stays dictionary-encoded (categorical) rather than one string per row.
+    parquet = pq.ParquetFile(directory / f"{name}.parquet", read_dictionary=["symbol"])
+    frames = []
+    for batch in parquet.iter_batches(
+        batch_size=1_000_000, columns=["symbol", "time", *columns]
+    ):
+        frame = batch.to_pandas()
+        # One shared category list, so the concat below stays categorical
+        frame["symbol"] = pd.Categorical(frame["symbol"], categories=symbols)
+        frames.append(frame[(frame["time"] < end) & frame["symbol"].notna()])
+    frame = pd.concat(frames, ignore_index=True)
+    del frames
+    return frame
+
+
+def _as_of(
+    decision_times: pd.Series, series: pd.Series, max_age: pd.Timedelta
+) -> np.ndarray:
+    """The latest value of a time-indexed ``series`` at each decision time.
+
+    NaN if that value is older than ``max_age``, so a perpetual that stops
+    trading does not leave its last value standing forever.
+    """
+    right = series.dropna().rename("value").reset_index()
+    if right.empty:
+        return np.full(len(decision_times), np.nan)
+    right["time"] = right["time"].astype("datetime64[ns, UTC]")
+    left = pd.DataFrame({"time": decision_times.astype("datetime64[ns, UTC]")})
+    merged = pd.merge_asof(
+        left, right, on="time", direction="backward", tolerance=max_age
+    )
+    return merged["value"].to_numpy()
+
+
+def derivatives_features(
+    panel: dict, directory: Path = DERIVATIVES_DIR
+) -> tuple[np.ndarray, list[str]]:
+    """Perpetual-futures features per coin (times, coins, 10), NaN when absent.
+
+    From scripts/download_binance_derivatives.py (or, for paper trading, the
+    same tables built from the live API in ``directory``). Every value is taken as of
+    the decision time, using only what was public then: funding when it
+    settles, a 15-minute premium bar once it closes, a 5-minute metrics
+    snapshot 5 minutes after its timestamp (to be safe about publication).
+
+    - funding_8h / funding_7d: latest settled funding rate, and its 7-day
+      mean, scaled to an 8-hour interval (some coins settle every 4 hours)
+    - premium_1h / premium_24h: mean perpetual premium over the spot index
+    - oi_change_1d / oi_change_7d: log change of open interest (in coins)
+    - long_short_ratio / top_trader_ratio: log of the all-account and
+      top-trader (by position) long/short ratios
+    - taker_ratio_1h / taker_ratio_1d: mean log taker buy/sell volume ratio
+    """
+    symbols = [str(s) for s in panel["symbols"]]
+    times = pd.Series(pd.to_datetime(panel["decision_times"]).tz_localize("UTC"))
+    out = np.full((len(times), len(symbols), len(DERIVATIVE_NAMES)), np.nan, np.float32)
+    # Nothing after the panel's last decision time is read (for the cut
+    # panel, that is the holdout)
+    end = times.iloc[-1] + pd.Timedelta(minutes=DECISION_MINUTES)
+
+    funding = _read_derivatives(
+        "funding",
+        ["funding_interval_hours", "last_funding_rate"],
+        symbols,
+        end,
+        directory,
+    )
+    premium = _read_derivatives("premium_15m", ["close"], symbols, end, directory)
+    premium["time"] += pd.Timedelta(minutes=15)  # usable once the bar closes
+    metrics = _read_derivatives(
+        "metrics",
+        [
+            "sum_open_interest",
+            "count_long_short_ratio",
+            "sum_toptrader_long_short_ratio",
+            "sum_taker_long_short_vol_ratio",
+        ],
+        symbols,
+        end,
+        directory,
+    )
+    metrics["time"] += pd.Timedelta(minutes=5)
+
+    # Funding settles every 1–8 hours; snapshots and premium bars every 5–15
+    # minutes. Older values mean the perpetual stopped (or paused) trading.
+    funding_age, snapshot_age = pd.Timedelta(hours=12), pd.Timedelta(hours=1)
+
+    for j, symbol in enumerate(symbols):
+        # Sorted per coin: sorting the 24M-row metrics table at once costs ~1 GB
+        f = funding[funding.symbol == symbol].set_index("time").sort_index()
+        if len(f):
+            rate_8h = f.last_funding_rate * 8.0 / f.funding_interval_hours
+            out[:, j, 0] = _as_of(times, rate_8h, funding_age)
+            out[:, j, 1] = _as_of(times, rate_8h.rolling("7D").mean(), funding_age)
+        p = premium[premium.symbol == symbol].set_index("time")["close"].sort_index()
+        if len(p):
+            out[:, j, 2] = _as_of(times, p.rolling("1h").mean(), snapshot_age)
+            out[:, j, 3] = _as_of(times, p.rolling("24h").mean(), snapshot_age)
+        m = (
+            metrics[metrics.symbol == symbol]
+            .drop(columns="symbol")
+            .set_index("time")
+            .sort_index()
+        )
+        if len(m):
+            # A regular 5-minute grid, so shifts count snapshots; gaps of up
+            # to an hour are bridged, longer ones stay missing
+            m = m[~m.index.duplicated()]
+            m = m.resample("5min").last().ffill(limit=12)
+            log_oi = np.log(m.sum_open_interest.where(m.sum_open_interest > 0))
+            positive = m.where(m > 0)
+            log_taker = np.log(positive.sum_taker_long_short_vol_ratio)
+            snapshot_series = [
+                log_oi - log_oi.shift(METRICS_ROWS_PER_DAY),
+                log_oi - log_oi.shift(7 * METRICS_ROWS_PER_DAY),
+                np.log(positive.count_long_short_ratio),
+                np.log(positive.sum_toptrader_long_short_ratio),
+                log_taker.rolling(12, min_periods=6).mean(),
+                log_taker.rolling(METRICS_ROWS_PER_DAY, min_periods=144).mean(),
+            ]
+            for k, series in enumerate(snapshot_series, start=4):
+                out[:, j, k] = _as_of(times, series, snapshot_age)
+    return out, list(DERIVATIVE_NAMES)
+
+
+def model_features(
+    panel: dict, derivatives: tuple[np.ndarray, list[str]] | None = None
+) -> tuple[np.ndarray, list[str]]:
     """Feature tensor (times, coins, k) for the supervised probes.
 
     The 13 per-asset indicators and the vol-normalized lag returns, each also
     demeaned across the tradable coins (the target is relative to the
     basket), plus the 5 BTC macro features broadcast to every coin.
+    ``derivatives`` (from `derivatives_features`) adds its features the same
+    way, raw and demeaned.
     """
     tradable = panel["tradable"]
     blocks = [panel["features"], panel["lag_returns"]]
     names = list(panel["feature_names"]) + list(panel["lag_names"])
-    base = np.concatenate(blocks, axis=2)
-    demeaned = np.stack(
-        [cross_sectional_demean(base[:, :, k], tradable) for k in range(base.shape[2])],
-        axis=2,
-    )
-    n_coins = tradable.shape[1]
-    macro = np.repeat(panel["macro"][:, None, :], n_coins, axis=1)
-    features = np.concatenate([base, demeaned, macro], axis=2).astype(np.float32)
+    if derivatives is not None:
+        blocks.append(derivatives[0])
+        names += derivatives[1]
+    # Filled in place, one feature at a time: the full panel's tensor is
+    # ~3 GB, and stacking float64 copies would need several times that
+    n_times, n_coins = tradable.shape
+    n_base = sum(block.shape[2] for block in blocks)
+    n_macro = panel["macro"].shape[1]
+    features = np.empty((n_times, n_coins, 2 * n_base + n_macro), np.float32)
+    k = 0
+    for block in blocks:
+        for j in range(block.shape[2]):
+            features[:, :, k] = block[:, :, j]
+            features[:, :, n_base + k] = cross_sectional_demean(
+                block[:, :, j], tradable
+            )
+            k += 1
+    features[:, :, 2 * n_base :] = panel["macro"][:, None, :]
     names = names + [f"xs_{n}" for n in names] + list(panel["macro_names"])
     return features, names
 
@@ -320,10 +523,15 @@ def main():
     p.add_argument(
         "--build", action="store_true", help="Build the panel from the parquet"
     )
-    p.add_argument("--workers", type=int, default=2)  # ~5 GB peak RSS each
+    p.add_argument("--workers", type=int, default=2)  # ~2 GB peak RSS each
+    p.add_argument(
+        "--include-holdout",
+        action="store_true",
+        help="Build the separate full panel through the holdout (final report)",
+    )
     args = p.parse_args()
     if args.build:
-        build(args.workers)
+        build(args.workers, args.include_holdout)
     else:
         panel = load_panel()
         tradable = panel["tradable"]
