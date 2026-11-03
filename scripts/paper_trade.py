@@ -17,7 +17,8 @@ The equal-weight basket of the same coins (rebalanced at each rebalance,
 without costs) is tracked alongside as the benchmark.
 
 Files under data/paper/: model.npz (the frozen model), state.json (cash,
-holdings, basket), equity.csv (one row per daily step), trades.csv.
+units held and their last mid prices, basket), equity.csv (one row per daily
+step), trades.csv.
 
 Usage:
     .conda/bin/python scripts/paper_trade.py fit            # once (~7 GB RAM)
@@ -405,6 +406,8 @@ def step(force_rebalance: bool = False) -> None:
         ],
     )
     state["last_step"] = decision_time.isoformat()
+    # The mid prices the holdings were valued at (for the notifications)
+    state["prices_eur"] = {s: mid[s] for s in state["units"] if s in mid}
     save_state(state)
 
     ranked = np.argsort(-np.nan_to_num(signal["signal"], nan=-np.inf))

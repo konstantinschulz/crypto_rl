@@ -7,6 +7,8 @@
 Description=Crypto RL paper trading: daily step
 Wants=network-online.target
 After=network-online.target
+# A Telegram alert with the log tail when the step fails (scripts/notify.py)
+OnFailure=paper-trade-failure.service
 
 [Service]
 Type=oneshot
@@ -15,6 +17,9 @@ WorkingDirectory=%h/dev/crypto_rl
 # stop the step
 ExecStart=-%h/dev/crypto_rl/.conda/bin/python scripts/kraken_costs.py
 ExecStart=%h/dev/crypto_rl/.conda/bin/python scripts/paper_trade.py step
+# The daily Telegram summary; without ~/.config/crypto_rl/telegram.env it
+# just fails, which must not fail the step
+ExecStart=-%h/dev/crypto_rl/.conda/bin/python scripts/notify.py daily
 # The step peaks at ~370 MB (2026-10-28, warm cache or cold); the cap protects
 # the machine if that changes
 MemoryMax=800M

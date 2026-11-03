@@ -1,0 +1,10 @@
+# Telegram alert when paper-trade.service fails (its OnFailure=); installed
+# with it
+[Unit]
+Description=Crypto RL paper trading: failure alert
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/dev/crypto_rl
+ExecStart=%h/dev/crypto_rl/.conda/bin/python scripts/notify.py failure paper-trade.service
+TimeoutStartSec=5min

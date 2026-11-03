@@ -16,11 +16,17 @@
 #   scripts/vm/setup.sh https://.../paper_bundle.tar.gz 100
 #
 # Arguments: the bundle's URL (or a local path) and the paper capital in EUR.
+# After a `git pull`, run it without arguments to update the environment and
+# the systemd units (the data and the paper account stay).
+#
+# Telegram (scripts/notify.py): put API_KEY=<bot token> into
+# ~/.config/crypto_rl/telegram.env, message the bot once, then run
+# `.venv/bin/python scripts/notify.py test`.
 # Logs: journalctl --user -u paper-trade; status: .venv/bin/python
 # scripts/paper_trade.py report
 set -euo pipefail
 
-bundle=${1:?usage: scripts/vm/setup.sh BUNDLE_URL_OR_PATH [CAPITAL_EUR]}
+bundle=${1:-}
 capital=${2:-100}
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$repo"
@@ -29,7 +35,9 @@ python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements-paper.txt
 
-if [[ -f "$bundle" ]]; then
+if [[ -z "$bundle" ]]; then
+    : # update: keep the data
+elif [[ -f "$bundle" ]]; then
     tar -xzf "$bundle"
 else
     curl -fL "$bundle" | tar -xz
@@ -44,7 +52,7 @@ fi
 # them for this checkout and its venv
 units=~/.config/systemd/user
 mkdir -p "$units"
-for unit in paper-trade.service paper-trade.timer; do
+for unit in paper-trade.service paper-trade-failure.service paper-trade.timer; do
     sed -e "s|%h/dev/crypto_rl/.conda/bin/python|$repo/.venv/bin/python|g" \
         -e "s|%h/dev/crypto_rl|$repo|g" \
         "scripts/systemd/$unit" >"$units/$unit"
